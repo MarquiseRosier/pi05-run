@@ -121,6 +121,8 @@ CAPTURE_ACTIVATIONS = False
 
 The eval cell streams the model/simulator output and prints a heartbeat every `EVAL_PROGRESS_SECONDS`. The heartbeat includes elapsed time, completed rollout videos versus expected task episodes, output directory size, activation chunks captured, latest eval batch progress, latest rollout step progress, and the last useful log line. If the run fails, the notebook prints `nvidia-smi` plus the last lines of both `colab_launcher.log` and `run.log` before raising the error.
 
+The eval runner forces `MPLBACKEND=Agg` for headless LIBERO/Matplotlib imports. This avoids Colab's notebook backend leaking into the subprocess as `module://matplotlib_inline.backend_inline`, which can fail before the simulator starts.
+
 ## Inline Investigation Outputs
 
 The notebook display cell runs automatically after eval and shows:

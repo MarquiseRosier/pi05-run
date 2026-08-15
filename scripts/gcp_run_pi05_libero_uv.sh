@@ -30,6 +30,8 @@ gcloud compute ssh "${VM_NAME}" \
     export MUJOCO_GL=egl && \
     export PYOPENGL_PLATFORM=egl && \
     export MUJOCO_EGL_DEVICE_ID=0 && \
+    export MIN_GPU_MEM_GB='${MIN_GPU_MEM_GB:-0}' && \
+    export MIN_HOST_RAM_GB='${MIN_HOST_RAM_GB:-0}' && \
     export CAPTURE_ACTIVATIONS='${CAPTURE_ACTIVATIONS:-0}' && \
     export CAPTURE_MAX_CHUNKS='${CAPTURE_MAX_CHUNKS:-80}' && \
     export CAPTURE_LAYER_STRIDE='${CAPTURE_LAYER_STRIDE:-1}' && \

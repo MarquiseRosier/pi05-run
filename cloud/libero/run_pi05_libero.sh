@@ -8,6 +8,8 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/eval/pi05_libero}"
 OUTPUT_DIR="${OUTPUT_ROOT}/${RUN_ID}"
 POLICY_PATH="${POLICY_PATH:-lerobot/pi05_libero_finetuned}"
 DEVICE="${DEVICE:-cuda}"
+MIN_GPU_MEM_GB="${MIN_GPU_MEM_GB:-0}"
+MIN_HOST_RAM_GB="${MIN_HOST_RAM_GB:-0}"
 if [[ -z "${DTYPE:-}" ]]; then
   if [[ "${DEVICE}" == "cpu" ]]; then
     DTYPE="float32"
@@ -30,6 +32,46 @@ export MPLBACKEND="Agg"
 export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+
+host_ram_kb="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || printf '0')"
+host_ram_gb=$(( (host_ram_kb + 1024 * 1024 - 1) / (1024 * 1024) ))
+printf "host_ram_gib %s\n" "${host_ram_gb}"
+if (( MIN_HOST_RAM_GB > 0 && host_ram_gb < MIN_HOST_RAM_GB )); then
+  cat >&2 <<EOF
+ERROR: Host RAM is too small for Pi0.5 LIBERO.
+Detected: ~${host_ram_gb} GiB
+Required: >= ${MIN_HOST_RAM_GB} GiB
+
+In Colab, switch to a high-RAM L4 or A100 runtime. T4/low-RAM runtimes
+commonly exit 137 while loading the Pi0.5 policy.
+EOF
+  exit 2
+fi
+
+if [[ "${DEVICE}" == cuda* ]]; then
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "ERROR: DEVICE=${DEVICE}, but nvidia-smi is not available." >&2
+    exit 2
+  fi
+  gpu_csv="$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits | head -n1)"
+  gpu_name="$(printf '%s' "${gpu_csv%,*}" | sed 's/^ *//;s/ *$//')"
+  gpu_mem_mb="$(printf '%s' "${gpu_csv##*,}" | sed 's/^ *//;s/ *$//')"
+  gpu_mem_gb=$(( (gpu_mem_mb + 1023) / 1024 ))
+  printf "gpu_info %s | vram_gib %s\n" "${gpu_name}" "${gpu_mem_gb}"
+  if (( MIN_GPU_MEM_GB > 0 && gpu_mem_gb < MIN_GPU_MEM_GB )); then
+    cat >&2 <<EOF
+ERROR: GPU VRAM is too small for Pi0.5 LIBERO.
+Detected: ${gpu_name} with ~${gpu_mem_gb} GiB
+Required: >= ${MIN_GPU_MEM_GB} GiB
+
+Use an L4/A100-class GPU for Colab. T4 usually dies with exit 137 during
+policy loading before LIBERO rollout begins.
+EOF
+    exit 2
+  fi
+fi
 
 if [[ "${CAPTURE_ACTIVATIONS}" == "1" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

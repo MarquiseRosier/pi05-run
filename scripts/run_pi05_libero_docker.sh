@@ -24,6 +24,8 @@ docker run --rm --gpus all --ipc=host --network=host \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video \
   -e DEVICE="${DEVICE:-cuda}" \
   -e DTYPE="${DTYPE:-bfloat16}" \
+  -e MIN_GPU_MEM_GB="${MIN_GPU_MEM_GB:-0}" \
+  -e MIN_HOST_RAM_GB="${MIN_HOST_RAM_GB:-0}" \
   -e LIBERO_CONFIG_PATH=/workspace/.libero \
   -e LIBERO_DATASET_DIR=/workspace/data/libero/datasets \
   -e CAPTURE_ACTIVATIONS="${CAPTURE_ACTIVATIONS:-0}" \

@@ -20,6 +20,7 @@ Use this path when the machine has:
 - An NVIDIA GPU with a driver new enough for CUDA 12.8, driver `570+` recommended.
 - Docker Engine.
 - NVIDIA Container Toolkit.
+- At least about 20 GiB GPU VRAM for Pi0.5 LIBERO. Use enough host RAM for model loading; 24 GiB+ is recommended, and Colab should use a high-RAM L4/A100 runtime.
 - At least 50 GB free disk for the Docker image, model cache, LIBERO assets, and outputs.
 
 macOS Docker cannot pass Apple MPS into Linux containers. The supported teammate path is Linux + NVIDIA + Docker.
@@ -166,6 +167,15 @@ This is:
 ```
 
 On an L4-class GPU, budget roughly 2 hours once model/assets are cached. First run is slower because it builds the image and downloads model/assets.
+
+If a run exits with code `137` near `Making policy`, the OS killed the process for memory pressure while loading Pi0.5. Use an L4/A100-class GPU and enough host RAM; a T4/low-RAM Colab runtime is not sufficient for this path.
+
+To fail early on a Linux/Docker host instead of waiting for model load:
+
+```bash
+MIN_GPU_MEM_GB=20 MIN_HOST_RAM_GB=16 TASK_IDS='[0]' \
+  ./scripts/run_pi05_libero_docker.sh libero_spatial 1
+```
 
 ## 6. Activation Diagnostics
 

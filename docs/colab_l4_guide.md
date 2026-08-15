@@ -69,6 +69,8 @@ FORCE_AUTH_REFRESH = False
 HF_OFFLINE = False
 CACHE_TRANSFER_MODE = "archive"
 REQUIRED_GPU = "L4"
+MIN_GPU_MEMORY_GB = 20
+MIN_SYSTEM_RAM_GB = 24
 ```
 
 4. Run the cache/setup cells once.
@@ -84,7 +86,7 @@ The first refresh downloads models to `/content/hf_home` instead of directly to 
 ## Normal Run-All Workflow
 
 1. Open the restricted shared notebook.
-2. Runtime -> Change runtime type -> GPU -> L4.
+2. Runtime -> Change runtime type -> GPU -> L4 or A100, preferably high-RAM.
 3. Runtime -> Run all.
 4. Inspect rollout and diagnostic videos inline.
 5. Find persisted outputs in:
@@ -104,6 +106,8 @@ EVAL_PROGRESS_SECONDS = 30
 CAPTURE_ACTIVATIONS = True
 CAPTURE_PARAM_STATS = False
 CAPTURE_MAX_CHUNKS = 40
+MIN_GPU_MEMORY_GB = 20
+MIN_SYSTEM_RAM_GB = 24
 REPORT_MAX_ROWS = 80
 GENERATE_DIAGNOSTIC_VIDEO = False
 DISPLAY_INDIVIDUAL_LAYER_GRAPHS = False
@@ -118,6 +122,8 @@ TASK_IDS = ""
 EPISODES = 10
 CAPTURE_ACTIVATIONS = False
 ```
+
+The notebook rejects undersized runtimes before expensive setup. Pi0.5 model loading is too memory-heavy for the usual Colab T4 runtime; use L4/A100 with at least about 20 GiB VRAM and 24 GiB system RAM. Exit `137` during `Making policy` means the OS killed the process for memory pressure, not that LIBERO or the task failed.
 
 The eval cell streams the model/simulator output and prints a heartbeat every `EVAL_PROGRESS_SECONDS`. The heartbeat includes elapsed time, completed rollout videos versus expected task episodes, output directory size, activation chunks captured, latest eval batch progress, latest rollout step progress, and the last useful log line. If the run fails, the notebook prints `nvidia-smi` plus the last lines of both `colab_launcher.log` and `run.log` before raising the error.
 

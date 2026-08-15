@@ -137,6 +137,12 @@ Run on GCP, fetch the results, and open the local folder when it finishes:
 
 This starts the VM if needed, streams the run in your terminal, copies the finished result into local `outputs/eval/pi05_libero/<timestamp>/`, then opens that folder.
 
+Stop the VM automatically after fetching:
+
+```bash
+STOP_AFTER=1 ./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
+```
+
 ## Linux NVIDIA Docker Path
 
 On a Linux host with an NVIDIA GPU:

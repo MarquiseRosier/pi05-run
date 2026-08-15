@@ -156,6 +156,12 @@ Run a smoke test on GCP, fetch it, and open the local result folder when it fini
 
 This starts the VM if needed, streams the run, fetches results to local `outputs/eval/pi05_libero/<timestamp>/`, then opens the local folder.
 
+To stop the VM automatically after the results are fetched:
+
+```bash
+STOP_AFTER=1 ./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
+```
+
 Remote results persist on the VM under:
 
 ```text

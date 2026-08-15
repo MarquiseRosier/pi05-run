@@ -18,6 +18,8 @@ fi
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_PARALLEL_TASKS="${MAX_PARALLEL_TASKS:-1}"
 USE_ASYNC_ENVS="${USE_ASYNC_ENVS:-false}"
+TASK_IDS="${TASK_IDS:-}"
+CAPTURE_ACTIVATIONS="${CAPTURE_ACTIVATIONS:-0}"
 
 mkdir -p "${OUTPUT_DIR}"
 
@@ -27,6 +29,18 @@ export MUJOCO_EGL_DEVICE_ID="${MUJOCO_EGL_DEVICE_ID:-0}"
 export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 export HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}"
+
+if [[ "${CAPTURE_ACTIVATIONS}" == "1" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  export LEROBOT_CAPTURE_ACTIVATIONS=1
+  export LEROBOT_CAPTURE_DIR="${LEROBOT_CAPTURE_DIR:-${OUTPUT_DIR}/activation_capture}"
+  export CAPTURE_MAX_CHUNKS="${CAPTURE_MAX_CHUNKS:-80}"
+  export CAPTURE_LAYER_STRIDE="${CAPTURE_LAYER_STRIDE:-1}"
+  export CAPTURE_MAX_BINS="${CAPTURE_MAX_BINS:-64}"
+  export CAPTURE_FAMILIES="${CAPTURE_FAMILIES:-vision,prefix,expert,projection}"
+  export CAPTURE_PARAM_STATS="${CAPTURE_PARAM_STATS:-0}"
+  CAPTURE_PYTHONPATH="${SCRIPT_DIR}/activation_capture${PYTHONPATH:+:${PYTHONPATH}}"
+fi
 
 PYTHON="${PYTHON:-python}"
 LIBERO_CONFIG_DIR="${LIBERO_CONFIG_PATH:-${HOME}/.libero}"
@@ -93,7 +107,8 @@ for repo_id, filename in checks:
 print("hf_access OK")
 PY
 
-lerobot-eval \
+args=(
+  lerobot-eval
   --policy.path="${POLICY_PATH}" \
   --policy.device="${DEVICE}" \
   --policy.dtype="${DTYPE}" \
@@ -106,7 +121,17 @@ lerobot-eval \
   --eval.batch_size="${BATCH_SIZE}" \
   --eval.n_episodes="${EPISODES}" \
   --eval.use_async_envs="${USE_ASYNC_ENVS}" \
-  --output_dir="${OUTPUT_DIR}" \
-  2>&1 | tee "${OUTPUT_DIR}/run.log"
+  --output_dir="${OUTPUT_DIR}"
+)
+
+if [[ -n "${TASK_IDS}" ]]; then
+  args+=(--env.task_ids="${TASK_IDS}")
+fi
+
+if [[ "${CAPTURE_ACTIVATIONS}" == "1" ]]; then
+  PYTHONPATH="${CAPTURE_PYTHONPATH}" "${args[@]}" 2>&1 | tee "${OUTPUT_DIR}/run.log"
+else
+  "${args[@]}" 2>&1 | tee "${OUTPUT_DIR}/run.log"
+fi
 
 printf "\nSaved results in %s\n" "${OUTPUT_DIR}"

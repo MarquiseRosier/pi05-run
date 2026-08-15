@@ -148,6 +148,26 @@ Open the local result folder or first rollout video:
 ./scripts/show_pi05_results.sh latest open-video
 ```
 
+Create a quadrant analysis video from a fetched run:
+
+```bash
+./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30 --open-preview --open
+```
+
+Run one targeted LIBERO task with PyTorch activation hooks, fetch the result, render the quadrant analysis video, and stop the VM:
+
+```bash
+STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
+```
+
+By default that captures `TASK_IDS='[0]'`, so activations align cleanly with the first task video. The diagnostic video contains rollout, captured input cameras, signed action chunks, expert-layer activation magnitude by denoise pass, change from denoise step 0, and final-denoise layer x action-token activations. Magnitude panels use a fixed global log scale across the video.
+
+To also capture static parameter summaries for hooked modules on the next run:
+
+```bash
+CAPTURE_PARAM_STATS=1 STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
+```
+
 Run a smoke test on GCP, fetch it, and open the local result folder when it finishes:
 
 ```bash

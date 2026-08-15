@@ -30,5 +30,12 @@ gcloud compute ssh "${VM_NAME}" \
     export MUJOCO_GL=egl && \
     export PYOPENGL_PLATFORM=egl && \
     export MUJOCO_EGL_DEVICE_ID=0 && \
+    export CAPTURE_ACTIVATIONS='${CAPTURE_ACTIVATIONS:-0}' && \
+    export CAPTURE_MAX_CHUNKS='${CAPTURE_MAX_CHUNKS:-80}' && \
+    export CAPTURE_LAYER_STRIDE='${CAPTURE_LAYER_STRIDE:-1}' && \
+    export CAPTURE_MAX_BINS='${CAPTURE_MAX_BINS:-64}' && \
+    export CAPTURE_FAMILIES='${CAPTURE_FAMILIES:-vision,prefix,expert,projection}' && \
+    export CAPTURE_PARAM_STATS='${CAPTURE_PARAM_STATS:-0}' && \
+    export TASK_IDS='${TASK_IDS:-}' && \
     . .venv/bin/activate && \
     ./cloud/libero/run_pi05_libero.sh '${TASKS}' '${EPISODES}'"

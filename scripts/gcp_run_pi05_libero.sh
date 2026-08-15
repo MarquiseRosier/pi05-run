@@ -39,6 +39,13 @@ gcloud compute ssh "${VM_NAME}" \
     -e DTYPE=bfloat16 \
     -e LIBERO_CONFIG_PATH=/workspace/.libero \
     -e LIBERO_DATASET_DIR=/workspace/data/libero/datasets \
+    -e CAPTURE_ACTIVATIONS='${CAPTURE_ACTIVATIONS:-0}' \
+    -e CAPTURE_MAX_CHUNKS='${CAPTURE_MAX_CHUNKS:-80}' \
+    -e CAPTURE_LAYER_STRIDE='${CAPTURE_LAYER_STRIDE:-1}' \
+    -e CAPTURE_MAX_BINS='${CAPTURE_MAX_BINS:-64}' \
+    -e CAPTURE_FAMILIES='${CAPTURE_FAMILIES:-vision,prefix,expert,projection}' \
+    -e CAPTURE_PARAM_STATS='${CAPTURE_PARAM_STATS:-0}' \
+    -e TASK_IDS='${TASK_IDS:-}' \
     -v /home/\$USER/.cache/huggingface:/workspace/.cache/huggingface \
     -v /home/\$USER/groot-run/outputs:/workspace/outputs \
     -v /home/\$USER/groot-run/data:/workspace/data \

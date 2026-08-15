@@ -129,6 +129,38 @@ Open the first local rollout video:
 ./scripts/show_pi05_results.sh latest open-video
 ```
 
+Create a quadrant analysis video from a fetched run:
+
+```bash
+./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30 --open-preview --open
+```
+
+The analysis video shows:
+
+- rollout/rendered behavior;
+- captured input camera tensors, when activation capture was enabled;
+- signed action chunk values across the 50-step prediction horizon;
+- which of the predicted actions is currently being executed;
+- action-expert activation magnitude as layer x denoise pass;
+- activation change from denoise step 0;
+- final-denoise layer x action-token activations.
+
+The magnitude views use a fixed global `log1p(abs_mean)` scale across the video, so color changes are comparable frame to frame.
+
+Run a targeted task with activation capture, fetch it, render the analysis video, and open it locally:
+
+```bash
+STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
+```
+
+This defaults to `TASK_IDS='[0]'`. Override it with `TASK_IDS='[3]' TASK_ID_FOR_VIDEO=3` when you want a different task.
+
+To also capture static parameter summaries for each hooked module on the next run:
+
+```bash
+CAPTURE_PARAM_STATS=1 STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
+```
+
 Run on GCP, fetch the results, and open the local folder when it finishes:
 
 ```bash

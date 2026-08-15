@@ -44,6 +44,7 @@ RUN uv venv /opt/lerobot --python 3.12 && \
 
 WORKDIR /workspace
 COPY run_pi05_libero.sh /workspace/run_pi05_libero.sh
+COPY activation_capture /workspace/activation_capture
 RUN chmod +x /workspace/run_pi05_libero.sh
 
 CMD ["/bin/bash"]

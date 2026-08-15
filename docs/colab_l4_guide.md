@@ -11,7 +11,7 @@ notebooks/pi05_libero_colab_l4.ipynb
 Open from GitHub:
 
 ```text
-https://colab.research.google.com/github/MarquiseRosier/groot-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
+https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
 ```
 
 ## Access Model
@@ -103,6 +103,10 @@ EPISODES = 1
 CAPTURE_ACTIVATIONS = True
 CAPTURE_PARAM_STATS = False
 CAPTURE_MAX_CHUNKS = 40
+REPORT_MAX_ROWS = 80
+GENERATE_DIAGNOSTIC_VIDEO = False
+DISPLAY_INDIVIDUAL_LAYER_GRAPHS = False
+LAYER_GRAPH_LIMIT = 6
 ```
 
 Full benchmark controls:
@@ -113,6 +117,45 @@ TASK_IDS = ""
 EPISODES = 10
 CAPTURE_ACTIVATIONS = False
 ```
+
+## Inline Investigation Outputs
+
+The notebook display cell runs automatically after eval and shows:
+
+- Rollout video from the simulator.
+- Optional four-panel diagnostic video with rollout, camera tensors, signed action chunk, and expert activation heatmaps.
+- Chunk matrix PNG: one row per policy call / 10-action execution window.
+- Family heatmaps for `vision`, `prefix` language/task, and `expert` action layers over chunks.
+- Interactive HTML report with dropdowns for activation family, metric, and layer.
+- Standalone PNGs for each expert transformer layer showing activation over policy chunks.
+
+The chunk matrix row is the first granular view to inspect. Each row contains:
+
+```text
+chunk/task | simulator third-person frame | input image | input image2 | first 10 actions | expert layer mean | expert layer x denoise
+```
+
+Generated report artifacts are persisted under:
+
+```text
+outputs/eval/pi05_libero/<timestamp>/analysis/task_<id>_episode_0_colab_report/
+```
+
+The main file to open/share is:
+
+```text
+task_<id>_episode_0_interactive.html
+```
+
+The script that builds this is:
+
+```bash
+python scripts/make_pi05_colab_report.py --run latest --task-id 0 --episode 0 --max-rows 80
+```
+
+You normally do not need to run that command manually in Colab; the notebook runs it when `CAPTURE_ACTIVATIONS=True`.
+
+For speed, leave `GENERATE_DIAGNOSTIC_VIDEO=False`. Turn it on only when you want the MP4.
 
 ## Plaintext Prompt Probe
 
@@ -134,6 +177,14 @@ Low-level commands such as `move +x` or `close gripper` may be out of distributi
 ## If The Cache Cell Looks Stuck
 
 Stop the old run and use the latest notebook from `main`. The previous version copied `DRIVE_ROOT/hf_home` file-by-file, which can look frozen on Colab.
+
+If you see this older error:
+
+```text
+CalledProcessError: ... pip install -q -U huggingface_hub[hf_transfer]
+```
+
+Use the latest notebook. That extra install was removed because the setup cell already installs `huggingface_hub` through LeRobot and installs `hf-transfer` directly.
 
 Use these controls for the first successful cache fill:
 

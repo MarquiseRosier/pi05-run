@@ -9,7 +9,7 @@ Colab L4/A100 workflow:
 - Open in Colab:
 
 ```text
-https://colab.research.google.com/github/MarquiseRosier/groot-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
+https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
 ```
 
 The Colab path runs the same Pi0.5/LIBERO eval natively because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, and videos. Hugging Face tokens stay in each user's private Colab Secrets and are not committed or copied into Drive.
@@ -27,8 +27,8 @@ macOS Docker cannot pass Apple MPS into Linux containers. The supported teammate
 ## 1. Clone
 
 ```bash
-git clone https://github.com/MarquiseRosier/groot-run.git
-cd groot-run
+git clone https://github.com/MarquiseRosier/pi05-run.git
+cd pi05-run
 ```
 
 ## Copy-Paste Ubuntu Setup

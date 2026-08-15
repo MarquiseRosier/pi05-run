@@ -2,6 +2,18 @@
 
 This repo runs `lerobot/pi05_libero_finetuned` against LIBERO simulations on a Linux machine with an NVIDIA GPU.
 
+Colab L4/A100 workflow:
+
+- Notebook: `notebooks/pi05_libero_colab_l4.ipynb`
+- Guide: `docs/colab_l4_guide.md`
+- Open in Colab:
+
+```text
+https://colab.research.google.com/github/MarquiseRosier/groot-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
+```
+
+The Colab path runs the same Pi0.5/LIBERO eval natively because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, and videos. Hugging Face tokens stay in each user's private Colab Secrets and are not committed or copied into Drive.
+
 Use this path when the machine has:
 
 - Linux, preferably Ubuntu 22.04/24.04.

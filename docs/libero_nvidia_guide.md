@@ -6,6 +6,8 @@ This is the supported teammate workflow for running Pi0.5 on LIBERO.
 Linux host + NVIDIA GPU + Docker + NVIDIA Container Toolkit
 ```
 
+If a collaborator does not have a Linux NVIDIA machine, use the Colab L4 notebook instead: `docs/colab_l4_guide.md`.
+
 The runner uses Docker for the LeRobot/LIBERO runtime and persists results on the host.
 
 ## Prerequisites

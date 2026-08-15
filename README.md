@@ -94,6 +94,14 @@ hf auth login
 exit
 ```
 
+Also accept/request access for the same Hugging Face account here:
+
+```text
+https://huggingface.co/google/paligemma-3b-pt-224
+```
+
+Without that Google PaliGemma access, Pi0.5-LIBERO loads the fine-tuned weights but fails when it instantiates the tokenizer.
+
 Run one smoke-test episode on LIBERO Spatial:
 
 ```bash
@@ -110,6 +118,13 @@ Remote results persist on the VM under:
 
 ```text
 ~/groot-run/outputs/eval/pi05_libero/<timestamp>/
+```
+
+LIBERO datasets/config are created automatically under:
+
+```text
+~/.libero/config.yaml
+~/groot-run/data/libero/datasets/
 ```
 
 Stop the VM when done:

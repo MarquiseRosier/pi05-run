@@ -22,6 +22,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libglib2.0-0 \
   libglvnd0 \
   libglx0 \
+  libopengl0 \
   libosmesa6-dev \
   libsm6 \
   libxext6 \

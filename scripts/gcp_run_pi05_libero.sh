@@ -30,6 +30,7 @@ gcloud compute ssh "${VM_NAME}" \
   --command="cd ${REMOTE_ROOT} && sudo docker run --rm --gpus all --ipc=host --network=host \
     -e HF_HOME=/workspace/.cache/huggingface \
     -e HF_HUB_ENABLE_HF_TRANSFER=1 \
+    -e HF_XET_HIGH_PERFORMANCE=1 \
     -e MUJOCO_GL=egl \
     -v /home/\$USER/.cache/huggingface:/workspace/.cache/huggingface \
     -v /home/\$USER/groot-run/outputs:/workspace/outputs \

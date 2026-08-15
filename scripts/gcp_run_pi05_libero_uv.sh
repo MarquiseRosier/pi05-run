@@ -26,6 +26,7 @@ gcloud compute ssh "${VM_NAME}" \
     export PATH=\"\$HOME/.local/bin:\$PATH\" && \
     export HF_HOME=\"\$HOME/.cache/huggingface\" && \
     export HF_HUB_ENABLE_HF_TRANSFER=1 && \
+    export HF_XET_HIGH_PERFORMANCE=1 && \
     export MUJOCO_GL=egl && \
     . .venv/bin/activate && \
     ./cloud/libero/run_pi05_libero.sh '${TASKS}' '${EPISODES}'"

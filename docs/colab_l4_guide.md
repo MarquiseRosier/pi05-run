@@ -51,7 +51,19 @@ secrets/          optional shared token file, only if the team intentionally use
 
 The notebook prefers `archives/*.tar` because Google Drive is very slow when copying a Hugging Face cache as thousands of individual files. It extracts archives to Colab local disk at startup, runs from local disk for speed, then syncs results and refreshed cache archives back to Drive after each experiment.
 
-For personal Google Drive folders, collaborators may need to use Google Drive's "Add shortcut to Drive" action so the shared folder appears under their `/content/drive/MyDrive/...` mount path. A Google Workspace Shared Drive is cleaner: put the folder there, share it with the team, and set `DRIVE_ROOT` to that mounted Shared Drive path.
+For personal Google Drive folders, collaborators normally need Google Drive's "Add shortcut to Drive" action before Colab can see a "Shared with me" folder under `/content/drive/MyDrive/...`. This notebook can do that automatically if the owner sets `DRIVE_FOLDER_ID` once.
+
+Owner setup for a normal shared folder:
+
+1. Create `groot-run-shared-programmer908` in your Google Drive.
+2. Share that folder by email with approved teammates.
+3. Open the folder in Drive and copy the folder ID from the URL.
+4. Paste that ID into notebook control `DRIVE_FOLDER_ID`.
+5. Keep `AUTO_CREATE_DRIVE_SHORTCUT=True`.
+
+After that, invited teammates only need to run the notebook and approve Drive access. If `DRIVE_ROOT` is missing from their mounted Drive, the notebook creates a My Drive shortcut to the shared folder automatically.
+
+A Google Workspace Shared Drive is cleaner if available: put the folder there, share the Shared Drive with the team, and set `DRIVE_ROOT` to that mounted Shared Drive path. In that case `DRIVE_FOLDER_ID` can stay blank.
 
 ## Shared Token Option
 

@@ -194,6 +194,14 @@ CalledProcessError: ... python3 -m pip install -q -U uv
 
 Use the latest notebook. Colab can block system `pip install` on Python 3.12, so the setup cell now installs the standalone `uv` binary under `/content/uv-bin` instead of modifying system Python packages.
 
+If you see this older error:
+
+```text
+CalledProcessError: ... /usr/local/bin/uv venv /content/lerobot-venv --python /usr/bin/python3
+```
+
+Use the latest notebook. Colab can ship its own `/usr/local/bin/uv`; the setup cell now ignores that binary, installs official `uv` into `/content/uv-bin`, and recreates `/content/lerobot-venv` with `--clear`.
+
 Use these controls for the first successful cache fill:
 
 ```text

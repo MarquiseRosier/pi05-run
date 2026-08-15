@@ -38,6 +38,7 @@ Default notebook path:
 Expected contents:
 
 ```text
+archives/        Fast Colab cache tar files: hf_home.tar, libero_cache.tar, libero_datasets.tar
 hf_home/          Hugging Face home; model snapshots live under hf_home/hub/
 libero_cache/     LIBERO runtime cache
 libero_datasets/  LIBERO downloaded datasets/init-state artifacts
@@ -45,11 +46,11 @@ outputs/          persisted logs, eval summaries, videos, activation traces, pro
 notebook_meta/    reserved metadata folder
 ```
 
-The notebook copies these folders to Colab local disk at startup, runs from local disk for speed, then syncs results back to Drive after each experiment.
+The notebook prefers `archives/*.tar` because Google Drive is very slow when copying a Hugging Face cache as thousands of individual files. It extracts archives to Colab local disk at startup, runs from local disk for speed, then syncs results and refreshed cache archives back to Drive after each experiment.
 
 ## One-Time Cache Fill
 
-Use this only if `hf_home/` does not already contain:
+Use this only if `archives/hf_home.tar` does not already exist and `hf_home/` does not already contain:
 
 ```text
 hf_home/hub/models--lerobot--pi05_libero_finetuned
@@ -64,7 +65,9 @@ Steps:
 
 ```text
 ALLOW_AUTH_REFRESH = True
+FORCE_AUTH_REFRESH = False
 HF_OFFLINE = False
+CACHE_TRANSFER_MODE = "archive"
 REQUIRED_GPU = "L4"
 ```
 
@@ -75,6 +78,8 @@ REQUIRED_GPU = "L4"
 ALLOW_AUTH_REFRESH = False
 HF_OFFLINE = True
 ```
+
+The first refresh downloads models to `/content/hf_home` instead of directly to Drive. That is intentional. The notebook later writes one tar archive to `DRIVE_ROOT/archives/hf_home.tar`, which future sessions can extract much faster. If an archive exists and you need to rebuild it, set `FORCE_AUTH_REFRESH=True`.
 
 ## Normal Run-All Workflow
 
@@ -125,6 +130,30 @@ outputs/probes/<suite>/task_<id>/action_chunk.json
 ```
 
 Low-level commands such as `move +x` or `close gripper` may be out of distribution for the LIBERO-tuned checkpoint. Use the probe to compare inputs, action chunks, and activation traces, not as a formal success metric.
+
+## If The Cache Cell Looks Stuck
+
+Stop the old run and use the latest notebook from `main`. The previous version copied `DRIVE_ROOT/hf_home` file-by-file, which can look frozen on Colab.
+
+Use these controls for the first successful cache fill:
+
+```text
+CACHE_TRANSFER_MODE = "archive"
+ALLOW_AUTH_REFRESH = True
+FORCE_AUTH_REFRESH = False
+HF_OFFLINE = False
+```
+
+After the archive exists:
+
+```text
+CACHE_TRANSFER_MODE = "archive"
+ALLOW_AUTH_REFRESH = False
+FORCE_AUTH_REFRESH = False
+HF_OFFLINE = True
+```
+
+The fixed cache cell prints section headers, elapsed time, `pv` transfer progress for tar archives, and `du -sh` summaries so you can tell what it is doing.
 
 ## Security Checklist
 

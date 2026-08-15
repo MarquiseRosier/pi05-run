@@ -123,6 +123,8 @@ The eval cell streams the model/simulator output and prints a heartbeat every `E
 
 The eval runner forces `MPLBACKEND=Agg` for headless LIBERO/Matplotlib imports. This avoids Colab's notebook backend leaking into the subprocess as `module://matplotlib_inline.backend_inline`, which can fail before the simulator starts.
 
+Progress parsing is best-effort and intentionally non-fatal; if a progress line cannot be parsed, the eval keeps running and the heartbeat still reports elapsed time, output size, videos, activation chunks, and the latest useful log line.
+
 ## Inline Investigation Outputs
 
 The notebook display cell runs automatically after eval and shows:

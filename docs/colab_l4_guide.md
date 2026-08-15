@@ -55,6 +55,7 @@ Use this only if `archives/hf_home.tar` does not already exist and `hf_home/` do
 ```text
 hf_home/hub/models--lerobot--pi05_libero_finetuned
 hf_home/hub/models--google--paligemma-3b-pt-224
+hf_home/hub/datasets--lerobot--libero-assets
 ```
 
 Steps:
@@ -81,7 +82,9 @@ ALLOW_AUTH_REFRESH = False
 HF_OFFLINE = True
 ```
 
-The first refresh downloads models to `/content/hf_home` instead of directly to Drive. That is intentional. The notebook later writes one tar archive to `DRIVE_ROOT/archives/hf_home.tar`, which future sessions can extract much faster. If an archive exists and you need to rebuild it, set `FORCE_AUTH_REFRESH=True`.
+The first refresh downloads models and the public LIBERO assets to `/content/hf_home` instead of directly to Drive. That is intentional. The notebook later writes one tar archive to `DRIVE_ROOT/archives/hf_home.tar`, which future sessions can extract much faster. If an archive exists and you need to rebuild it, set `FORCE_AUTH_REFRESH=True`.
+
+If an older `hf_home.tar` exists without `lerobot/libero-assets`, keep `ALLOW_AUTH_REFRESH=True`; the notebook refreshes only the missing asset cache entry and installs it into the local LIBERO package before eval.
 
 ## Normal Run-All Workflow
 
@@ -130,6 +133,8 @@ The eval cell streams the model/simulator output and prints a heartbeat every `E
 The eval runner forces `MPLBACKEND=Agg` for headless LIBERO/Matplotlib imports. This avoids Colab's notebook backend leaking into the subprocess as `module://matplotlib_inline.backend_inline`, which can fail before the simulator starts.
 
 Progress parsing is best-effort and intentionally non-fatal; if a progress line cannot be parsed, the eval keeps running and the heartbeat still reports elapsed time, output size, videos, activation chunks, and the latest useful log line.
+
+The eval runner verifies LIBERO assets before loading Pi0.5. If `scenes/libero_tabletop_base_style.xml` is missing and `HF_OFFLINE=True`, refresh the public `lerobot/libero-assets` dataset cache once, then rerun eval.
 
 ## Inline Investigation Outputs
 

@@ -120,6 +120,61 @@ init_states: ${LIBERO_ROOT}/init_files
 YAML
 fi
 
+"${PYTHON}" - <<PY
+from pathlib import Path
+import os
+import shutil
+import sys
+
+from huggingface_hub import snapshot_download
+
+libero_root = Path("${LIBERO_ROOT}")
+assets_dir = libero_root / "assets"
+required = assets_dir / "scenes" / "libero_tabletop_base_style.xml"
+offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+cache_dir = os.environ.get("HF_HUB_CACHE") or str(Path(os.environ.get("HF_HOME", "~/.cache/huggingface")).expanduser() / "hub")
+
+
+def copy_snapshot(src: Path, dst: Path) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+    for child in src.iterdir():
+        if child.name == ".gitattributes":
+            continue
+        target = dst / child.name
+        if child.is_dir():
+            shutil.copytree(child, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(child, target)
+
+
+if required.exists():
+    print(f"libero_assets OK {required}", flush=True)
+else:
+    print("LIBERO assets not installed in package; preparing lerobot/libero-assets...", flush=True)
+    try:
+        snapshot = Path(
+            snapshot_download(
+                repo_id="lerobot/libero-assets",
+                repo_type="dataset",
+                cache_dir=cache_dir,
+                local_files_only=offline,
+            )
+        )
+    except Exception as exc:
+        mode = "offline" if offline else "online"
+        raise SystemExit(
+            "Missing LIBERO assets. The simulator needs Hugging Face dataset "
+            "lerobot/libero-assets. Current mode: "
+            f"{mode}. If running offline, refresh the cache once with HF_OFFLINE=False "
+            "or run the Colab asset hotfix cell."
+        ) from exc
+    print(f"Installing LIBERO assets: {snapshot} -> {assets_dir}", flush=True)
+    copy_snapshot(snapshot, assets_dir)
+    if not required.exists():
+        raise SystemExit(f"LIBERO asset install failed; still missing {required}")
+    print(f"libero_assets OK {required}", flush=True)
+PY
+
 "${PYTHON}" - <<'PY'
 import torch
 print("torch", torch.__version__)

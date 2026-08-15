@@ -105,6 +105,7 @@ Pi0.5-LIBERO needs:
 ```text
 lerobot/pi05_libero_finetuned
 google/paligemma-3b-pt-224
+lerobot/libero-assets
 ```
 
 Accept/request access for PaliGemma with the same Hugging Face account:
@@ -260,3 +261,5 @@ https://huggingface.co/google/paligemma-3b-pt-224
 ```
 
 If the first run is slow, that is expected. It builds the Docker image, downloads Pi0.5/PaliGemma weights, and downloads LIBERO assets.
+
+If eval fails with a missing file like `libero_tabletop_base_style.xml`, the LIBERO assets cache is missing. The runner now installs `lerobot/libero-assets` into the local LIBERO package before model load; rerun with network enabled once, then offline runs can reuse the cache.

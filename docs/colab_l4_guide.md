@@ -100,6 +100,7 @@ SUITE = "libero_spatial"
 TASK_IDS = "[0]"
 ANALYSIS_TASK_ID = 0
 EPISODES = 1
+EVAL_PROGRESS_SECONDS = 30
 CAPTURE_ACTIVATIONS = True
 CAPTURE_PARAM_STATS = False
 CAPTURE_MAX_CHUNKS = 40
@@ -117,6 +118,8 @@ TASK_IDS = ""
 EPISODES = 10
 CAPTURE_ACTIVATIONS = False
 ```
+
+The eval cell streams the model/simulator output and prints a heartbeat every `EVAL_PROGRESS_SECONDS`. The heartbeat includes elapsed time, completed rollout videos versus expected task episodes, output directory size, activation chunks captured, latest eval batch progress, latest rollout step progress, and the last useful log line. If the run fails, the notebook prints `nvidia-smi` plus the last lines of both `colab_launcher.log` and `run.log` before raising the error.
 
 ## Inline Investigation Outputs
 

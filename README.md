@@ -1,231 +1,240 @@
-# LeRobot Simulation Setup
+# Pi0.5 LIBERO on Linux NVIDIA Docker
 
-This repo is set up for two simulation paths:
+This repo runs `lerobot/pi05_libero_finetuned` against LIBERO simulations on a Linux machine with an NVIDIA GPU.
 
-- Apple Silicon local smoke tests with MPS on PushT.
-- Pi0.5 LIBERO evaluation on Linux/NVIDIA, validated on a GCP L4 VM.
+Use this path when the machine has:
 
-For the full NVIDIA/LIBERO workflow, use [docs/libero_nvidia_guide.md](docs/libero_nvidia_guide.md).
+- Linux, preferably Ubuntu 22.04/24.04.
+- An NVIDIA GPU with a driver new enough for CUDA 12.8, driver `570+` recommended.
+- Docker Engine.
+- NVIDIA Container Toolkit.
+- At least 50 GB free disk for the Docker image, model cache, LIBERO assets, and outputs.
 
-## One-time setup
+macOS Docker cannot pass Apple MPS into Linux containers. The supported teammate path is Linux + NVIDIA + Docker.
 
-Install `uv` and `ffmpeg` if needed:
+## 1. Clone
 
 ```bash
-brew install uv ffmpeg
+git clone https://github.com/MarquiseRosier/groot-run.git
+cd groot-run
 ```
 
-Create the local environment and install dependencies:
+## Copy-Paste Ubuntu Setup
+
+If Docker and NVIDIA Container Toolkit are already installed, skip to step 2.
 
 ```bash
-uv sync
+sudo apt-get update
+sudo apt-get install -y git python3-pip docker.io ca-certificates curl gnupg2
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker
 ```
 
-Verify MPS:
+Install/configure NVIDIA Container Toolkit:
 
 ```bash
-uv run python - <<'PY'
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+## 2. Verify NVIDIA Docker
+
+The host must see the GPU:
+
+```bash
+nvidia-smi
+```
+
+Docker must also see the GPU:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+```
+
+If this fails, fix NVIDIA Container Toolkit before running the simulation.
+
+## 2.5. Build And Sanity Check The Container
+
+```bash
+docker build -t lerobot-libero:latest cloud/libero
+```
+
+Check PyTorch sees CUDA inside the container:
+
+```bash
+docker run --rm --gpus all --ipc=host --network=host \
+  -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
+  -v "$PWD/outputs:/workspace/outputs" \
+  -v "$PWD/data:/workspace/data" \
+  -v "$PWD/.libero:/workspace/.libero" \
+  lerobot-libero:latest python - <<'PY'
 import torch
-print(torch.__version__)
-assert torch.backends.mps.is_available(), "MPS is not available"
-print("MPS OK")
+print("torch", torch.__version__)
+print("cuda", torch.cuda.is_available())
+print("gpu", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none")
 PY
 ```
 
-## Run PushT
+## 3. Hugging Face Access
 
-Run 5 episodes:
-
-```bash
-./scripts/run_pusht_mps.sh
-```
-
-Run a different episode count:
-
-```bash
-./scripts/run_pusht_mps.sh 10
-```
-
-Results are automatically persisted under:
+Pi0.5-LIBERO needs:
 
 ```text
-outputs/eval/pusht/<timestamp>/
+lerobot/pi05_libero_finetuned
+google/paligemma-3b-pt-224
 ```
 
-Each run writes `run.log`, `eval_info.json`, and rendered videos when `lerobot-eval` emits them.
-
-## Direct command
-
-The helper script wraps this command:
-
-```bash
-PYTORCH_ENABLE_MPS_FALLBACK=1 uv run lerobot-eval \
-  --policy.path=pbelevich/diffusion_pusht \
-  --env.type=pusht \
-  --eval.batch_size=1 \
-  --eval.n_episodes=5 \
-  --policy.use_amp=false \
-  --policy.device=mps \
-  --output_dir=outputs/eval/pusht/manual
-```
-
-## GCP LIBERO Pi0.5
-
-Use this for the real `lerobot/pi05_libero_finetuned` benchmark path. The VM is separate from any other running GPU machines.
-
-Create or start the L4 Spot VM:
-
-```bash
-./scripts/gcp_create_l4_vm.sh
-```
-
-Install Docker and verify GPU containers:
-
-```bash
-./scripts/gcp_bootstrap_l4_vm.sh
-```
-
-Install the LeRobot LIBERO runtime directly on the VM. This also installs the NVIDIA EGL userspace package needed for headless LIBERO rendering on the validated GCP image:
-
-```bash
-./scripts/gcp_setup_uv_libero.sh
-```
-
-The Pi0.5 checkpoint uses gated Hugging Face assets. SSH once and log in:
-
-```bash
-gcloud compute ssh lerobot-libero-l4 --zone us-central1-a
-hf auth login
-exit
-```
-
-Also accept/request access for the same Hugging Face account here:
+Accept/request access for PaliGemma with the same Hugging Face account:
 
 ```text
 https://huggingface.co/google/paligemma-3b-pt-224
 ```
 
-Without that Google PaliGemma access, Pi0.5-LIBERO loads the fine-tuned weights but fails when it instantiates the tokenizer.
-
-Run one smoke-test episode on LIBERO Spatial:
+Log in on the Linux host:
 
 ```bash
-./scripts/gcp_run_pi05_libero_uv.sh libero_spatial 1
+python3 -m pip install --user -U "huggingface_hub[cli]"
+~/.local/bin/hf auth login
 ```
 
-The validated smoke run completed `libero_spatial` with 10 total episodes, `pc_success: 100.0`, and persisted videos under `outputs/eval/pi05_libero/<timestamp>/videos/`.
+The token is stored outside the repo at:
 
-Run the four benchmark suites:
+```text
+~/.cache/huggingface/token
+```
+
+The Docker runner mounts this cache at runtime. It does not bake the token into the image.
+
+## 4. Run A Smoke Test
+
+Run one episode for all 10 `libero_spatial` tasks:
 
 ```bash
-./scripts/gcp_run_pi05_libero_uv.sh libero_spatial,libero_object,libero_goal,libero_10 10
+./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-This is 40 tasks times 10 episodes per task. Budget roughly 2 hours on an L4 after the model and assets are cached.
-
-The foreground run command streams progress directly. From another terminal, stream the latest remote log:
+Run only one task, useful for quick debug:
 
 ```bash
-./scripts/gcp_stream_pi05_libero.sh
+TASK_IDS='[0]' ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-Fetch the latest remote results locally:
+That is the fastest real test. It starts the container, loads Pi0.5, runs LIBERO task 0, writes a video, and exits.
+
+Results are persisted under:
+
+```text
+outputs/eval/pi05_libero/<timestamp>/
+```
+
+Each run writes `run.log`, `eval_info.json`, and rollout videos.
+
+## 5. Run The Benchmark
+
+Run the four common LIBERO suites:
 
 ```bash
-./scripts/gcp_fetch_pi05_results.sh
+./scripts/run_pi05_libero_docker.sh libero_spatial,libero_object,libero_goal,libero_10 10
 ```
 
-Summarize the latest fetched run locally:
+This is:
+
+```text
+40 tasks x 10 episodes = 400 episodes
+```
+
+On an L4-class GPU, budget roughly 2 hours once model/assets are cached. First run is slower because it builds the image and downloads model/assets.
+
+## 6. Activation Diagnostics
+
+Run one targeted task with PyTorch activation capture:
+
+```bash
+CAPTURE_ACTIVATIONS=1 CAPTURE_MAX_CHUNKS=40 TASK_IDS='[0]' \
+  ./scripts/run_pi05_libero_docker.sh libero_spatial 1
+```
+
+Optional static parameter summaries for hooked modules:
+
+```bash
+CAPTURE_ACTIVATIONS=1 CAPTURE_PARAM_STATS=1 CAPTURE_MAX_CHUNKS=40 TASK_IDS='[0]' \
+  ./scripts/run_pi05_libero_docker.sh libero_spatial 1
+```
+
+Activation files are written next to the run:
+
+```text
+outputs/eval/pi05_libero/<timestamp>/activation_capture/events.jsonl
+outputs/eval/pi05_libero/<timestamp>/activation_capture/images/
+```
+
+## 7. View Results
+
+Summarize latest run:
 
 ```bash
 ./scripts/show_pi05_results.sh
 ```
 
-Open the local result folder or first rollout video:
+Open the first rollout video:
 
 ```bash
-./scripts/show_pi05_results.sh latest open-dir
 ./scripts/show_pi05_results.sh latest open-video
 ```
 
-Create a quadrant analysis video from a fetched run:
+For activation runs, generate the diagnostic video:
 
 ```bash
+python3 -m pip install --user -U opencv-python numpy
 ./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30 --open-preview --open
 ```
 
-Run one targeted LIBERO task with PyTorch activation hooks, fetch the result, render the quadrant analysis video, and stop the VM:
+The diagnostic video shows:
 
-```bash
-STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
-```
+- rollout behavior;
+- the two camera tensors the model saw;
+- signed 50-step action chunks;
+- the current executed action inside the first 10 executed actions;
+- action-expert activation magnitude by layer and denoise step;
+- final-denoise layer x action-token activations.
 
-By default that captures `TASK_IDS='[0]'`, so activations align cleanly with the first task video. The diagnostic video contains rollout, captured input cameras, signed action chunks, expert-layer activation magnitude by denoise pass, change from denoise step 0, and final-denoise layer x action-token activations. Magnitude panels use a fixed global log scale across the video.
-
-To also capture static parameter summaries for hooked modules on the next run:
-
-```bash
-CAPTURE_PARAM_STATS=1 STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
-```
-
-Run a smoke test on GCP, fetch it, and open the local result folder when it finishes:
-
-```bash
-./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
-```
-
-This starts the VM if needed, streams the run, fetches results to local `outputs/eval/pi05_libero/<timestamp>/`, then opens the local folder.
-
-To stop the VM automatically after the results are fetched:
-
-```bash
-STOP_AFTER=1 ./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
-```
-
-Remote results persist on the VM under:
+On a headless server, omit `--open-preview --open` and copy the generated files from:
 
 ```text
-~/groot-run/outputs/eval/pi05_libero/<timestamp>/
+outputs/eval/pi05_libero/<timestamp>/analysis/
 ```
 
-LIBERO datasets/config are created automatically under:
+## Security
 
-```text
-~/.libero/config.yaml
-~/groot-run/data/libero/datasets/
-```
+- Do not commit Hugging Face tokens.
+- Do not add tokens to Docker `ARG`, Docker `ENV`, scripts, docs, or logs.
+- Keep authentication in `~/.cache/huggingface/token`.
+- `outputs/`, `data/`, `.libero/`, `.env*`, `.cache/`, and `next_steps.md` are gitignored.
 
-The VM user must be in the `render` group for headless EGL rendering. The setup script applies this; reconnect if you just ran it for the first time.
+## Common Failures
 
-## Linux NVIDIA Docker
-
-On a Linux host with NVIDIA drivers and NVIDIA Container Toolkit:
+If Docker cannot see the GPU:
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
-hf auth login
-./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-The Docker runner mounts Hugging Face cache, `outputs/`, `data/`, and `.libero/` from the host. Tokens are not copied into the image.
+Fix NVIDIA Container Toolkit before continuing.
 
-macOS Docker cannot pass Apple MPS into Linux containers. For MPS-backed Pi0.5 with Linux LIBERO, the next step is a custom remote-policy server running natively on macOS and serving action predictions to the simulator.
+If model loading fails on PaliGemma access, accept/request access here and rerun:
 
-Stop the VM when done:
-
-```bash
-gcloud compute instances stop lerobot-libero-l4 --zone us-central1-a
+```text
+https://huggingface.co/google/paligemma-3b-pt-224
 ```
 
-Delete it completely:
-
-```bash
-gcloud compute instances delete lerobot-libero-l4 --zone us-central1-a
-```
-
-## Notes
-
-- The simulator itself may run on CPU/OpenGL; `--policy.device=mps` puts the PyTorch policy on Apple GPU.
-- Keep `PYTORCH_ENABLE_MPS_FALLBACK=1` enabled because some PyTorch ops may still fall back to CPU.
-- If Hugging Face downloads fail for gated/private models, run `uv run hf auth login`.
-- `next_steps.md` is intentionally gitignored for local planning notes.
+If the first run is slow, that is expected. It builds the Docker image, downloads Pi0.5/PaliGemma weights, and downloads LIBERO assets.

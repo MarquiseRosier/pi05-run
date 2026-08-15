@@ -1,261 +1,239 @@
-# Pi0.5 LIBERO NVIDIA Run Guide
+# Linux NVIDIA Docker Guide
 
-This guide is for running `lerobot/pi05_libero_finetuned` against LIBERO simulations with results persisted automatically.
-
-## What Works
-
-- Validated: GCP L4 Spot VM, Ubuntu 24.04, CUDA 12.8 PyTorch, NVIDIA driver 580.
-- Expected to work: Linux machine with an NVIDIA GPU, current NVIDIA driver, Docker Engine, and NVIDIA Container Toolkit.
-- Useful only for smoke tests: CPU-only Linux. Pi0.5 is large, so full benchmark runs will be very slow.
-- Not supported: passing Apple MPS from macOS into a Linux Docker container. Docker Desktop runs Linux containers in a VM; MPS is a macOS Metal backend.
-
-## Runtime Shape
-
-LeRobot does not call a text completion endpoint during LIBERO eval. The evaluator creates a local policy object:
+This is the supported teammate workflow for running Pi0.5 on LIBERO.
 
 ```text
-LIBERO simulator -> images/state/task text -> Pi0.5 PyTorch policy -> robot actions -> LIBERO simulator
+Linux host + NVIDIA GPU + Docker + NVIDIA Container Toolkit
 ```
 
-A Mac MPS model server plus a Linux LIBERO client is possible, but it requires a custom remote-policy wrapper. That is not implemented in this repo yet.
+The runner uses Docker for the LeRobot/LIBERO runtime and persists results on the host.
 
-## Hugging Face Access
+## Prerequisites
 
-Pi0.5-LIBERO loads `lerobot/pi05_libero_finetuned` and also needs gated Google PaliGemma files. Use the same Hugging Face account for both:
-
-1. Accept/request access at `https://huggingface.co/google/paligemma-3b-pt-224`.
-2. Log in on the machine that will run the model:
-
-```bash
-hf auth login
-```
-
-Tokens are stored in `~/.cache/huggingface/token`, outside this repo.
-
-## Security Checklist
-
-- Do not paste Hugging Face tokens into scripts, Dockerfiles, commit messages, or README files.
-- Do not use Docker `ARG` or `ENV` for long-lived tokens.
-- Authenticate with `hf auth login` on the runtime machine, or mount an existing `~/.cache/huggingface` directory.
-- The Docker runner mounts the Hugging Face cache at runtime; it does not copy the token into the image layer.
-- `outputs/`, `data/`, `.libero/`, `.env*`, `.cache/`, and `next_steps.md` are gitignored.
-- If a token was pasted into chat or a terminal transcript, rotate it in Hugging Face after the environment is working.
-
-## GCP L4 Path
-
-Create or start the validated L4 Spot VM:
-
-```bash
-./scripts/gcp_create_l4_vm.sh
-```
-
-Install Docker, NVIDIA Container Toolkit wiring, and host NVIDIA EGL libraries:
-
-```bash
-./scripts/gcp_bootstrap_l4_vm.sh
-```
-
-Install the direct uv runtime on the VM:
-
-```bash
-./scripts/gcp_setup_uv_libero.sh
-```
-
-Log in to Hugging Face on the VM:
-
-```bash
-gcloud compute ssh lerobot-libero-l4 --zone us-central1-a
-hf auth login
-exit
-```
-
-Run the validated smoke test:
-
-```bash
-./scripts/gcp_run_pi05_libero_uv.sh libero_spatial 1
-```
-
-This runs one episode for each `libero_spatial` task, so the result has 10 episodes total.
-
-Run the four common LIBERO suites:
-
-```bash
-./scripts/gcp_run_pi05_libero_uv.sh libero_spatial,libero_object,libero_goal,libero_10 10
-```
-
-That is 40 tasks times 10 episodes per task, or 400 total episodes.
-
-## Streaming Progress
-
-The run command streams progress in your terminal automatically. From another terminal, stream the latest persisted remote log:
-
-```bash
-./scripts/gcp_stream_pi05_libero.sh
-```
-
-Stream a specific run:
-
-```bash
-./scripts/gcp_stream_pi05_libero.sh 20260815-082451
-```
-
-Fetch the latest result directory back to your local machine:
-
-```bash
-./scripts/gcp_fetch_pi05_results.sh
-```
-
-Fetch a specific run:
-
-```bash
-./scripts/gcp_fetch_pi05_results.sh 20260815-082451
-```
-
-Summarize the latest fetched run locally:
-
-```bash
-./scripts/show_pi05_results.sh
-```
-
-Open the local result folder:
-
-```bash
-./scripts/show_pi05_results.sh latest open-dir
-```
-
-Open the first local rollout video:
-
-```bash
-./scripts/show_pi05_results.sh latest open-video
-```
-
-Create a quadrant analysis video from a fetched run:
-
-```bash
-./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30 --open-preview --open
-```
-
-The analysis video shows:
-
-- rollout/rendered behavior;
-- captured input camera tensors, when activation capture was enabled;
-- signed action chunk values across the 50-step prediction horizon;
-- which of the predicted actions is currently being executed;
-- action-expert activation magnitude as layer x denoise pass;
-- activation change from denoise step 0;
-- final-denoise layer x action-token activations.
-
-The magnitude views use a fixed global `log1p(abs_mean)` scale across the video, so color changes are comparable frame to frame.
-
-Run a targeted task with activation capture, fetch it, render the analysis video, and open it locally:
-
-```bash
-STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
-```
-
-This defaults to `TASK_IDS='[0]'`. Override it with `TASK_IDS='[3]' TASK_ID_FOR_VIDEO=3` when you want a different task.
-
-To also capture static parameter summaries for each hooked module on the next run:
-
-```bash
-CAPTURE_PARAM_STATS=1 STOP_AFTER=1 ./scripts/gcp_run_capture_fetch_view_pi05.sh libero_spatial 1
-```
-
-Run on GCP, fetch the results, and open the local folder when it finishes:
-
-```bash
-./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
-```
-
-This starts the VM if needed, streams the run in your terminal, copies the finished result into local `outputs/eval/pi05_libero/<timestamp>/`, then opens that folder.
-
-Stop the VM automatically after fetching:
-
-```bash
-STOP_AFTER=1 ./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
-```
-
-## Linux NVIDIA Docker Path
-
-On a Linux host with an NVIDIA GPU:
+Check the host GPU:
 
 ```bash
 nvidia-smi
+```
+
+Check Docker GPU passthrough:
+
+```bash
 docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 ```
 
-If the Docker GPU test fails, install or fix NVIDIA Container Toolkit before continuing.
+If that command fails, install/fix NVIDIA Container Toolkit before continuing.
 
-Build and run the LIBERO container:
+Ubuntu setup commands:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3-pip docker.io ca-certificates curl gnupg2
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+newgrp docker
+```
+
+NVIDIA Container Toolkit:
+
+```bash
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+Recommended host:
+
+- Ubuntu 22.04/24.04.
+- NVIDIA driver `570+`.
+- 50 GB free disk.
+- Docker Engine.
+- NVIDIA Container Toolkit.
+
+## Hugging Face Setup
+
+The Pi0.5-LIBERO checkpoint also loads gated PaliGemma assets.
+
+1. Accept/request access:
+
+```text
+https://huggingface.co/google/paligemma-3b-pt-224
+```
+
+2. Log in on the Linux host:
+
+```bash
+python3 -m pip install --user -U "huggingface_hub[cli]"
+~/.local/bin/hf auth login
+```
+
+The token stays in:
+
+```text
+~/.cache/huggingface/token
+```
+
+The Docker runner mounts `~/.cache/huggingface` at runtime. It does not copy the token into the image.
+
+## Smoke Runs
+
+Build the container:
+
+```bash
+docker build -t lerobot-libero:latest cloud/libero
+```
+
+Container CUDA sanity check:
+
+```bash
+docker run --rm --gpus all --ipc=host --network=host \
+  -v "$HOME/.cache/huggingface:/workspace/.cache/huggingface" \
+  -v "$PWD/outputs:/workspace/outputs" \
+  -v "$PWD/data:/workspace/data" \
+  -v "$PWD/.libero:/workspace/.libero" \
+  lerobot-libero:latest python - <<'PY'
+import torch
+print("torch", torch.__version__)
+print("cuda", torch.cuda.is_available())
+print("gpu", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "none")
+PY
+```
+
+One episode for all 10 `libero_spatial` tasks:
 
 ```bash
 ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-For benchmark runs:
+Only task 0:
 
 ```bash
-./scripts/run_pi05_libero_docker.sh libero_spatial,libero_object,libero_goal,libero_10 10
+TASK_IDS='[0]' ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-The Docker runner mounts these host directories:
-
-```text
-~/.cache/huggingface/        Hugging Face token and model cache
-./outputs/                  logs, metrics, and videos
-./data/                     LIBERO data cache
-./.libero/                  generated LIBERO config
-```
-
-## CPU Notes
-
-CPU-only execution is possible in principle by using:
-
-```bash
-DEVICE=cpu DTYPE=float32 MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa ./cloud/libero/run_pi05_libero.sh libero_spatial 1
-```
-
-Use this only after installing the same Python dependencies on a Linux host. It is not a good path for a full benchmark.
-
-On macOS, Docker plus CPU may run Linux simulation code, but it cannot use MPS. A native macOS Pi0.5 server using MPS would need a custom remote-policy integration.
-
-## Timing
-
-On the validated L4 VM with model/assets already cached:
-
-- `libero_spatial 1`: about 6 minutes wall-clock, including model setup, for 10 total episodes.
-- Evaluation loop after setup: about 16 seconds per episode in the successful smoke run.
-- Four suites with `10` episodes per task: roughly 1.8 to 2.5 hours after caches are warm.
-
-First run adds dependency install time and model downloads. The Pi0.5 checkpoint cache is about 7 GB.
-
-## Result Persistence
-
-Every run writes under:
+The run streams progress in the terminal and writes:
 
 ```text
 outputs/eval/pi05_libero/<timestamp>/
 ```
 
-The successful smoke test produced:
+## Full Benchmark
+
+```bash
+./scripts/run_pi05_libero_docker.sh libero_spatial,libero_object,libero_goal,libero_10 10
+```
+
+This runs:
 
 ```text
-run.log
-videos/libero_spatial_*/eval_episode_0.mp4
+40 tasks x 10 episodes = 400 episodes
 ```
 
-The `outputs/`, `data/`, `.libero/`, `.env*`, and `next_steps.md` paths are gitignored.
+Expect roughly 2 hours on an L4-class GPU after caches are warm. First run also builds the Docker image and downloads model/assets.
 
-## Stop Costs
+## Activation Capture
 
-Stop the VM when you are done:
+Capture forward-pass activation summaries for one task:
 
 ```bash
-gcloud compute instances stop lerobot-libero-l4 --zone us-central1-a
+CAPTURE_ACTIVATIONS=1 CAPTURE_MAX_CHUNKS=40 TASK_IDS='[0]' \
+  ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-Delete it completely:
+Also capture static parameter summaries for hooked modules:
 
 ```bash
-gcloud compute instances delete lerobot-libero-l4 --zone us-central1-a
+CAPTURE_ACTIVATIONS=1 CAPTURE_PARAM_STATS=1 CAPTURE_MAX_CHUNKS=40 TASK_IDS='[0]' \
+  ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
+
+Capture output:
+
+```text
+outputs/eval/pi05_libero/<timestamp>/activation_capture/events.jsonl
+outputs/eval/pi05_libero/<timestamp>/activation_capture/images/
+```
+
+The capture stores reduced summaries and camera thumbnails, not full hidden-state tensors.
+
+## Inspect Results
+
+Summary:
+
+```bash
+./scripts/show_pi05_results.sh
+```
+
+Open the result folder:
+
+```bash
+./scripts/show_pi05_results.sh latest open-dir
+```
+
+Open first rollout video:
+
+```bash
+./scripts/show_pi05_results.sh latest open-video
+```
+
+Generate activation analysis video:
+
+```bash
+python3 -m pip install --user -U opencv-python numpy
+./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30 --open-preview --open
+```
+
+Headless server:
+
+```bash
+./scripts/make_pi05_analysis_video.py --run latest --task-id 0 --preview-frame 30
+```
+
+Then copy/open:
+
+```text
+outputs/eval/pi05_libero/<timestamp>/analysis/
+```
+
+## Runtime Shape
+
+LeRobot creates a local Pi0.5 policy inside the container:
+
+```text
+LIBERO simulator -> camera images + robot state + task text -> Pi0.5 policy -> robot actions -> LIBERO simulator
+```
+
+Pi0.5 receives two meaningful camera views on each policy call:
+
+```text
+observation.images.image   # agent view
+observation.images.image2  # wrist / eye-in-hand view
+```
+
+It predicts a `[50, 7]` action chunk. The env executes the first 10 actions, then asks the policy to replan from fresh camera/state observations.
+
+## Mounted Host Paths
+
+```text
+~/.cache/huggingface/  Hugging Face token and model cache
+./outputs/            logs, metrics, videos, activation traces
+./data/               LIBERO data cache
+./.libero/            generated LIBERO config
+```
+
+These local artifact directories are gitignored.
+
+## Security
+
+- Do not commit Hugging Face tokens.
+- Do not put tokens in Docker build args, env vars, scripts, or docs.
+- Use `hf auth login` so the token lives in `~/.cache/huggingface/token`.
+- If a token was pasted into chat or logs, rotate it in Hugging Face.

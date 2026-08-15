@@ -111,6 +111,32 @@ Fetch a specific run:
 ./scripts/gcp_fetch_pi05_results.sh 20260815-082451
 ```
 
+Summarize the latest fetched run locally:
+
+```bash
+./scripts/show_pi05_results.sh
+```
+
+Open the local result folder:
+
+```bash
+./scripts/show_pi05_results.sh latest open-dir
+```
+
+Open the first local rollout video:
+
+```bash
+./scripts/show_pi05_results.sh latest open-video
+```
+
+Run on GCP, fetch the results, and open the local folder when it finishes:
+
+```bash
+./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
+```
+
+This starts the VM if needed, streams the run in your terminal, copies the finished result into local `outputs/eval/pi05_libero/<timestamp>/`, then opens that folder.
+
 ## Linux NVIDIA Docker Path
 
 On a Linux host with an NVIDIA GPU:

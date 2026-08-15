@@ -135,6 +135,27 @@ Fetch the latest remote results locally:
 ./scripts/gcp_fetch_pi05_results.sh
 ```
 
+Summarize the latest fetched run locally:
+
+```bash
+./scripts/show_pi05_results.sh
+```
+
+Open the local result folder or first rollout video:
+
+```bash
+./scripts/show_pi05_results.sh latest open-dir
+./scripts/show_pi05_results.sh latest open-video
+```
+
+Run a smoke test on GCP, fetch it, and open the local result folder when it finishes:
+
+```bash
+./scripts/gcp_run_fetch_view_pi05.sh libero_spatial 1
+```
+
+This starts the VM if needed, streams the run, fetches results to local `outputs/eval/pi05_libero/<timestamp>/`, then opens the local folder.
+
 Remote results persist on the VM under:
 
 ```text

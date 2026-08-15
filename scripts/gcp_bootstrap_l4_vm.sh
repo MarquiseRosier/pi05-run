@@ -10,9 +10,11 @@ gcloud compute ssh "${VM_NAME}" \
   --zone="${ZONE}" \
   --command='set -euxo pipefail
 sudo apt-get update
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io libnvidia-gl-580-server
 sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl enable --now docker
 sudo systemctl restart docker
 sudo usermod -aG docker "$USER"
-sudo docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi'
+test -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ldconfig -p | grep libEGL_nvidia
+sudo docker run --rm --gpus all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi'

@@ -1,6 +1,11 @@
 # LeRobot Simulation Setup
 
-This repo is set up so everyone can run LeRobot simulations locally on Apple Silicon using MPS.
+This repo is set up for two simulation paths:
+
+- Apple Silicon local smoke tests with MPS on PushT.
+- Pi0.5 LIBERO evaluation on Linux/NVIDIA, validated on a GCP L4 VM.
+
+For the full NVIDIA/LIBERO workflow, use [docs/libero_nvidia_guide.md](docs/libero_nvidia_guide.md).
 
 ## One-time setup
 
@@ -80,7 +85,7 @@ Install Docker and verify GPU containers:
 ./scripts/gcp_bootstrap_l4_vm.sh
 ```
 
-Install the LeRobot LIBERO runtime directly on the VM:
+Install the LeRobot LIBERO runtime directly on the VM. This also installs the NVIDIA EGL userspace package needed for headless LIBERO rendering on the validated GCP image:
 
 ```bash
 ./scripts/gcp_setup_uv_libero.sh
@@ -108,10 +113,26 @@ Run one smoke-test episode on LIBERO Spatial:
 ./scripts/gcp_run_pi05_libero_uv.sh libero_spatial 1
 ```
 
+The validated smoke run completed `libero_spatial` with 10 total episodes, `pc_success: 100.0`, and persisted videos under `outputs/eval/pi05_libero/<timestamp>/videos/`.
+
 Run the four benchmark suites:
 
 ```bash
 ./scripts/gcp_run_pi05_libero_uv.sh libero_spatial,libero_object,libero_goal,libero_10 10
+```
+
+This is 40 tasks times 10 episodes per task. Budget roughly 2 hours on an L4 after the model and assets are cached.
+
+The foreground run command streams progress directly. From another terminal, stream the latest remote log:
+
+```bash
+./scripts/gcp_stream_pi05_libero.sh
+```
+
+Fetch the latest remote results locally:
+
+```bash
+./scripts/gcp_fetch_pi05_results.sh
 ```
 
 Remote results persist on the VM under:
@@ -126,6 +147,22 @@ LIBERO datasets/config are created automatically under:
 ~/.libero/config.yaml
 ~/groot-run/data/libero/datasets/
 ```
+
+The VM user must be in the `render` group for headless EGL rendering. The setup script applies this; reconnect if you just ran it for the first time.
+
+## Linux NVIDIA Docker
+
+On a Linux host with NVIDIA drivers and NVIDIA Container Toolkit:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+hf auth login
+./scripts/run_pi05_libero_docker.sh libero_spatial 1
+```
+
+The Docker runner mounts Hugging Face cache, `outputs/`, `data/`, and `.libero/` from the host. Tokens are not copied into the image.
+
+macOS Docker cannot pass Apple MPS into Linux containers. For MPS-backed Pi0.5 with Linux LIBERO, the next step is a custom remote-policy server running natively on macOS and serving action predictions to the simulator.
 
 Stop the VM when done:
 
@@ -144,3 +181,4 @@ gcloud compute instances delete lerobot-libero-l4 --zone us-central1-a
 - The simulator itself may run on CPU/OpenGL; `--policy.device=mps` puts the PyTorch policy on Apple GPU.
 - Keep `PYTORCH_ENABLE_MPS_FALLBACK=1` enabled because some PyTorch ops may still fall back to CPU.
 - If Hugging Face downloads fail for gated/private models, run `uv run hf auth login`.
+- `next_steps.md` is intentionally gitignored for local planning notes.

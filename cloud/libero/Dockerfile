@@ -4,7 +4,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/workspace/.cache/huggingface \
     HF_HUB_ENABLE_HF_TRANSFER=1 \
-    MUJOCO_GL=egl
+    HF_XET_HIGH_PERFORMANCE=1 \
+    MUJOCO_GL=egl \
+    PYOPENGL_PLATFORM=egl \
+    MUJOCO_EGL_DEVICE_ID=0 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \

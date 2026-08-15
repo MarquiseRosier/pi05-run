@@ -12,7 +12,7 @@ REMOTE_ROOT="~/groot-run"
 gcloud compute ssh "${VM_NAME}" \
   --project="${PROJECT}" \
   --zone="${ZONE}" \
-  --command="mkdir -p ${REMOTE_ROOT}/cloud ${REMOTE_ROOT}/outputs ~/.cache/huggingface"
+  --command="mkdir -p ${REMOTE_ROOT}/cloud ${REMOTE_ROOT}/outputs ${REMOTE_ROOT}/data ${REMOTE_ROOT}/.libero ~/.cache/huggingface"
 
 gcloud compute scp \
   --project="${PROJECT}" \
@@ -32,6 +32,15 @@ gcloud compute ssh "${VM_NAME}" \
     -e HF_HUB_ENABLE_HF_TRANSFER=1 \
     -e HF_XET_HIGH_PERFORMANCE=1 \
     -e MUJOCO_GL=egl \
+    -e PYOPENGL_PLATFORM=egl \
+    -e MUJOCO_EGL_DEVICE_ID=0 \
+    -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video \
+    -e DEVICE=cuda \
+    -e DTYPE=bfloat16 \
+    -e LIBERO_CONFIG_PATH=/workspace/.libero \
+    -e LIBERO_DATASET_DIR=/workspace/data/libero/datasets \
     -v /home/\$USER/.cache/huggingface:/workspace/.cache/huggingface \
     -v /home/\$USER/groot-run/outputs:/workspace/outputs \
+    -v /home/\$USER/groot-run/data:/workspace/data \
+    -v /home/\$USER/groot-run/.libero:/workspace/.libero \
     lerobot-libero:latest /workspace/run_pi05_libero.sh '${TASKS}' '${EPISODES}'"

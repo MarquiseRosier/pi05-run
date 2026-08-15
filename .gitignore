@@ -11,3 +11,14 @@ wheels/
 
 # Local simulation artifacts
 outputs/
+data/
+.libero/
+
+# Local-only notes and secrets
+next_steps.md
+.env
+.env.*
+*.token
+hf_token
+huggingface_token
+.cache/

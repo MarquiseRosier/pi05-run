@@ -28,5 +28,7 @@ gcloud compute ssh "${VM_NAME}" \
     export HF_HUB_ENABLE_HF_TRANSFER=1 && \
     export HF_XET_HIGH_PERFORMANCE=1 && \
     export MUJOCO_GL=egl && \
+    export PYOPENGL_PLATFORM=egl && \
+    export MUJOCO_EGL_DEVICE_ID=0 && \
     . .venv/bin/activate && \
     ./cloud/libero/run_pi05_libero.sh '${TASKS}' '${EPISODES}'"

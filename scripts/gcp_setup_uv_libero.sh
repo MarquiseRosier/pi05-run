@@ -22,6 +22,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libglib2.0-0 \
   libglvnd0 \
   libglx0 \
+  libnvidia-gl-580-server \
   libopengl0 \
   libosmesa6-dev \
   libsm6 \
@@ -31,6 +32,9 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
+sudo usermod -aG render,video "$USER"
+test -f /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+ldconfig -p | grep libEGL_nvidia
 export PATH="$HOME/.local/bin:$PATH"
 mkdir -p "$HOME/groot-run/outputs" "$HOME/.cache/huggingface"
 uv venv "$HOME/groot-run/.venv" --python 3.12

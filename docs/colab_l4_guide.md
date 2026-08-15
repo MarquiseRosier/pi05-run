@@ -220,7 +220,7 @@ FORCE_AUTH_REFRESH = False
 HF_OFFLINE = True
 ```
 
-The fixed cache cell prints section headers, elapsed time, `pv` transfer progress for tar archives, and `du -sh` summaries so you can tell what it is doing.
+The fixed cache cell prints section headers, start/finish timestamps, elapsed time, `pv` transfer progress for tar archives, `rsync --info=progress2` for Drive folder copies, and `du -sh` summaries. Hugging Face refreshes also print one line per repo with estimated remote size plus a 15-second heartbeat showing cache growth, recent rate, average rate, elapsed time, and ETA.
 
 ## Security Checklist
 

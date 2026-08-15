@@ -186,6 +186,14 @@ CalledProcessError: ... pip install -q -U huggingface_hub[hf_transfer]
 
 Use the latest notebook. That extra install was removed because the setup cell already installs `huggingface_hub` through LeRobot and installs `hf-transfer` directly.
 
+If you see this older error:
+
+```text
+CalledProcessError: ... python3 -m pip install -q -U uv
+```
+
+Use the latest notebook. Colab can block system `pip install` on Python 3.12, so the setup cell now installs the standalone `uv` binary under `/content/uv-bin` instead of modifying system Python packages.
+
 Use these controls for the first successful cache fill:
 
 ```text

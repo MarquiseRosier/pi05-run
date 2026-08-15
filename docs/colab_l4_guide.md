@@ -23,9 +23,11 @@ Keep access restricted in Google Drive/Colab:
 - Current requested account: `programmer908@gmail.com`.
 - Share the Drive cache/output folder only with the same approved accounts.
 - Do not put Hugging Face tokens in the notebook, repo, scripts, Drive docs, or logs.
-- If a cache refresh is needed, each user stores `HF_TOKEN` only in their private Colab Secrets.
+- If a cache refresh is needed, each user can store `HF_TOKEN` in private Colab Secrets, or the team can use the optional restricted Drive token file described below.
 
 This repo cannot enforce Google Drive or Colab sharing permissions. Apply those ACLs in the Google Drive/Colab UI.
+
+Colab Secrets are per Google account and are not transferred when the notebook is shared. Colab Pro also does not share your secrets or runtime quota with collaborators. The shared state in this workflow is the Google Drive folder mounted by each collaborator's own Google account.
 
 ## Shared Drive Folder Layout
 
@@ -44,9 +46,24 @@ libero_cache/     LIBERO runtime cache
 libero_datasets/  LIBERO downloaded datasets/init-state artifacts
 outputs/          persisted logs, eval summaries, videos, activation traces, probes
 notebook_meta/    reserved metadata folder
+secrets/          optional shared token file, only if the team intentionally uses one
 ```
 
 The notebook prefers `archives/*.tar` because Google Drive is very slow when copying a Hugging Face cache as thousands of individual files. It extracts archives to Colab local disk at startup, runs from local disk for speed, then syncs results and refreshed cache archives back to Drive after each experiment.
+
+For personal Google Drive folders, collaborators may need to use Google Drive's "Add shortcut to Drive" action so the shared folder appears under their `/content/drive/MyDrive/...` mount path. A Google Workspace Shared Drive is cleaner: put the folder there, share it with the team, and set `DRIVE_ROOT` to that mounted Shared Drive path.
+
+## Shared Token Option
+
+The preferred normal path is token-free: populate `archives/hf_home.tar` once, then run with `HF_OFFLINE=True`.
+
+If you deliberately want any approved collaborator to refresh caches without creating their own Colab Secret, create this file inside the restricted shared Drive folder:
+
+```text
+DRIVE_ROOT/secrets/HF_TOKEN.txt
+```
+
+Put a Hugging Face token in that file. The notebook checks private Colab Secret `HF_TOKEN` first, then falls back to `DRIVE_ROOT/secrets/HF_TOKEN.txt`. Anyone with access to the Drive folder can read that file, so use a low-scope token and rotate/revoke it if membership changes.
 
 ## One-Time Cache Fill
 
@@ -61,7 +78,7 @@ hf_home/hub/datasets--lerobot--libero-assets
 Steps:
 
 1. Accept/request Hugging Face access for `google/paligemma-3b-pt-224`.
-2. In Colab, open Secrets and add `HF_TOKEN` for your own account.
+2. In Colab, either open Secrets and add `HF_TOKEN` for your own account, or place a shared token at `DRIVE_ROOT/secrets/HF_TOKEN.txt`.
 3. Set notebook controls:
 
 ```text
@@ -244,6 +261,7 @@ The fixed cache cell prints section headers, start/finish timestamps, elapsed ti
 
 - No Hugging Face token is committed to this repo.
 - The notebook default is `HF_OFFLINE=True`.
-- The shared Drive folder stores model caches and outputs, not credentials.
-- Authenticated refresh uses only each user's private Colab Secret named `HF_TOKEN`.
+- The default shared Drive folder stores model caches and outputs, not credentials.
+- Authenticated refresh uses each user's private Colab Secret named `HF_TOKEN`, unless the team intentionally creates `DRIVE_ROOT/secrets/HF_TOKEN.txt`.
+- If `DRIVE_ROOT/secrets/HF_TOKEN.txt` exists, treat everyone with Drive folder access as able to read and use that token.
 - Output directories may contain experiment data and videos; keep the Drive folder restricted.

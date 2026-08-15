@@ -45,10 +45,20 @@ from make_pi05_analysis_video import (  # noqa: E402
 
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-ACCENT = (56, 189, 248)
-YELLOW = (245, 196, 78)
-GREEN = (74, 222, 128)
-RED = (248, 113, 113)
+BG = (23, 13, 9)
+PANEL_BG = (42, 23, 15)
+GRID = (102, 82, 70)
+TEXT = (249, 245, 241)
+MUTED = (214, 197, 185)
+ACCENT = (248, 189, 56)
+YELLOW = (78, 196, 245)
+GREEN = (128, 222, 74)
+RED = (113, 113, 248)
+ORANGE = (60, 146, 251)
+SUBGRID = (41, 28, 21)
+ROW_BG = (32, 20, 12)
+ROW_BG_ALT = (39, 24, 16)
+ACTION_DIM_LABELS = ["dx", "dy", "dz", "dRx", "dRy", "dRz", "grip"]
 
 
 def put_text(
@@ -232,11 +242,11 @@ def draw_axis_ticks(
     x, y, w, h = plot
     for frac, label in x_labels or []:
         px = x + int(frac * w)
-        cv2.line(img, (px, y), (px, y + h), (21, 28, 41), 1)
+        cv2.line(img, (px, y), (px, y + h), SUBGRID, 1)
         put_text(img, label, (px - 8, y + h + 18), scale=0.36, color=MUTED)
     for frac, label in y_labels or []:
         py = y + int(frac * h)
-        cv2.line(img, (x, py), (x + w, py), (21, 28, 41), 1)
+        cv2.line(img, (x, py), (x + w, py), SUBGRID, 1)
         put_text(img, label, (x - 35, py + 4), scale=0.36, color=MUTED)
 
 
@@ -268,6 +278,309 @@ def draw_heatmap_panel(
     draw_frame(panel, x, y, w, h)
     draw_axis_ticks(panel, plot, x_labels=x_labels, y_labels=y_labels)
     return panel
+
+
+def action_window_for_chunk(actions: np.ndarray | None, n_action_steps: int) -> np.ndarray:
+    if actions is None:
+        return np.empty((0, len(ACTION_DIM_LABELS)), dtype=np.float32)
+    arr = np.asarray(actions, dtype=np.float32)
+    if arr.ndim != 2 or arr.size == 0:
+        return np.empty((0, len(ACTION_DIM_LABELS)), dtype=np.float32)
+    return arr[:n_action_steps, : len(ACTION_DIM_LABELS)]
+
+
+def action_feature_series(
+    capture: dict[str, Any],
+    chunks: list[int],
+    n_action_steps: int,
+) -> tuple[list[str], np.ndarray]:
+    names = [f"mean {label}" for label in ACTION_DIM_LABELS] + ["step L2"]
+    values = np.full((len(names), len(chunks)), np.nan, dtype=np.float32)
+    for col, chunk in enumerate(chunks):
+        window = action_window_for_chunk(capture["actions"].get(chunk), n_action_steps)
+        if window.size == 0:
+            continue
+        means = np.nanmean(window, axis=0)
+        values[: len(ACTION_DIM_LABELS), col] = means
+        values[-1, col] = float(np.nanmean(np.linalg.norm(window, axis=1)))
+    return names, values
+
+
+def draw_polyline(
+    img: np.ndarray,
+    values: np.ndarray,
+    plot: tuple[int, int, int, int],
+    *,
+    color: tuple[int, int, int],
+    cap: float | None = None,
+    zero_centered: bool = False,
+) -> None:
+    arr = np.asarray(values, dtype=np.float32)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return
+    x, y, w, h = plot
+    if cap is None:
+        ymin = float(arr.min())
+        ymax = float(arr.max())
+        if abs(ymax - ymin) < 1e-6:
+            ymin -= 0.5
+            ymax += 0.5
+    elif zero_centered:
+        ymin = -cap
+        ymax = cap
+    else:
+        ymin = 0.0
+        ymax = cap
+    points: list[tuple[int, int]] = []
+    full = np.asarray(values, dtype=np.float32)
+    for idx, value in enumerate(full):
+        if not np.isfinite(value):
+            continue
+        px = x + int(idx / max(1, len(full) - 1) * w)
+        py = y + h - int((float(value) - ymin) / max(1e-6, ymax - ymin) * h)
+        points.append((px, py))
+    for left, right in zip(points, points[1:], strict=False):
+        cv2.line(img, left, right, color, 2)
+
+
+def draw_action_tile(
+    canvas: np.ndarray,
+    actions: np.ndarray | None,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    n_action_steps: int,
+    cap: float,
+) -> None:
+    put_text(canvas, "executed actions: dim x step", (x, y + 14), scale=0.36, color=MUTED)
+    window = action_window_for_chunk(actions, n_action_steps)
+    label_w = 44
+    plot_x = x + label_w
+    plot_y = y + 26
+    plot_w = w - label_w - 4
+    plot_h = 104
+    if window.size:
+        heat = signed_color(window.T, plot_w, plot_h, cap)
+        canvas[plot_y : plot_y + plot_h, plot_x : plot_x + plot_w] = heat
+        for idx, label in enumerate(ACTION_DIM_LABELS[: window.shape[1]]):
+            row_y = plot_y + int((idx + 0.58) / window.shape[1] * plot_h)
+            put_text(canvas, label, (x, row_y), scale=0.34, color=TEXT)
+        for step in range(window.shape[0]):
+            sx = plot_x + int((step + 0.5) / window.shape[0] * plot_w)
+            cv2.line(canvas, (sx, plot_y), (sx, plot_y + plot_h), SUBGRID, 1)
+        put_text(canvas, "0", (plot_x, plot_y + plot_h + 17), scale=0.32, color=MUTED)
+        put_text(canvas, str(window.shape[0] - 1), (plot_x + plot_w - 12, plot_y + plot_h + 17), scale=0.32, color=MUTED)
+        put_text(canvas, "blue=-  red=+", (plot_x + 72, plot_y + plot_h + 17), scale=0.32, color=MUTED)
+    else:
+        put_text(canvas, "no action capture", (plot_x + 16, plot_y + 48), scale=0.42, color=MUTED)
+    draw_frame(canvas, plot_x, plot_y, plot_w, plot_h)
+
+
+def draw_action_summary_tile(
+    canvas: np.ndarray,
+    actions: np.ndarray | None,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    n_action_steps: int,
+    cap: float,
+) -> None:
+    put_text(canvas, "action summary", (x, y + 14), scale=0.38, color=MUTED)
+    window = action_window_for_chunk(actions, n_action_steps)
+    if window.size == 0:
+        put_text(canvas, "no action capture", (x + 10, y + 54), scale=0.42, color=MUTED)
+        return
+
+    means = np.nanmean(window, axis=0)
+    norms = np.linalg.norm(window, axis=1)
+    order = np.argsort(-np.abs(means))[:3]
+    text_y = y + 38
+    for idx in order:
+        label = ACTION_DIM_LABELS[idx]
+        value = float(means[idx])
+        signed = f"{value:+.3f}"
+        put_text(canvas, f"{label:>4} {signed}", (x, text_y), scale=0.38, color=TEXT)
+        bar_x = x + 92
+        bar_w = max(1, int(min(1.0, abs(value) / max(cap, 1e-6)) * (w - 108)))
+        color = RED if value >= 0 else ACCENT
+        cv2.rectangle(canvas, (bar_x, text_y - 13), (bar_x + bar_w, text_y - 4), color, -1)
+        text_y += 24
+
+    plot = (x + 8, y + h - 52, w - 20, 34)
+    draw_frame(canvas, *plot)
+    draw_polyline(canvas, norms, plot, color=YELLOW, cap=max(cap, float(np.nanmax(norms))), zero_centered=False)
+    put_text(canvas, "step action L2", (x + 8, y + h - 60), scale=0.32, color=MUTED)
+
+
+def draw_layer_delta_tile(
+    canvas: np.ndarray,
+    summary: dict[str, Any],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    cap: float,
+) -> None:
+    put_text(canvas, "expert Δ by layer", (x, y + 14), scale=0.38, color=MUTED)
+    delta = np.asarray(summary.get("delta", []), dtype=np.float32)
+    layers = summary.get("layers", [])
+    plot_x = x + 42
+    plot_y = y + 26
+    plot_w = w - 48
+    plot_h = h - 54
+    if delta.size:
+        heat = signed_color(delta[:, None], plot_w, plot_h, cap)
+        canvas[plot_y : plot_y + plot_h, plot_x : plot_x + plot_w] = heat
+        for idx, layer in enumerate(layers):
+            if int(layer) % 3 == 0:
+                row_y = plot_y + int((idx + 0.58) / len(layers) * plot_h)
+                put_text(canvas, f"L{layer}", (x, row_y), scale=0.32, color=TEXT)
+        peak_idx = int(np.nanargmax(np.abs(delta)))
+        put_text(canvas, f"max |Δ| L{layers[peak_idx]} {delta[peak_idx]:+.2f}", (plot_x, y + h - 10), scale=0.32, color=MUTED)
+    else:
+        put_text(canvas, "no expert capture", (plot_x + 10, plot_y + 50), scale=0.42, color=MUTED)
+    draw_frame(canvas, plot_x, plot_y, plot_w, plot_h)
+
+
+def draw_denoise_delta_tile(
+    canvas: np.ndarray,
+    summary: dict[str, Any],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    *,
+    cap: float,
+) -> None:
+    put_text(canvas, "expert Δ over denoise", (x, y + 14), scale=0.38, color=MUTED)
+    abs_mat = np.asarray(summary.get("abs", []), dtype=np.float32)
+    layers = summary.get("layers", [])
+    plot_x = x + 48
+    plot_y = y + 26
+    plot_w = w - 56
+    plot_h = h - 54
+    if abs_mat.size:
+        delta_mat = abs_mat - abs_mat[:, [0]]
+        heat = signed_color(delta_mat, plot_w, plot_h, cap)
+        canvas[plot_y : plot_y + plot_h, plot_x : plot_x + plot_w] = heat
+        for idx, layer in enumerate(layers):
+            if int(layer) % 3 == 0:
+                row_y = plot_y + int((idx + 0.58) / len(layers) * plot_h)
+                put_text(canvas, f"L{layer}", (x, row_y), scale=0.32, color=TEXT)
+        steps = abs_mat.shape[1]
+        for frac, label in [(0.0, "0"), (0.5, str(max(0, steps // 2))), (0.98, str(max(0, steps - 1)))]:
+            px = plot_x + int(frac * plot_w)
+            cv2.line(canvas, (px, plot_y), (px, plot_y + plot_h), SUBGRID, 1)
+            put_text(canvas, label, (px - 6, y + h - 10), scale=0.32, color=MUTED)
+    else:
+        put_text(canvas, "no denoise matrix", (plot_x + 10, plot_y + 50), scale=0.42, color=MUTED)
+    draw_frame(canvas, plot_x, plot_y, plot_w, plot_h)
+
+
+def draw_attribution_notes(
+    canvas: np.ndarray,
+    summary: dict[str, Any],
+    actions: np.ndarray | None,
+    x: int,
+    y: int,
+    w: int,
+    *,
+    n_action_steps: int,
+) -> None:
+    put_text(canvas, "alignment notes", (x, y + 14), scale=0.38, color=MUTED)
+    window = action_window_for_chunk(actions, n_action_steps)
+    lines: list[str] = []
+    if window.size:
+        means = np.nanmean(window, axis=0)
+        order = np.argsort(-np.abs(means))[:2]
+        lines.append("actions:")
+        lines.extend(f"{ACTION_DIM_LABELS[idx]} {means[idx]:+.3f}" for idx in order)
+    delta = np.asarray(summary.get("delta", []), dtype=np.float32)
+    layers = summary.get("layers", [])
+    if delta.size:
+        order = np.argsort(-np.abs(delta))[:2]
+        lines.append("layers:")
+        lines.extend(f"L{layers[idx]} Δ{delta[idx]:+.2f}" for idx in order)
+    if not lines:
+        lines.append("no capture")
+    text_y = y + 40
+    for line in lines[:6]:
+        put_text(canvas, fit_text(line, w - 4, scale=0.34), (x, text_y), scale=0.34, color=TEXT)
+        text_y += 20
+
+
+def make_action_layer_correlation(
+    capture: dict[str, Any],
+    chunks: list[int],
+    out_dir: Path,
+    *,
+    task_id: int,
+    episode: int,
+    n_action_steps: int,
+) -> dict[str, str]:
+    action_names, actions = action_feature_series(capture, chunks, n_action_steps)
+    layers, layer_delta = family_layer_matrix(capture, "expert", chunks, expert_metric="delta")
+    if actions.size == 0 or layer_delta.size == 0 or len(chunks) < 3:
+        return {}
+
+    corr = np.full((len(action_names), len(layers)), np.nan, dtype=np.float32)
+    for row in range(len(action_names)):
+        x_values = actions[row]
+        for col in range(len(layers)):
+            y_values = layer_delta[col]
+            valid = np.isfinite(x_values) & np.isfinite(y_values)
+            if int(valid.sum()) < 3:
+                continue
+            x_centered = x_values[valid] - float(np.mean(x_values[valid]))
+            y_centered = y_values[valid] - float(np.mean(y_values[valid]))
+            denom = float(np.linalg.norm(x_centered) * np.linalg.norm(y_centered))
+            if denom > 1e-8:
+                corr[row, col] = float(np.dot(x_centered, y_centered) / denom)
+
+    width = 1320
+    height = 600
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    canvas[:] = BG
+    put_text(canvas, f"Action-to-Expert-Layer Alignment | task_id={task_id} episode={episode}", (18, 34), scale=0.72, color=TEXT, thickness=2)
+    put_text(canvas, "Pearson r across policy chunks: action feature vs expert final-initial activation delta. Correlation, not causation.", (18, 62), scale=0.44, color=MUTED)
+    plot = (150, 96, 920, 390)
+    x, y, w, h = plot
+    heat = signed_color(corr, w, h, 1.0)
+    canvas[y : y + h, x : x + w] = heat
+    draw_frame(canvas, x, y, w, h)
+    for row, name in enumerate(action_names):
+        row_y = y + int((row + 0.58) / len(action_names) * h)
+        put_text(canvas, name, (22, row_y), scale=0.38, color=TEXT)
+    for col, layer in enumerate(layers):
+        if col % 2 == 0 or len(layers) <= 12:
+            col_x = x + int((col + 0.42) / len(layers) * w)
+            put_text(canvas, f"L{layer}", (col_x - 12, y + h + 24), scale=0.36, color=MUTED)
+    put_text(canvas, "blue inverse", (x, y + h + 58), scale=0.4, color=ACCENT)
+    put_text(canvas, "red same direction", (x + 160, y + h + 58), scale=0.4, color=RED)
+
+    flat_order = np.argsort(-np.abs(np.nan_to_num(corr, nan=0.0)), axis=None)
+    notes_x = 1100
+    put_text(canvas, "strongest pairs", (notes_x, 116), scale=0.46, color=YELLOW, thickness=2)
+    written = 0
+    for flat_idx in flat_order:
+        row, col = np.unravel_index(int(flat_idx), corr.shape)
+        value = corr[row, col]
+        if not np.isfinite(value) or abs(float(value)) < 0.05:
+            continue
+        put_text(canvas, f"{action_names[row]} -> L{layers[col]} r={value:+.2f}", (notes_x, 150 + written * 28), scale=0.38, color=TEXT)
+        written += 1
+        if written >= 10:
+            break
+
+    path = out_dir / f"task_{task_id}_episode_{episode}_action_layer_correlation.png"
+    cv2.imwrite(str(path), canvas)
+    return {"action_layer_correlation": str(path)}
 
 
 def make_family_heatmaps(
@@ -456,9 +769,9 @@ def make_chunk_matrix(
     max_rows: int,
 ) -> str:
     chunks = chunks[:max_rows]
-    row_h = 248
-    header_h = 112
-    width = 1960
+    row_h = 270
+    header_h = 124
+    width = 2280
     height = header_h + row_h * max(1, len(chunks))
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
     canvas[:] = BG
@@ -473,32 +786,41 @@ def make_chunk_matrix(
     put_text(canvas, f"Pi0.5 LIBERO Chunk Matrix | task_id={task_id} episode={episode}", (18, 32), scale=0.76, color=TEXT, thickness=2)
     put_text(
         canvas,
-        f"success={metrics.get('pc_success', 'n/a')}% | rows={len(chunks)} | each row = one policy call, first {n_action_steps} actions executed",
+        f"success={metrics.get('pc_success', 'n/a')}% | rows={len(chunks)} | one row = one policy call, first {n_action_steps} actions executed before replanning",
         (18, 62),
         scale=0.48,
         color=MUTED,
     )
+    put_text(
+        canvas,
+        "activation panels use signed deltas: red=increase, blue=decrease relative to first denoise pass",
+        (18, 88),
+        scale=0.42,
+        color=MUTED,
+    )
 
     columns = [
-        (18, 150, "chunk/task"),
-        (180, 240, "sim third-person"),
-        (440, 220, "input image"),
-        (680, 220, "input image2"),
-        (920, 250, "executed action chunk"),
-        (1190, 220, "expert layer mean"),
-        (1430, 500, "expert layer x denoise"),
+        (18, 140, "chunk/task"),
+        (170, 190, "sim third-person"),
+        (380, 190, "input image"),
+        (590, 190, "input image2"),
+        (815, 360, "executed 10-step action"),
+        (1198, 230, "action summary"),
+        (1460, 250, "expert layer delta"),
+        (1740, 340, "expert denoise delta"),
+        (2100, 160, "top action/layer links"),
     ]
     for x, _w, label in columns:
         put_text(canvas, label, (x, header_h - 16), scale=0.44, color=YELLOW)
 
     scales = build_scales(capture)
-    expert_cap = scales.get("expert_log", 1.0)
+    expert_delta_cap = scales.get("expert_delta", 1.0)
     action_cap = scales.get("action", 1.0)
     frame_indices = [chunk * n_action_steps for chunk in chunks]
-    rollout_frames = sample_video_frames(video_path, frame_indices, 240, 180)
+    rollout_frames = sample_video_frames(video_path, frame_indices, 190, 176)
     for row_idx, chunk in enumerate(chunks):
         y0 = header_h + row_idx * row_h
-        color = (10, 15, 25) if row_idx % 2 == 0 else (14, 22, 35)
+        color = ROW_BG if row_idx % 2 == 0 else ROW_BG_ALT
         cv2.rectangle(canvas, (0, y0), (width, y0 + row_h), color, -1)
         frame_idx = chunk * n_action_steps
         put_text(canvas, f"chunk {chunk}", (18, y0 + 32), scale=0.55, color=TEXT, thickness=2)
@@ -507,56 +829,39 @@ def make_chunk_matrix(
         put_text(canvas, fit_text(task_text, 145, scale=0.36), (18, y0 + 92), scale=0.36, color=MUTED)
 
         rollout = rollout_frames[frame_idx]
-        canvas[y0 + 34 : y0 + 214, 180 : 420] = rollout
-        draw_frame(canvas, 180, y0 + 34, 240, 180)
+        canvas[y0 + 38 : y0 + 214, 170 : 360] = rollout
+        draw_frame(canvas, 170, y0 + 38, 190, 176)
 
         images = capture["images"].get(chunk, {})
         image1 = images.get("observation.images.image") or images.get("image")
         image2 = images.get("observation.images.image2") or images.get("image2")
-        for x, path in [(440, image1), (680, image2)]:
-            tile = load_capture_image(path, 220, 180) if path else np.zeros((180, 220, 3), dtype=np.uint8)
-            canvas[y0 + 34 : y0 + 214, x : x + 220] = tile
-            draw_frame(canvas, x, y0 + 34, 220, 180)
+        for x, path in [(380, image1), (590, image2)]:
+            tile = load_capture_image(path, 190, 176) if path else np.zeros((176, 190, 3), dtype=np.uint8)
+            canvas[y0 + 38 : y0 + 214, x : x + 190] = tile
+            draw_frame(canvas, x, y0 + 38, 190, 176)
 
         actions = capture["actions"].get(chunk)
-        if actions is not None and actions.size:
-            action_window = actions[:n_action_steps].T
-            heat = signed_color(action_window, 250, 156, action_cap)
-            canvas[y0 + 50 : y0 + 206, 920 : 1170] = heat
-            put_text(canvas, "dims x executed steps", (920, y0 + 36), scale=0.38, color=MUTED)
-        else:
-            put_text(canvas, "no action capture", (930, y0 + 88), scale=0.46, color=MUTED)
-        draw_frame(canvas, 920, y0 + 50, 250, 156)
+        draw_action_tile(canvas, actions, 815, y0 + 36, 360, 178, n_action_steps=n_action_steps, cap=action_cap)
+        draw_action_summary_tile(canvas, actions, 1198, y0 + 36, 230, 178, n_action_steps=n_action_steps, cap=action_cap)
 
         summary = expert_summary_for_chunk(capture, chunk)
-        mean_values = np.asarray(summary.get("mean", []), dtype=np.float32)
-        abs_mat = np.asarray(summary.get("abs", []), dtype=np.float32)
-        if mean_values.size:
-            mean_col = mean_values[:, None]
-            heat = sequential_color(mean_col, 220, 180, expert_cap, log_scale=True)
-            canvas[y0 + 34 : y0 + 214, 1190 : 1410] = heat
-            peak_idx = int(np.nanargmax(mean_values))
-            layer = summary["layers"][peak_idx]
-            put_text(canvas, f"peak L{layer} mean={mean_values[peak_idx]:.2f}", (1190, y0 + 230), scale=0.36, color=MUTED)
-        else:
-            put_text(canvas, "no expert capture", (1200, y0 + 88), scale=0.46, color=MUTED)
-        draw_frame(canvas, 1190, y0 + 34, 220, 180)
-
-        if abs_mat.size:
-            heat = sequential_color(abs_mat, 500, 180, expert_cap, log_scale=True)
-            canvas[y0 + 34 : y0 + 214, 1430 : 1930] = heat
-            put_text(canvas, "y=layer, x=denoise step, hotter=higher abs activation", (1430, y0 + 230), scale=0.36, color=MUTED)
-        else:
-            put_text(canvas, "no denoise matrix", (1440, y0 + 88), scale=0.46, color=MUTED)
-        draw_frame(canvas, 1430, y0 + 34, 500, 180)
+        draw_layer_delta_tile(canvas, summary, 1460, y0 + 36, 250, 178, cap=expert_delta_cap)
+        draw_denoise_delta_tile(canvas, summary, 1740, y0 + 36, 340, 178, cap=expert_delta_cap)
+        draw_attribution_notes(canvas, summary, actions, 2100, y0 + 36, 160, n_action_steps=n_action_steps)
 
     path = out_dir / f"task_{task_id}_episode_{episode}_chunk_matrix.png"
     cv2.imwrite(str(path), canvas)
     return str(path)
 
 
-def activation_series_data(capture: dict[str, Any], chunks: list[int]) -> dict[str, Any]:
-    data: dict[str, Any] = {"chunks": chunks, "families": {}}
+def activation_series_data(capture: dict[str, Any], chunks: list[int], n_action_steps: int = 10) -> dict[str, Any]:
+    data: dict[str, Any] = {"chunks": chunks, "families": {}, "actions": {}}
+    action_names, action_values = action_feature_series(capture, chunks, n_action_steps)
+    for row, name in enumerate(action_names):
+        data["actions"][name] = [
+            None if not np.isfinite(value) else round(float(value), 6)
+            for value in action_values[row].tolist()
+        ]
     for family in ["vision", "prefix"]:
         layers, mat = family_layer_matrix(capture, family, chunks)
         if mat.size:
@@ -594,6 +899,7 @@ def write_interactive_html(
     artifacts: dict[str, Any],
     chunks: list[int],
     capture: dict[str, Any],
+    n_action_steps: int,
 ) -> str:
     task = ""
     for chunk in chunks:
@@ -601,9 +907,10 @@ def write_interactive_html(
         if task:
             break
 
-    data = activation_series_data(capture, chunks)
+    data = activation_series_data(capture, chunks, n_action_steps)
     images = {
         "Chunk Matrix": _img_data_uri(artifacts.get("chunk_matrix", "")),
+        "Action-Layer Correlation": _img_data_uri(artifacts.get("action_layer_correlation", "")),
         "Family Heatmaps": _img_data_uri(artifacts.get("family_heatmaps", "")),
         "Expert Layer Grid": _img_data_uri(artifacts.get("expert_layers_grid", "")),
     }
@@ -647,6 +954,7 @@ def write_interactive_html(
       <label>Family <select id="family"></select></label>
       <label>Metric <select id="metric"></select></label>
       <label>Layer <select id="layer"></select></label>
+      <label>Action overlay <select id="action"></select></label>
     </div>
     <svg id="plot" viewBox="0 0 1000 360" role="img"></svg>
   </div>
@@ -663,6 +971,7 @@ const layerImages = {json.dumps(layer_images)};
 const familySelect = document.getElementById('family');
 const metricSelect = document.getElementById('metric');
 const layerSelect = document.getElementById('layer');
+const actionSelect = document.getElementById('action');
 const plot = document.getElementById('plot');
 
 function option(value, label) {{
@@ -675,10 +984,13 @@ function option(value, label) {{
 function initControls() {{
   Object.keys(report.families).forEach(name => familySelect.appendChild(option(name)));
   familySelect.value = report.families.expert ? 'expert' : Object.keys(report.families)[0];
+  actionSelect.appendChild(option('', 'none'));
+  Object.keys(report.actions || {{}}).forEach(name => actionSelect.appendChild(option(name)));
   updateMetricLayer();
   familySelect.addEventListener('change', updateMetricLayer);
   metricSelect.addEventListener('change', drawPlot);
   layerSelect.addEventListener('change', drawPlot);
+  actionSelect.addEventListener('change', drawPlot);
 }}
 
 function updateMetricLayer() {{
@@ -696,32 +1008,51 @@ function drawPlot() {{
   const metric = metricSelect.value;
   const layerIdx = Number(layerSelect.value || 0);
   const values = (family.metrics[metric] || [])[layerIdx] || [];
+  const actionName = actionSelect.value;
+  const actionValues = actionName ? (report.actions[actionName] || []) : [];
   const chunks = report.chunks;
   const finite = values.filter(v => Number.isFinite(v));
   const min = Math.min(...finite);
   const max = Math.max(...finite);
   const yMin = Number.isFinite(min) ? min - Math.max(1e-6, (max - min) * 0.08) : 0;
   const yMax = Number.isFinite(max) && max !== yMin ? max + Math.max(1e-6, (max - min) * 0.08) : 1;
-  const W = 1000, H = 360, left = 72, right = 24, top = 34, bottom = 54;
+  const finiteAction = actionValues.filter(v => Number.isFinite(v));
+  const aMinRaw = Math.min(...finiteAction);
+  const aMaxRaw = Math.max(...finiteAction);
+  const aPad = Number.isFinite(aMaxRaw - aMinRaw) ? Math.max(1e-6, Math.abs(aMaxRaw - aMinRaw) * 0.08) : 1;
+  const aMin = Number.isFinite(aMinRaw) ? aMinRaw - aPad : 0;
+  const aMax = Number.isFinite(aMaxRaw) && aMaxRaw !== aMinRaw ? aMaxRaw + aPad : 1;
+  const W = 1000, H = 360, left = 72, right = 86, top = 34, bottom = 54;
   const pw = W - left - right, ph = H - top - bottom;
   const pts = values.map((v, i) => {{
     const x = left + (values.length <= 1 ? 0 : i / (values.length - 1)) * pw;
     const y = top + (1 - (v - yMin) / (yMax - yMin)) * ph;
     return [x, y, v, chunks[i]];
   }}).filter(p => Number.isFinite(p[2]));
+  const actionPts = actionValues.map((v, i) => {{
+    const x = left + (actionValues.length <= 1 ? 0 : i / (actionValues.length - 1)) * pw;
+    const y = top + (1 - (v - aMin) / (aMax - aMin)) * ph;
+    return [x, y, v, chunks[i]];
+  }}).filter(p => Number.isFinite(p[2]));
   const poly = pts.map(p => `${{p[0].toFixed(1)}},${{p[1].toFixed(1)}}`).join(' ');
+  const actionPoly = actionPts.map(p => `${{p[0].toFixed(1)}},${{p[1].toFixed(1)}}`).join(' ');
   const circles = pts.map(p => `<circle cx="${{p[0].toFixed(1)}}" cy="${{p[1].toFixed(1)}}" r="4"><title>chunk ${{p[3]}}: ${{p[2].toFixed(4)}}</title></circle>`).join('');
+  const actionCircles = actionPts.map(p => `<circle cx="${{p[0].toFixed(1)}}" cy="${{p[1].toFixed(1)}}" r="3"><title>${{actionName}} chunk ${{p[3]}}: ${{p[2].toFixed(4)}}</title></circle>`).join('');
   plot.innerHTML = `
     <rect x="0" y="0" width="${{W}}" height="${{H}}" fill="#0b1020"/>
     <text x="18" y="24" fill="#e5e7eb" font-size="18">${{familySelect.value}} layer ${{family.layers[layerIdx]}} ${{metric}} over chunks</text>
     <line x1="${{left}}" y1="${{top}}" x2="${{left}}" y2="${{top+ph}}" stroke="#334155"/>
     <line x1="${{left}}" y1="${{top+ph}}" x2="${{left+pw}}" y2="${{top+ph}}" stroke="#334155"/>
+    <line x1="${{left+pw}}" y1="${{top}}" x2="${{left+pw}}" y2="${{top+ph}}" stroke="#334155"/>
     <text x="8" y="${{top+8}}" fill="#9ca3af" font-size="12">${{yMax.toFixed(3)}}</text>
     <text x="8" y="${{top+ph}}" fill="#9ca3af" font-size="12">${{yMin.toFixed(3)}}</text>
+    <text x="${{left+pw+8}}" y="${{top+8}}" fill="#facc15" font-size="12">${{actionName ? aMax.toFixed(3) : ''}}</text>
+    <text x="${{left+pw+8}}" y="${{top+ph}}" fill="#facc15" font-size="12">${{actionName ? aMin.toFixed(3) : ''}}</text>
     <text x="${{left}}" y="${{H-18}}" fill="#9ca3af" font-size="12">chunk ${{chunks[0] ?? ''}}</text>
     <text x="${{left+pw-70}}" y="${{H-18}}" fill="#9ca3af" font-size="12">chunk ${{chunks[chunks.length-1] ?? ''}}</text>
     <polyline points="${{poly}}" fill="none" stroke="#38bdf8" stroke-width="3"/>
-    <g fill="#facc15">${{circles}}</g>`;
+    <g fill="#38bdf8">${{circles}}</g>
+    ${{actionName ? `<polyline points="${{actionPoly}}" fill="none" stroke="#facc15" stroke-width="2.5"/><g fill="#facc15">${{actionCircles}}</g><text x="${{left+pw-220}}" y="24" fill="#facc15" font-size="13">overlay: ${{actionName}}</text>` : ''}}`;
 }}
 
 function initImages() {{
@@ -826,6 +1157,16 @@ def main() -> int:
         n_action_steps=args.n_action_steps,
         max_rows=args.max_rows,
     )
+    artifacts.update(
+        make_action_layer_correlation(
+            capture,
+            chunks,
+            out_dir,
+            task_id=args.task_id,
+            episode=args.episode,
+            n_action_steps=args.n_action_steps,
+        )
+    )
     artifacts.update(make_family_heatmaps(capture, chunks, out_dir, task_id=args.task_id, episode=args.episode))
     artifacts.update(make_expert_layer_graphs(capture, chunks, out_dir, task_id=args.task_id, episode=args.episode))
     artifacts["interactive_html"] = write_interactive_html(
@@ -836,6 +1177,7 @@ def main() -> int:
         artifacts=artifacts,
         chunks=chunks,
         capture=capture,
+        n_action_steps=args.n_action_steps,
     )
     artifacts["html"] = write_html(
         out_dir=out_dir,

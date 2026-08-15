@@ -171,16 +171,19 @@ The notebook display cell runs automatically after eval and shows:
 
 - Rollout video from the simulator.
 - Optional four-panel diagnostic video with rollout, camera tensors, signed action chunk, and expert activation heatmaps.
-- Chunk matrix PNG: one row per policy call / 10-action execution window.
+- Chunk matrix PNG: one row per policy call / 10-action execution window, with action labels and expert activation deltas aligned in the same row.
+- Action-to-layer correlation PNG: quick cross-chunk view of which action features co-vary with which expert-layer activation deltas.
 - Family heatmaps for `vision`, `prefix` language/task, and `expert` action layers over chunks.
-- Interactive HTML report with dropdowns for activation family, metric, and layer.
+- Interactive HTML report with dropdowns for activation family, metric, layer, and optional action overlay.
 - Standalone PNGs for each expert transformer layer showing activation over policy chunks.
 
 The chunk matrix row is the first granular view to inspect. Each row contains:
 
 ```text
-chunk/task | simulator third-person frame | input image | input image2 | first 10 actions | expert layer mean | expert layer x denoise
+chunk/task | simulator third-person frame | input image | input image2 | executed 10-step action | action summary | expert layer delta | expert denoise delta | top action/layer links
 ```
+
+The signed action heatmap uses rows `dx`, `dy`, `dz`, `dRx`, `dRy`, `dRz`, `grip` and columns for the executed action steps. Red is positive, blue is negative. The activation panels are signed deltas relative to the first denoise pass, which is more useful for attribution than raw absolute activation magnitude.
 
 Generated report artifacts are persisted under:
 

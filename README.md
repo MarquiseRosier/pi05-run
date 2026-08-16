@@ -1,8 +1,8 @@
-# Pi0.5 LIBERO on Linux NVIDIA Docker
+# Pi0.5 LIBERO Colab Notebook
 
-This repo runs `lerobot/pi05_libero_finetuned` against LIBERO simulations on a Linux machine with an NVIDIA GPU.
+This repo is centered around one shared Google Colab notebook for running and inspecting `lerobot/pi05_libero_finetuned` on LIBERO simulation tasks.
 
-Colab L4/A100 workflow:
+Most collaborators should start here:
 
 - Notebook: `notebooks/pi05_libero_colab_l4.ipynb`
 - Guide: `docs/colab_l4_guide.md`
@@ -12,7 +12,54 @@ Colab L4/A100 workflow:
 https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
 ```
 
-The Colab path runs the same Pi0.5/LIBERO eval natively because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, and videos. Hugging Face tokens stay in each user's private Colab Secrets and are not committed or copied into Drive.
+The notebook runs Pi0.5/LIBERO eval natively on a Colab L4 or A100 runtime because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, videos, and prompt probes.
+
+The intended workflow is:
+
+1. Open the Colab notebook.
+2. Select an L4 or A100 GPU runtime, preferably high-RAM.
+3. Mount the restricted shared Drive folder.
+4. Run the setup/cache cells.
+5. Run a smoke eval or full benchmark.
+6. Inspect rollout videos, chunk matrices, action/layer activation reports, and prompt probe outputs inline.
+7. Let the notebook persist logs, videos, activation traces, reports, and cache archives back to Drive.
+
+Hugging Face tokens must not be committed. The normal path is token-free after caches are populated. If a cache refresh is needed, use each user's private Colab Secret named `HF_TOKEN`, or the intentionally restricted shared Drive token file described in `docs/colab_l4_guide.md`.
+
+## Primary Workflow: Colab
+
+Use the notebook for team experiments, benchmark runs, mechanistic interpretability views, and plaintext prompt probes.
+
+Recommended smoke-test controls:
+
+```text
+SUITE = "libero_spatial"
+TASK_IDS = "[0]"
+EPISODES = 1
+CAPTURE_ACTIVATIONS = True
+CAPTURE_PARAM_STATS = False
+CAPTURE_MAX_CHUNKS = 40
+GENERATE_DIAGNOSTIC_VIDEO = False
+```
+
+Generated Colab outputs include:
+
+- rollout videos from LIBERO;
+- chunk matrix PNGs with camera inputs, executed 10-step action chunks, and expert activation deltas;
+- action-to-layer correlation plots;
+- interactive HTML reports with activation family/layer/metric controls and action overlays;
+- prompt probe images and predicted action chunks;
+- persisted logs and summaries under the shared Drive `outputs/` folder.
+
+Read the full notebook workflow here:
+
+```text
+docs/colab_l4_guide.md
+```
+
+## Secondary Workflow: Linux NVIDIA Docker
+
+Use this only when you have a local or cloud Linux machine with an NVIDIA GPU and want to run outside Colab.
 
 Use this path when the machine has:
 
@@ -25,14 +72,14 @@ Use this path when the machine has:
 
 macOS Docker cannot pass Apple MPS into Linux containers. The supported teammate path is Linux + NVIDIA + Docker.
 
-## 1. Clone
+### 1. Clone
 
 ```bash
 git clone https://github.com/MarquiseRosier/pi05-run.git
 cd pi05-run
 ```
 
-## Copy-Paste Ubuntu Setup
+### Copy-Paste Ubuntu Setup
 
 If Docker and NVIDIA Container Toolkit are already installed, skip to step 2.
 
@@ -60,7 +107,7 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-## 2. Verify NVIDIA Docker
+### 2. Verify NVIDIA Docker
 
 The host must see the GPU:
 
@@ -76,7 +123,7 @@ docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 
 If this fails, fix NVIDIA Container Toolkit before running the simulation.
 
-## 2.5. Build And Sanity Check The Container
+### 2.5. Build And Sanity Check The Container
 
 ```bash
 docker build -t lerobot-libero:latest cloud/libero
@@ -98,7 +145,7 @@ print("gpu", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no
 PY
 ```
 
-## 3. Hugging Face Access
+### 3. Hugging Face Access
 
 Pi0.5-LIBERO needs:
 
@@ -129,7 +176,7 @@ The token is stored outside the repo at:
 
 The Docker runner mounts this cache at runtime. It does not bake the token into the image.
 
-## 4. Run A Smoke Test
+### 4. Run A Smoke Test
 
 Run one episode for all 10 `libero_spatial` tasks:
 
@@ -153,7 +200,7 @@ outputs/eval/pi05_libero/<timestamp>/
 
 Each run writes `run.log`, `eval_info.json`, and rollout videos.
 
-## 5. Run The Benchmark
+### 5. Run The Benchmark
 
 Run the four common LIBERO suites:
 
@@ -178,7 +225,7 @@ MIN_GPU_MEM_GB=20 MIN_HOST_RAM_GB=16 TASK_IDS='[0]' \
   ./scripts/run_pi05_libero_docker.sh libero_spatial 1
 ```
 
-## 6. Activation Diagnostics
+### 6. Activation Diagnostics
 
 Run one targeted task with PyTorch activation capture:
 
@@ -201,7 +248,7 @@ outputs/eval/pi05_libero/<timestamp>/activation_capture/events.jsonl
 outputs/eval/pi05_libero/<timestamp>/activation_capture/images/
 ```
 
-## 7. View Results
+### 7. View Results
 
 Summarize latest run:
 

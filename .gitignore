@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+pi0.5/
 
 # Local simulation artifacts
 outputs/

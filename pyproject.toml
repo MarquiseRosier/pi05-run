@@ -6,4 +6,12 @@ readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "lerobot[aloha,diffusion,evaluation,pusht]",
+    "transformers",
 ]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pi05_mi*"]

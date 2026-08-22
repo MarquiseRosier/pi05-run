@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Team Guide: Run the LIBERO Simulator from Scratch (Windows)</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; max-width: 860px; margin: 32px auto; line-height: 1.45; color: #222; }
+  h1 { font-size: 22pt; }
+  h2 { font-size: 16pt; margin-top: 28px; }
+  h3 { font-size: 13pt; margin-top: 20px; }
+  p, li { font-size: 11pt; }
+  pre { font-family: Consolas, "Courier New", monospace; font-size: 10pt; background: #f4f4f4; padding: 12px; white-space: pre-wrap; }
+  table { border-collapse: collapse; width: 100%; font-size: 11pt; }
+  th, td { border: 1px solid #ccc; padding: 8px; vertical-align: top; text-align: left; }
+  th { background: #f0f0f0; }
+  .note { background: #fff8e1; padding: 10px 12px; }
+  .copy-hint { background: #e8f0fe; padding: 10px 12px; }
+</style>
+</head>
+<body>
+
+<p class="copy-hint"><b>How to paste into Google Docs:</b> In the browser press Ctrl+A, then Ctrl+C. Open a Google Doc and press Ctrl+V. Then delete this blue box.</p>
+
+<h1>Team Guide: Run the LIBERO Simulator from Scratch (Windows)</h1>
+
+<p>This repo has been verified on Windows + NVIDIA GPU + conda environment <b>groot</b>. The stack is two processes that must stay separate. Do not run the server and the simulator in the same Python environment.</p>
+
+<pre>Terminal 1 (conda groot, uses the GPU)     Terminal 2 (libero_uv venv)
+run_gr00t_server.py  ------------------►   rollout_policy.py
+Loads weights, listens on port 5555        MuJoCo / LIBERO sim client</pre>
+
+<p>The official Linux / uv flow is in Isaac-GR00T/examples/LIBERO/README.md. The steps below are the path this team uses to reproduce the setup from zero on Windows.</p>
+
+<h2>0. Machine requirements</h2>
+
+<ul>
+  <li>Windows 10 or 11</li>
+  <li>NVIDIA GPU, 16GB+ VRAM recommended (RTX 4090 or similar)</li>
+  <li>Anaconda or Miniconda already installed: <a href="https://www.anaconda.com/download">https://www.anaconda.com/download</a></li>
+  <li>About 20GB free disk. The LIBERO weights are about 6.5GB. The first server start also downloads the Cosmos VLM backbone.</li>
+  <li>A Hugging Face account</li>
+  <li>Git, with submodule support</li>
+</ul>
+
+<h2>1. Clone the repo</h2>
+
+<p>Open PowerShell and clone with submodules (LIBERO lives in a submodule):</p>
+
+<pre>git clone --recurse-submodules &lt;repo-url&gt; MI_VLA
+cd MI_VLA</pre>
+
+<p>If you already cloned without submodules:</p>
+
+<pre>git submodule update --init Isaac-GR00T/external_dependencies/LIBERO</pre>
+
+<p>From this point on, every command assumes you are here:</p>
+
+<pre>cd Isaac-GR00T</pre>
+
+<h2>2. Get Hugging Face access (do this first)</h2>
+
+<p>Both models are gated. Opening the website is not enough. You must request access while logged in, wait until the page says you have access, then create a token and log in on this machine.</p>
+
+<h3>2.1 Create or log in to Hugging Face</h3>
+
+<ol>
+  <li>Open <a href="https://huggingface.co/join">https://huggingface.co/join</a> in a browser.</li>
+  <li>Create an account, or log in if you already have one.</li>
+  <li>Stay logged in for the next steps. If you are not logged in, the Agree / Request access button will not work.</li>
+</ol>
+
+<h3>2.2 Request access on both model pages</h3>
+
+<p>Open each link below. On the model page you should see a gate / license box. Click <b>Agree and access repository</b> or <b>Request access</b>, fill in the form, accept the NVIDIA license, and submit.</p>
+
+<ol>
+  <li><a href="https://huggingface.co/nvidia/GR00T-N1.7-LIBERO">https://huggingface.co/nvidia/GR00T-N1.7-LIBERO</a> — LIBERO finetuned weights (the files you download in step 4).</li>
+  <li><a href="https://huggingface.co/nvidia/Cosmos-Reason2-2B">https://huggingface.co/nvidia/Cosmos-Reason2-2B</a> — gated VLM backbone. Every GR00T checkpoint loads this on first use, including the local LIBERO folder. If you skip this one, the server will fail even after the weights are on disk.</li>
+</ol>
+
+<p>NVIDIA license accept is usually instant. Refresh the page. You have access when the gate form is gone and you can see Files / the model card. If the page says pending, wait for email approval before continuing.</p>
+
+<h3>2.3 Create a Read token</h3>
+
+<ol>
+  <li>Open <a href="https://huggingface.co/settings/tokens">https://huggingface.co/settings/tokens</a></li>
+  <li>Click <b>New token</b>.</li>
+  <li>Name it something like groot-libero.</li>
+  <li>Set permission to <b>Read</b>.</li>
+  <li>Create the token and copy it immediately. Hugging Face will not show the full token again.</li>
+</ol>
+
+<p>Do not paste this token into Slack, git, or the repo. Treat it like a password.</p>
+
+<h3>2.4 Log in on this machine (after groot exists)</h3>
+
+<p>You cannot run huggingface-cli login until the groot env is installed (step 3). After that:</p>
+
+<pre>conda activate groot
+huggingface-cli login</pre>
+
+<p>When prompted, paste the token. Or set an environment variable for the current PowerShell session only:</p>
+
+<pre>$env:HF_TOKEN = "&lt;your-token&gt;"</pre>
+
+<p>Without both page approvals and a local login, download and server start fail with GatedRepoError or 401.</p>
+
+<h2>3. Install the inference env (conda groot, once)</h2>
+
+<p>Must be Python 3.12. Python 3.13 is missing some wheels and will break later installs.</p>
+
+<p>In PowerShell, from Isaac-GR00T:</p>
+
+<pre>conda create -n groot python=3.12 -y
+conda activate groot
+conda install -c conda-forge "ffmpeg&lt;8" -y
+pip install -e .</pre>
+
+<p>Notes:</p>
+<ul>
+  <li>torchcodec only supports FFmpeg 4, 5, 6, or 7. That is why the conda line pins ffmpeg&lt;8.</li>
+  <li>flash-attn does not install on Windows. That is expected. The server falls back to sdpa attention.</li>
+  <li>pip install -e . can take a while (PyTorch and friends).</li>
+</ul>
+
+<p>Sanity check:</p>
+
+<pre>python -c "import gr00t, torch; print('gr00t ok, cuda=', torch.cuda.is_available())"</pre>
+
+<p>Expected output includes: gr00t ok, cuda= True</p>
+<p>If cuda= False, the GPU driver / CUDA / PyTorch install is wrong. Fix that before downloading weights.</p>
+
+<p>Now log in to Hugging Face (from 2.4):</p>
+
+<pre>huggingface-cli login</pre>
+
+<h2>4. Download the LIBERO weights</h2>
+
+<p>Hugging Face does not accept a nested path like nvidia/GR00T-N1.7-LIBERO/libero_10 as --model-path. You must download the libero_10 folder to disk first.</p>
+
+<p>Still in conda groot, from Isaac-GR00T:</p>
+
+<pre>conda activate groot
+hf download nvidia/GR00T-N1.7-LIBERO `
+  --include "libero_10/config.json" `
+  --include "libero_10/embodiment_id.json" `
+  --include "libero_10/model-*.safetensors" `
+  --include "libero_10/model.safetensors.index.json" `
+  --include "libero_10/processor_config.json" `
+  --include "libero_10/statistics.json" `
+  --local-dir checkpoints/GR00T-N1.7-LIBERO</pre>
+
+<p>This downloads about 6.5GB. When it finishes you should have:</p>
+
+<pre>checkpoints/GR00T-N1.7-LIBERO/libero_10/
+  config.json
+  embodiment_id.json
+  model-00001-of-00002.safetensors
+  model-00002-of-00002.safetensors
+  model.safetensors.index.json
+  processor_config.json
+  statistics.json</pre>
+
+<p>These weights are already in .gitignore. Do not git add them and do not push them to GitHub (GitHub rejects files over 100MB).</p>
+
+<h2>5. Install the LIBERO sim env (once)</h2>
+
+<p>The simulator client is a separate virtual environment under libero_uv. Do not mix it with groot. groot is only for the GPU server. libero_uv is only for MuJoCo / LIBERO.</p>
+
+<p>Activate groot first. The setup script uses groot’s Python 3.12 to create the venv:</p>
+
+<pre>conda activate groot
+cd Isaac-GR00T
+powershell -ExecutionPolicy Bypass -File gr00t/eval/sim/LIBERO/setup_libero.ps1</pre>
+
+<p>This installs robosuite, MuJoCo, LIBERO, and patches Windows to use WGL instead of EGL. It can take 10–20 minutes.</p>
+
+<p>Success looks like:</p>
+<pre>Env OK ...
+Setup done.
+Sim python: ...\libero_uv\.venv\Scripts\python.exe</pre>
+
+<p>Sim Python path:</p>
+<pre>gr00t/eval/sim/LIBERO/libero_uv/.venv/Scripts/python.exe</pre>
+
+<p>.venv is gitignored. Do not commit it.</p>
+
+<h2>6. Run with two terminals</h2>
+
+<p>Keep both terminals open. Start the server first and wait until it is listening. Only then start the client.</p>
+
+<h3>6.1 Terminal 1 — Policy server</h3>
+
+<p>It is normal for this window to stay occupied. You will not get a prompt back until you stop the server.</p>
+
+<pre>cd Isaac-GR00T
+conda activate groot
+python gr00t/eval/run_gr00t_server.py `
+  --model-path checkpoints/GR00T-N1.7-LIBERO/libero_10 `
+  --embodiment-tag LIBERO_PANDA `
+  --use-sim-policy-wrapper</pre>
+
+<p>Wait until you see:</p>
+
+<pre>Server is ready and listening on tcp://0.0.0.0:5555</pre>
+
+<p>The first launch also downloads Cosmos-Reason2-2B and can take several minutes. Ignore these messages if they appear:</p>
+<ul>
+  <li>flash_attn is not installed</li>
+  <li>albumentations upgrade suggestion</li>
+  <li>FutureWarning from dit.py</li>
+</ul>
+
+<p>To stop the server: press Ctrl+C in this window. If that does nothing, close the terminal. Closing the terminal is fine; it kills the process and frees port 5555.</p>
+
+<h3>6.2 Terminal 2 — Sim client</h3>
+
+<p>Open a second PowerShell. Do not activate groot here. Use the libero_uv Python.</p>
+
+<p>On Windows you must pass --video-dir explicitly. The default path is the Linux path /tmp/... and will fail. Start with 1 parallel env.</p>
+
+<pre>cd Isaac-GR00T
+$py = "gr00t/eval/sim/LIBERO/libero_uv/.venv/Scripts/python.exe"
+$env:MUJOCO_GL = "wgl"
+&amp; $py gr00t/eval/rollout_policy.py `
+  --n-episodes 1 `
+  --n-envs 1 `
+  --policy-client-host 127.0.0.1 `
+  --policy-client-port 5555 `
+  --max-episode-steps 720 `
+  --n-action-steps 8 `
+  --env-name libero_sim/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it `
+  --video-dir tmp_sim_videos</pre>
+
+<p>When it finishes you will see success rate printed. Videos are written to:</p>
+<pre>Isaac-GR00T/tmp_sim_videos/</pre>
+
+<p>To skip video recording, use --video-dir none.</p>
+
+<h2>7. Switch tasks</h2>
+
+<p>You do not need to restart the server. Only change the client’s --env-name and run the client command again.</p>
+
+<p>Good starter tasks:</p>
+<pre>libero_sim/KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it
+libero_sim/pick_up_the_black_bowl_from_table_center_and_place_it_on_the_plate
+libero_sim/turn_on_the_stove</pre>
+
+<p>The full task list is at the end of Isaac-GR00T/examples/LIBERO/README.md (Libero 10 / Goal / Object / Spatial).</p>
+
+<h2>8. Troubleshooting</h2>
+
+<table>
+  <tr>
+    <th>Symptom</th>
+    <th>Fix</th>
+  </tr>
+  <tr>
+    <td>GatedRepoError or 401</td>
+    <td>Accept both HF model pages, create a Read token, then huggingface-cli login inside groot.</td>
+  </tr>
+  <tr>
+    <td>Address already in use</td>
+    <td>Port 5555 is taken by an old server. Close that terminal, or start the server with --port 5556 and point the client at the same port.</td>
+  </tr>
+  <tr>
+    <td>Server terminal never returns a prompt</td>
+    <td>Expected. It is listening in the foreground. Ctrl+C or close the window.</td>
+  </tr>
+  <tr>
+    <td>Could not load libtorchcodec / FFmpeg</td>
+    <td>conda activate groot, then conda install -c conda-forge "ffmpeg&lt;8" -y</td>
+  </tr>
+  <tr>
+    <td>Sim errors about EGL / OpenGL</td>
+    <td>Windows needs MUJOCO_GL=wgl. Re-run setup_libero.ps1.</td>
+  </tr>
+  <tr>
+    <td>Video write to /tmp/... fails</td>
+    <td>Add --video-dir tmp_sim_videos on the client.</td>
+  </tr>
+  <tr>
+    <td>Want to skip video</td>
+    <td>--video-dir none</td>
+  </tr>
+  <tr>
+    <td>Large n-envs hangs or crashes</td>
+    <td>On Windows start with --n-envs 1</td>
+  </tr>
+  <tr>
+    <td>GitHub push rejected (file too large)</td>
+    <td>checkpoints/ and *.safetensors are gitignored. Do not git add them.</td>
+  </tr>
+</table>
+
+<h2>9. Do not commit these</h2>
+
+<ul>
+  <li>Isaac-GR00T/checkpoints/ — model weights, several GB</li>
+  <li>Isaac-GR00T/gr00t/eval/sim/LIBERO/libero_uv/.venv/ — sim environment</li>
+  <li>Isaac-GR00T/tmp_sim_videos/ — eval videos (optional to ignore)</li>
+</ul>
+
+<p class="note"><b>Quick recap:</b> Get HF access on both pages → token → clone → conda groot + pip install → huggingface-cli login → download weights → setup_libero.ps1 → start server → start client.</p>
+
+</body>
+</html>

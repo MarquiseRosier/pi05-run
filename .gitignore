@@ -14,6 +14,17 @@ outputs/
 data/
 .libero/
 
+# GR00T / MI_VLA local artifacts
+**/checkpoints/
+**/*.safetensors
+**/libero_uv/.venv/
+**/setup_libero.colab.sh
+**/tmp_sim_videos/
+**/.venv/
+**/scripts/deployment/**/wheels/
+MI_VLA/Isaac-GR00T/examples/GR00TWholeBodyControl/media/
+MI_VLA/Isaac-GR00T/media/*.gif
+
 # Local-only notes and secrets
 next_steps.md
 .env

@@ -2,7 +2,7 @@
 """Launch Pi0.5 transcoder training on Modal.
 
 Example:
-    modal run scripts/modal_train_pi05_transcoders.py --gpu B200 --num-feed-forwards 10
+    modal run --detach scripts/modal_train_pi05_transcoders.py --gpu B200 --num-feed-forwards 10
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ REMOTE_REPO = "/workspace/pi05-run"
 VOLUME_MOUNT = "/vol"
 HF_CACHE_DIR = f"{VOLUME_MOUNT}/hf_cache"
 DEFAULT_OUTPUT_DIR = f"{VOLUME_MOUNT}/outputs/transcoders/pi05_libero"
+DEFAULT_METRICS_FILE = f"{DEFAULT_OUTPUT_DIR}/metrics.jsonl"
 
 
 def _ignore_source(path: Path) -> bool:
@@ -89,6 +90,7 @@ def train_remote(train_args: list[str]) -> None:
             "HF_DATASETS_CACHE": f"{HF_CACHE_DIR}/datasets",
             "HUGGING_FACE_HUB_TOKEN": env["HF_TOKEN"],
             "PYTORCH_ENABLE_MPS_FALLBACK": "0",
+            "PYTHONPATH": f"{REMOTE_REPO}/src",
         }
     )
     os.makedirs(HF_CACHE_DIR, exist_ok=True)
@@ -124,6 +126,8 @@ def main(
     save_every: int = 5,
     log_every: int = 1,
     output_dir: str = DEFAULT_OUTPUT_DIR,
+    metrics_file: str = DEFAULT_METRICS_FILE,
+    append_metrics: bool = False,
     local_files_only: bool = False,
     no_progress: bool = False,
 ) -> None:
@@ -148,6 +152,9 @@ def main(
     _append_arg(train_args, "--grad-clip-norm", grad_clip_norm)
     _append_arg(train_args, "--save-every", save_every)
     _append_arg(train_args, "--log-every", log_every)
+    _append_arg(train_args, "--metrics-file", metrics_file)
+    if append_metrics:
+        train_args.append("--append-metrics")
     if local_files_only:
         train_args.append("--local-files-only")
     if no_progress:
@@ -158,7 +165,11 @@ def main(
     print(f"Volume: pi05-libero-data mounted at {VOLUME_MOUNT}")
     print(f"Hugging Face cache: {HF_CACHE_DIR}")
     print(f"Output dir: {output_dir}")
+    print(f"Metrics file: {metrics_file}")
     print("Remote command:")
     print("$ " + shlex.join([f"{REMOTE_REPO}/.venv/bin/python", "scripts/train_pi05_transcoders.py", *train_args]))
 
-    train_remote.with_options(gpu=gpu_spec).remote(train_args)
+    call = train_remote.with_options(gpu=gpu_spec).spawn(train_args)
+    print(f"Spawned Modal call: {call.object_id}")
+    print("Use `modal run --detach ...` for laptop-disconnect-safe long runs.")
+    call.get()

@@ -7,6 +7,7 @@ import argparse
 import inspect
 import json
 import tempfile
+import time
 from dataclasses import asdict
 from math import ceil
 from pathlib import Path
@@ -164,6 +165,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=1.0)
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=100)
+    parser.add_argument(
+        "--metrics-file",
+        type=Path,
+        default=None,
+        help="JSONL metrics path. Defaults to <output-dir>/metrics.jsonl.",
+    )
+    parser.add_argument("--append-metrics", action="store_true", help="Append to an existing metrics JSONL file.")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--max-checkpoints", type=int, default=3)
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
@@ -222,15 +230,24 @@ def _dataloader_worker_kwargs(cfg: TrainPipelineConfig) -> dict[str, Any]:
 
 def _make_dataloader(cfg: TrainPipelineConfig, dataset) -> torch.utils.data.DataLoader:
     active_cfg = cfg.trainable_config
-    sampler = EpisodeAwareSampler(
-        dataset.meta.episodes["dataset_from_index"],
-        dataset.meta.episodes["dataset_to_index"],
-        episode_indices_to_use=dataset.episodes,
-        drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
-        shuffle=True,
-        seed=cfg.seed if cfg.seed is not None else 0,
-        absolute_to_relative_idx=dataset.absolute_to_relative_idx,
-    )
+    if dataset.episodes is None:
+        sampler = EpisodeAwareSampler(
+            dataset.meta.episodes["dataset_from_index"],
+            dataset.meta.episodes["dataset_to_index"],
+            episode_indices_to_use=None,
+            drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
+            shuffle=True,
+            seed=cfg.seed if cfg.seed is not None else 0,
+            absolute_to_relative_idx=None,
+        )
+    else:
+        sampler = torch.utils.data.SubsetRandomSampler(
+            _selected_episode_relative_indices(
+                dataset,
+                drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
+            ),
+            generator=torch.Generator().manual_seed(cfg.seed if cfg.seed is not None else 0),
+        )
     collate_fn = lerobot_collate_fn if dataset.meta.has_language_columns else None
     return torch.utils.data.DataLoader(
         dataset,
@@ -242,6 +259,28 @@ def _make_dataloader(cfg: TrainPipelineConfig, dataset) -> torch.utils.data.Data
         collate_fn=collate_fn,
         **_dataloader_worker_kwargs(cfg),
     )
+
+
+def _selected_episode_relative_indices(dataset, *, drop_n_last_frames: int) -> list[int]:
+    """Return valid relative row indices for an episode-filtered LeRobotDataset."""
+    absolute_to_relative = dataset.absolute_to_relative_idx
+    if absolute_to_relative is None:
+        return list(range(len(dataset)))
+
+    indices: list[int] = []
+    from_indices = dataset.meta.episodes["dataset_from_index"]
+    to_indices = dataset.meta.episodes["dataset_to_index"]
+    for episode_idx in dataset.episodes:
+        start = int(from_indices[episode_idx])
+        stop = int(to_indices[episode_idx]) - drop_n_last_frames
+        for absolute_idx in range(start, max(start, stop)):
+            relative_idx = absolute_to_relative.get(absolute_idx)
+            if relative_idx is not None:
+                indices.append(relative_idx)
+
+    if not indices:
+        raise ValueError(f"No usable dataset frames found for selected episodes {dataset.episodes}")
+    return indices
 
 
 def _make_preprocessor(cfg: TrainPipelineConfig, dataset, policy_path: str):
@@ -414,8 +453,10 @@ def _save_checkpoint(
     step: int,
     args: argparse.Namespace,
     transcoders: dict[str, TimeConditionedTranscoder],
+    optimizer: torch.optim.Optimizer,
     buffers: MultiLayerActivationBuffer,
     wrapped_names: list[str],
+    metrics_history: list[dict[str, float | int | str | None]],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"step_{step:06d}.pt"
@@ -431,7 +472,9 @@ def _save_checkpoint(
             "wrapped_names": wrapped_names,
             "configs": {name: asdict(transcoder.config) for name, transcoder in transcoders.items()},
             "state_dicts": {name: transcoder.state_dict() for name, transcoder in transcoders.items()},
+            "optimizer_state_dict": optimizer.state_dict(),
             "buffer_stats": {name: asdict(stats) for name, stats in buffers.stats().items()},
+            "metrics_history": metrics_history,
         },
         checkpoint_path,
     )
@@ -443,10 +486,20 @@ def _save_checkpoint(
             old_checkpoint.unlink()
 
 
+def _append_metrics_row(metrics_file: Path, row: dict[str, float | int | str | None]) -> None:
+    metrics_file.parent.mkdir(parents=True, exist_ok=True)
+    with metrics_file.open("a") as f:
+        f.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 def main() -> None:
     patch_transformers_causal_mask_compat()
     patch_pi05_checkpoint_key_compat()
     args = parse_args()
+    if args.metrics_file is None:
+        args.metrics_file = args.output_dir / "metrics.jsonl"
+    if not args.append_metrics and args.metrics_file.exists():
+        args.metrics_file.unlink()
     device = resolve_device(args.device)
     args.resolved_device = device
     args.resolved_policy_dtype = resolve_policy_dtype(args.policy_dtype, device)
@@ -491,6 +544,8 @@ def main() -> None:
     )
 
     last_metrics: dict[str, float] | None = None
+    metrics_history: list[dict[str, float | int | str | None]] = []
+    started_at = time.time()
     feed_forward_iter = tqdm(
         range(1, args.num_feed_forwards + 1),
         desc="Pi0.5 feed-forwards",
@@ -522,9 +577,34 @@ def main() -> None:
         if metrics is not None:
             last_metrics = metrics
 
+        filled = min(stats.size for stats in buffers.stats().values())
+        added = sum(added_by_layer.values())
+        metrics_row: dict[str, float | int | str | None] = {
+            "feed_forward": feed_forward,
+            "elapsed_s": time.time() - started_at,
+            "added_records": added,
+            "min_buffer": filled,
+            "collection_mode": args.collection_mode,
+            "loss": None,
+            "normalized_mse": None,
+            "l1": None,
+            "ready_layers": 0,
+            "minibatches": 0,
+        }
+        if metrics is not None:
+            metrics_row.update(
+                {
+                    "loss": metrics["loss"],
+                    "normalized_mse": metrics["normalized_mse"],
+                    "l1": metrics["l1"],
+                    "ready_layers": int(metrics["ready_layers"]),
+                    "minibatches": int(metrics["minibatches"]),
+                }
+            )
+        metrics_history.append(metrics_row)
+        _append_metrics_row(args.metrics_file, metrics_row)
+
         if args.log_every > 0 and feed_forward % args.log_every == 0:
-            filled = min(stats.size for stats in buffers.stats().values())
-            added = sum(added_by_layer.values())
             metric_text = "warming buffers"
             if last_metrics is not None:
                 metric_text = (
@@ -551,18 +631,23 @@ def main() -> None:
                 step=feed_forward,
                 args=args,
                 transcoders=transcoders,
+                optimizer=optimizer,
                 buffers=buffers,
                 wrapped_names=wrapped_names,
+                metrics_history=metrics_history,
             )
 
-    _save_checkpoint(
-        output_dir=args.output_dir,
-        step=args.num_feed_forwards,
-        args=args,
-        transcoders=transcoders,
-        buffers=buffers,
-        wrapped_names=wrapped_names,
-    )
+    if args.save_every <= 0 or args.num_feed_forwards % args.save_every != 0:
+        _save_checkpoint(
+            output_dir=args.output_dir,
+            step=args.num_feed_forwards,
+            args=args,
+            transcoders=transcoders,
+            optimizer=optimizer,
+            buffers=buffers,
+            wrapped_names=wrapped_names,
+            metrics_history=metrics_history,
+        )
 
 
 if __name__ == "__main__":

@@ -32,6 +32,23 @@ class MLPActivationRecord:
 
 
 @dataclass(frozen=True)
+class MLPTranscoderLatentRecord:
+    """Compact latent summary for one transcoder call."""
+
+    name: str
+    layer_index: int
+    mode: str
+    timestep: Tensor
+    latent_shape: tuple[int, ...]
+    latent_l0: Tensor
+    latent_l1: Tensor
+    latent_max: Tensor
+    top_indices: Tensor
+    top_values: Tensor
+    full_latent: Tensor | None = None
+
+
+@dataclass(frozen=True)
 class ActionExpertMLPTarget:
     """One Pi0.5 action-expert MLP target."""
 
@@ -44,11 +61,25 @@ class ActionExpertMLPTarget:
 class Pi05TranscoderContext:
     """Shared runtime state for Pi0.5 transcoder wrappers."""
 
-    def __init__(self, mode: TranscoderMode = "train", *, detach_records: bool = True):
+    def __init__(
+        self,
+        mode: TranscoderMode = "train",
+        *,
+        detach_records: bool = True,
+        capture_records: bool = True,
+        capture_latents: bool = False,
+        latent_top_k: int = 64,
+        save_full_latents: bool = False,
+    ):
         self.mode = mode
         self.detach_records = detach_records
+        self.capture_records = capture_records
+        self.capture_latents = capture_latents
+        self.latent_top_k = latent_top_k
+        self.save_full_latents = save_full_latents
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
+        self.latents: dict[str, list[MLPTranscoderLatentRecord]] = defaultdict(list)
 
     @contextmanager
     def use_timestep(self, timestep: Tensor) -> Iterator[None]:
@@ -61,6 +92,7 @@ class Pi05TranscoderContext:
 
     def clear_records(self) -> None:
         self.records.clear()
+        self.latents.clear()
 
     def timestep_for(self, x: Tensor) -> Tensor:
         if self.current_timestep is None:
@@ -84,6 +116,8 @@ class Pi05TranscoderContext:
         return timestep
 
     def record(self, name: str, layer_index: int, x: Tensor, y: Tensor, timestep: Tensor) -> None:
+        if not self.capture_records:
+            return
         if self.detach_records:
             x = x.detach()
             y = y.detach()
@@ -97,6 +131,42 @@ class Pi05TranscoderContext:
                 timestep=timestep,
             )
         )
+
+    def record_latent(self, name: str, layer_index: int, latent: Tensor, timestep: Tensor) -> None:
+        if not self.capture_latents:
+            return
+        with torch.no_grad():
+            z = latent.detach().float()
+            timestep = timestep.detach().float().cpu()
+            latent_l0 = (z > 0).sum(dim=-1).detach().cpu()
+            latent_l1 = z.abs().sum(dim=-1).detach().cpu()
+            latent_max = z.max(dim=-1).values.detach().cpu()
+
+            flat = z.reshape(-1)
+            top_k = min(max(0, int(self.latent_top_k)), flat.numel())
+            if top_k > 0:
+                top_values, top_flat_indices = torch.topk(flat, k=top_k)
+                top_indices = torch.stack(torch.unravel_index(top_flat_indices.cpu(), z.shape), dim=-1)
+            else:
+                top_values = torch.empty(0, dtype=torch.float32)
+                top_indices = torch.empty((0, z.ndim), dtype=torch.long)
+
+            full_latent = z.cpu() if self.save_full_latents else None
+            self.latents[name].append(
+                MLPTranscoderLatentRecord(
+                    name=name,
+                    layer_index=layer_index,
+                    mode=self.mode,
+                    timestep=timestep,
+                    latent_shape=tuple(z.shape),
+                    latent_l0=latent_l0,
+                    latent_l1=latent_l1,
+                    latent_max=latent_max,
+                    top_indices=top_indices.cpu(),
+                    top_values=top_values.cpu(),
+                    full_latent=full_latent,
+                )
+            )
 
 
 class WrappedActionExpertMLP(nn.Module):
@@ -124,7 +194,8 @@ class WrappedActionExpertMLP(nn.Module):
         if self.context.mode == "replace":
             if self.transcoder is None:
                 raise RuntimeError(f"Cannot run {self.name} in replace mode without a transcoder")
-            y_hat, _ = self.transcoder(x, timestep)
+            y_hat, latent = self.transcoder(x, timestep)
+            self.context.record_latent(self.name, self.layer_index, latent, timestep)
             return y_hat.to(dtype=x.dtype)
 
         y = self.original_mlp(x)
@@ -132,7 +203,8 @@ class WrappedActionExpertMLP(nn.Module):
 
         if self.context.mode == "probe" and self.transcoder is not None:
             with torch.no_grad():
-                self.transcoder(x, timestep)
+                _y_hat, latent = self.transcoder(x, timestep)
+                self.context.record_latent(self.name, self.layer_index, latent, timestep)
 
         return y
 

@@ -18,6 +18,7 @@ from .transcoders import (
 from .patch_pi05 import (
     ActionExpertMLPTarget,
     MLPActivationRecord,
+    MLPTranscoderLatentRecord,
     Pi05TranscoderContext,
     WrappedActionExpertMLP,
     infer_mlp_d_model,
@@ -31,6 +32,7 @@ __all__ = [
     "ActivationBuffer",
     "ActivationBufferStats",
     "MLPActivationRecord",
+    "MLPTranscoderLatentRecord",
     "MultiLayerActivationBuffer",
     "Pi05TranscoderContext",
     "RunningVarianceDenominator",

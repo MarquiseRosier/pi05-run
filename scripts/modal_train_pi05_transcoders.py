@@ -109,8 +109,15 @@ def main(
     gpu: str = "B200",
     policy_path: str = "lerobot/pi05_libero_finetuned",
     num_feed_forwards: int = 10,
+    train_epochs: int | None = None,
+    max_train_batches: int | None = None,
     batch_size: int = 1,
     episodes: str | None = "0",
+    train_episodes: str | None = None,
+    val_episodes: str | None = None,
+    test_episodes: str | None = None,
+    episode_split: str | None = None,
+    episode_split_seed: int = 0,
     num_workers: int = 0,
     collection_mode: str = "random-timestep",
     num_inference_steps: int | None = None,
@@ -119,24 +126,41 @@ def main(
     lambda_l1: float = 1e-4,
     expansion_factor: int = 1,
     buffer_capacity: int = 5000,
+    train_record_scope: str = "buffer",
     min_buffer_records: int = 50,
     transcoder_batch_size: int = 16,
     transcoder_epochs_per_ff: int = 1,
     grad_clip_norm: float = 1.0,
     save_every: int = 5,
     log_every: int = 1,
+    eval_every: int = 0,
+    eval_feed_forwards: int = 5,
+    test_feed_forwards: int | None = None,
+    max_eval_batches: int | None = None,
+    eval_noise_samples: int = 1,
+    eval_buffer_capacity: int = 0,
+    max_checkpoints: int = 3,
     output_dir: str = DEFAULT_OUTPUT_DIR,
     metrics_file: str = DEFAULT_METRICS_FILE,
+    test_metrics_file: str | None = None,
     append_metrics: bool = False,
     local_files_only: bool = False,
+    plan_only: bool = False,
     no_progress: bool = False,
 ) -> None:
     train_args: list[str] = []
     _append_arg(train_args, "--policy-path", policy_path)
     _append_arg(train_args, "--output-dir", output_dir)
     _append_arg(train_args, "--num-feed-forwards", num_feed_forwards)
+    _append_arg(train_args, "--train-epochs", train_epochs)
+    _append_arg(train_args, "--max-train-batches", max_train_batches)
     _append_arg(train_args, "--batch-size", batch_size)
     _append_arg(train_args, "--episodes", episodes)
+    _append_arg(train_args, "--train-episodes", train_episodes)
+    _append_arg(train_args, "--val-episodes", val_episodes)
+    _append_arg(train_args, "--test-episodes", test_episodes)
+    _append_arg(train_args, "--episode-split", episode_split)
+    _append_arg(train_args, "--episode-split-seed", episode_split_seed)
     _append_arg(train_args, "--num-workers", num_workers)
     _append_arg(train_args, "--collection-mode", collection_mode)
     _append_arg(train_args, "--num-inference-steps", num_inference_steps)
@@ -146,17 +170,28 @@ def main(
     _append_arg(train_args, "--lambda-l1", lambda_l1)
     _append_arg(train_args, "--expansion-factor", expansion_factor)
     _append_arg(train_args, "--buffer-capacity", buffer_capacity)
+    _append_arg(train_args, "--train-record-scope", train_record_scope)
     _append_arg(train_args, "--min-buffer-records", min_buffer_records)
     _append_arg(train_args, "--transcoder-batch-size", transcoder_batch_size)
     _append_arg(train_args, "--transcoder-epochs-per-ff", transcoder_epochs_per_ff)
     _append_arg(train_args, "--grad-clip-norm", grad_clip_norm)
     _append_arg(train_args, "--save-every", save_every)
     _append_arg(train_args, "--log-every", log_every)
+    _append_arg(train_args, "--eval-every", eval_every)
+    _append_arg(train_args, "--eval-feed-forwards", eval_feed_forwards)
+    _append_arg(train_args, "--test-feed-forwards", test_feed_forwards)
+    _append_arg(train_args, "--max-eval-batches", max_eval_batches)
+    _append_arg(train_args, "--eval-noise-samples", eval_noise_samples)
+    _append_arg(train_args, "--eval-buffer-capacity", eval_buffer_capacity)
+    _append_arg(train_args, "--max-checkpoints", max_checkpoints)
     _append_arg(train_args, "--metrics-file", metrics_file)
+    _append_arg(train_args, "--test-metrics-file", test_metrics_file)
     if append_metrics:
         train_args.append("--append-metrics")
     if local_files_only:
         train_args.append("--local-files-only")
+    if plan_only:
+        train_args.append("--plan-only")
     if no_progress:
         train_args.append("--no-progress")
 

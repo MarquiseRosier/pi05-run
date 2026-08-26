@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import inspect
 import json
 import tempfile
@@ -124,13 +125,55 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Number of frozen Pi0.5 record-collection feed-forwards. `--steps` is kept as a deprecated alias.",
     )
+    parser.add_argument(
+        "--train-epochs",
+        type=int,
+        default=None,
+        help=(
+            "Dataset-style training mode: number of full passes over the selected training frames. "
+            "When set, --num-feed-forwards is ignored except in logs/checkpoints."
+        ),
+    )
+    parser.add_argument(
+        "--max-train-batches",
+        type=int,
+        default=None,
+        help="Optional smoke-test cap on training batches per epoch. Omit for all selected frames.",
+    )
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument(
         "--episodes",
         default=None,
-        help="Optional comma-separated dataset episode ids to load, for example `0` or `0,1,2`.",
+        help=(
+            "Backward-compatible alias for training episode ids. Prefer --train-episodes when using "
+            "validation/test splits."
+        ),
     )
+    parser.add_argument(
+        "--train-episodes",
+        default=None,
+        help="Optional comma-separated episode ids used for transcoder training, for example `0,1,2,3`.",
+    )
+    parser.add_argument(
+        "--val-episodes",
+        default=None,
+        help="Optional comma-separated held-out episode ids used for validation.",
+    )
+    parser.add_argument(
+        "--test-episodes",
+        default=None,
+        help="Optional comma-separated held-out episode ids used once at the end for test metrics.",
+    )
+    parser.add_argument(
+        "--episode-split",
+        default=None,
+        help=(
+            "Optional train,val,test episode percentages, for example `80,10,10`. Used only for omitted "
+            "--train-episodes/--val-episodes/--test-episodes."
+        ),
+    )
+    parser.add_argument("--episode-split-seed", type=int, default=0)
     parser.add_argument(
         "--collection-mode",
         choices=("random-timestep", "inference", "training-forward"),
@@ -154,6 +197,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--time-embedding-dim", type=int, default=None)
     parser.add_argument("--time-hidden-dim", type=int, default=None)
     parser.add_argument("--buffer-capacity", type=int, default=200_000)
+    parser.add_argument(
+        "--train-record-scope",
+        choices=("buffer", "latest"),
+        default="buffer",
+        help=(
+            "`buffer` trains over the rolling replay buffer after each FF. `latest` trains only on the "
+            "newly collected records, while the rolling buffer still tracks variance/checkpoint stats."
+        ),
+    )
     parser.add_argument("--min-buffer-records", type=int, default=4096)
     parser.add_argument("--transcoder-batch-size", type=int, default=4096)
     parser.add_argument(
@@ -166,14 +218,57 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--save-every", type=int, default=100)
     parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=0,
+        help="Run validation every N training feed-forwards. Disabled when 0 or when --val-episodes is omitted.",
+    )
+    parser.add_argument(
+        "--eval-feed-forwards",
+        type=int,
+        default=5,
+        help="Legacy/capped number of held-out validation feed-forwards per validation pass.",
+    )
+    parser.add_argument(
+        "--test-feed-forwards",
+        type=int,
+        default=None,
+        help="Legacy/capped number of held-out test feed-forwards at the end. Defaults to --eval-feed-forwards.",
+    )
+    parser.add_argument(
+        "--max-eval-batches",
+        type=int,
+        default=None,
+        help="Optional cap on validation/test batches. Omit for all selected held-out frames in epoch mode.",
+    )
+    parser.add_argument(
+        "--eval-noise-samples",
+        type=int,
+        default=1,
+        help="Number of random noise/timestep draws per validation/test batch.",
+    )
+    parser.add_argument(
+        "--eval-buffer-capacity",
+        type=int,
+        default=0,
+        help="Per-layer validation/test buffer capacity. Default auto-sizes from batch size and feed-forward count.",
+    )
+    parser.add_argument(
         "--metrics-file",
         type=Path,
         default=None,
         help="JSONL metrics path. Defaults to <output-dir>/metrics.jsonl.",
     )
+    parser.add_argument(
+        "--test-metrics-file",
+        type=Path,
+        default=None,
+        help="JSON metrics path for final held-out test metrics. Defaults to <output-dir>/test_metrics.json.",
+    )
     parser.add_argument("--append-metrics", action="store_true", help="Append to an existing metrics JSONL file.")
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--max-checkpoints", type=int, default=3)
+    parser.add_argument("--plan-only", action="store_true", help="Print dataset split/batch counts and exit before model load.")
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars.")
     return parser.parse_args()
 
@@ -204,19 +299,101 @@ def _load_train_config(args: argparse.Namespace) -> TrainPipelineConfig:
     return TrainPipelineConfig.from_pretrained(migrated_path)
 
 
-def _configure_train_config(args: argparse.Namespace) -> TrainPipelineConfig:
+def _parse_episode_ids(episodes: str | None) -> list[int] | None:
+    if episodes is None:
+        return None
+    return [int(item) for item in episodes.split(",") if item]
+
+
+def _format_episode_ids(episodes: list[int] | None) -> str | None:
+    if episodes is None:
+        return None
+    return ",".join(str(episode) for episode in episodes)
+
+
+def _episode_summary(episodes: list[int] | None) -> str:
+    if episodes is None:
+        return "all"
+    if len(episodes) <= 12:
+        return str(episodes)
+    return f"{len(episodes)} episodes ({episodes[0]}..{episodes[-1]})"
+
+
+def _training_episodes_arg(args: argparse.Namespace) -> str | None:
+    return args.train_episodes if args.train_episodes is not None else args.episodes
+
+
+def _all_episode_ids(dataset) -> list[int]:
+    from_indices = dataset.meta.episodes["dataset_from_index"]
+    return list(range(len(from_indices)))
+
+
+def _split_episode_ids(
+    episode_ids: list[int],
+    split: str,
+    *,
+    seed: int,
+) -> tuple[list[int], list[int], list[int]]:
+    weights = [float(item) for item in split.split(",") if item]
+    if len(weights) != 3:
+        raise ValueError(f"--episode-split must have train,val,test percentages, got {split!r}")
+    if any(weight < 0 for weight in weights) or sum(weights) <= 0:
+        raise ValueError(f"--episode-split must contain non-negative percentages, got {split!r}")
+
+    generator = torch.Generator().manual_seed(seed)
+    permutation = torch.randperm(len(episode_ids), generator=generator).tolist()
+    shuffled = [episode_ids[index] for index in permutation]
+    total = len(shuffled)
+    train_count = int(round(total * weights[0] / sum(weights)))
+    val_count = int(round(total * weights[1] / sum(weights)))
+    train_count = min(max(train_count, 0), total)
+    val_count = min(max(val_count, 0), total - train_count)
+    test_count = total - train_count - val_count
+    if total >= 3:
+        if train_count == 0:
+            train_count = 1
+        if val_count == 0:
+            val_count = 1
+        if test_count == 0:
+            test_count = 1
+        while train_count + val_count + test_count > total:
+            if train_count >= val_count and train_count >= test_count and train_count > 1:
+                train_count -= 1
+            elif val_count >= test_count and val_count > 1:
+                val_count -= 1
+            else:
+                test_count -= 1
+
+    train = sorted(shuffled[:train_count])
+    val = sorted(shuffled[train_count : train_count + val_count])
+    test = sorted(shuffled[train_count + val_count :])
+    return train, val, test
+
+
+def _latest_buffer_capacity(args: argparse.Namespace, policy) -> int:
+    chunk_size = int(getattr(policy.model.config, "chunk_size", 50))
+    return max(args.transcoder_batch_size, args.batch_size * chunk_size)
+
+
+def _configure_train_config(args: argparse.Namespace, *, episodes: str | None) -> TrainPipelineConfig:
     print("loading Pi0.5 training config", flush=True)
     cfg = _load_train_config(args)
     cfg.batch_size = args.batch_size
     cfg.num_workers = args.num_workers
-    if args.episodes is not None:
-        cfg.dataset.episodes = [int(item) for item in args.episodes.split(",") if item]
+    if episodes is not None:
+        cfg.dataset.episodes = _parse_episode_ids(episodes)
     cfg.policy.pretrained_path = Path(args.policy_path)
     cfg.policy.device = str(args.resolved_device)
     cfg.policy.dtype = args.resolved_policy_dtype
     cfg.policy.compile_model = False
     cfg.policy.gradient_checkpointing = False
     return cfg
+
+
+def _config_with_episodes(cfg: TrainPipelineConfig, episodes: str | None) -> TrainPipelineConfig:
+    split_cfg = copy.deepcopy(cfg)
+    split_cfg.dataset.episodes = _parse_episode_ids(episodes)
+    return split_cfg
 
 
 def _dataloader_worker_kwargs(cfg: TrainPipelineConfig) -> dict[str, Any]:
@@ -377,15 +554,185 @@ def _collect_random_timestep_records(policy, batch: dict[str, torch.Tensor]) -> 
     )
 
 
+def _collect_records_for_batch(
+    *,
+    policy,
+    raw_batch: dict[str, Any],
+    dataset,
+    preprocessor,
+    context,
+    buffers: MultiLayerActivationBuffer,
+    args: argparse.Namespace,
+    extra_buffers: MultiLayerActivationBuffer | None = None,
+) -> dict[str, int]:
+    raw_batch = _prepare_raw_batch(raw_batch, dataset.meta.camera_keys)
+    batch = preprocessor(raw_batch)
+
+    context.clear_records()
+    with torch.no_grad():
+        if args.collection_mode == "random-timestep":
+            _collect_random_timestep_records(policy, batch)
+        elif args.collection_mode == "inference":
+            policy.predict_action_chunk(batch, num_steps=args.num_inference_steps)
+        else:
+            policy.forward(batch)
+    if extra_buffers is not None:
+        extra_buffers.add_context_records(context, clear_context=False)
+    return buffers.add_context_records(context)
+
+
+def _eval_buffer_capacity(args: argparse.Namespace, policy, batches: int, *, noise_samples: int) -> int:
+    if args.eval_buffer_capacity > 0:
+        return args.eval_buffer_capacity
+    chunk_size = int(getattr(policy.model.config, "chunk_size", 50))
+    return max(args.transcoder_batch_size, batches * noise_samples * args.batch_size * chunk_size)
+
+
+def _planned_eval_batches(batch_source, *, feed_forwards: int | None, max_batches: int | None) -> int:
+    if feed_forwards is not None:
+        return feed_forwards
+    if max_batches is not None:
+        return max_batches
+    try:
+        return len(batch_source)
+    except TypeError:
+        return 1
+
+
+def _evaluate_transcoders(
+    *,
+    split: str,
+    transcoders: dict[str, TimeConditionedTranscoder],
+    train_buffers: MultiLayerActivationBuffer,
+    layer_names: list[str],
+    policy,
+    batch_source,
+    dataset,
+    preprocessor,
+    context,
+    args: argparse.Namespace,
+    device: torch.device,
+    feed_forwards: int | None = None,
+    max_batches: int | None = None,
+) -> dict[str, float] | None:
+    if feed_forwards is not None and feed_forwards <= 0:
+        return None
+    if args.eval_noise_samples <= 0:
+        raise ValueError(f"--eval-noise-samples must be positive, got {args.eval_noise_samples}")
+
+    first_buffer = train_buffers.buffers[layer_names[0]]
+    planned_batches = _planned_eval_batches(batch_source, feed_forwards=feed_forwards, max_batches=max_batches)
+    eval_buffers = MultiLayerActivationBuffer(
+        layer_names=layer_names,
+        d_model=first_buffer.d_model,
+        capacity_per_layer=_eval_buffer_capacity(args, policy, planned_batches, noise_samples=args.eval_noise_samples),
+    )
+
+    added_records = 0
+    previous_modes = {name: transcoder.training for name, transcoder in transcoders.items()}
+    for transcoder in transcoders.values():
+        transcoder.eval()
+
+    try:
+        if feed_forwards is not None:
+            batch_iter = (next(batch_source) for _ in range(feed_forwards))
+        else:
+            batch_iter = iter(batch_source)
+        for batch_index, raw_batch in enumerate(batch_iter):
+            if max_batches is not None and batch_index >= max_batches:
+                break
+            for _noise_sample in range(args.eval_noise_samples):
+                added_by_layer = _collect_records_for_batch(
+                    policy=policy,
+                    raw_batch=raw_batch,
+                    dataset=dataset,
+                    preprocessor=preprocessor,
+                    context=context,
+                    buffers=eval_buffers,
+                    args=args,
+                )
+                added_records += sum(added_by_layer.values())
+
+        ready_names = [
+            name
+            for name in layer_names
+            if eval_buffers.buffers[name].size > 0 and train_buffers.buffers[name].size >= args.min_buffer_records
+        ]
+        if not ready_names:
+            return None
+
+        total_weighted_loss = 0.0
+        total_weighted_mse = 0.0
+        total_weighted_l1 = 0.0
+        total_records = 0
+        minibatches = 0
+
+        expected_minibatches = sum(
+            ceil(eval_buffers.buffers[name].size / args.transcoder_batch_size) for name in ready_names
+        )
+        with tqdm(
+            total=expected_minibatches,
+            desc=f"{split} minibatches",
+            leave=False,
+            disable=args.no_progress,
+        ) as minibatch_bar:
+            with torch.no_grad():
+                for name in ready_names:
+                    transcoder = transcoders[name]
+                    denominator = train_buffers.variance_denominator(name, device=device)
+                    for sample in eval_buffers.epoch_batches(
+                        name,
+                        args.transcoder_batch_size,
+                        device=device,
+                        dtype=torch.float32,
+                        shuffle=False,
+                    ):
+                        loss = transcoder.loss(
+                            sample.x,
+                            sample.timestep,
+                            sample.y,
+                            denominator,
+                            lambda_l1=args.lambda_l1,
+                        )
+                        record_count = sample.x.shape[0]
+                        total_weighted_loss += float(loss.total.detach().cpu()) * record_count
+                        total_weighted_mse += float(loss.normalized_mse.detach().cpu()) * record_count
+                        total_weighted_l1 += float(loss.l1.detach().cpu()) * record_count
+                        total_records += record_count
+                        minibatches += 1
+                        minibatch_bar.update(1)
+
+        if total_records == 0:
+            return None
+        return {
+            "loss": total_weighted_loss / total_records,
+            "normalized_mse": total_weighted_mse / total_records,
+            "l1": total_weighted_l1 / total_records,
+            "ready_layers": float(len(ready_names)),
+            "minibatches": float(minibatches),
+            "records": float(total_records),
+            "feed_forwards": float(planned_batches * args.eval_noise_samples),
+            "batches": float(planned_batches),
+            "noise_samples": float(args.eval_noise_samples),
+            "added_records": float(added_records),
+        }
+    finally:
+        context.clear_records()
+        for name, transcoder in transcoders.items():
+            transcoder.train(previous_modes[name])
+
+
 def _train_transcoders_for_epochs(
     *,
     transcoders: dict[str, TimeConditionedTranscoder],
     buffers: MultiLayerActivationBuffer,
+    denominator_buffers: MultiLayerActivationBuffer | None = None,
     optimizer: torch.optim.Optimizer,
     layer_names: list[str],
     args: argparse.Namespace,
     device: torch.device,
 ) -> dict[str, float] | None:
+    denominator_buffers = buffers if denominator_buffers is None else denominator_buffers
     ready_names = [name for name in layer_names if buffers.buffers[name].size >= args.min_buffer_records]
     if not ready_names:
         return None
@@ -415,7 +762,7 @@ def _train_transcoders_for_epochs(
                         sample.x,
                         sample.timestep,
                         sample.y,
-                        buffers.variance_denominator(name, device=device),
+                        denominator_buffers.variance_denominator(name, device=device),
                         lambda_l1=args.lambda_l1,
                     )
                     loss.total.backward()
@@ -456,7 +803,7 @@ def _save_checkpoint(
     optimizer: torch.optim.Optimizer,
     buffers: MultiLayerActivationBuffer,
     wrapped_names: list[str],
-    metrics_history: list[dict[str, float | int | str | None]],
+    metrics_history: list[dict[str, Any]],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"step_{step:06d}.pt"
@@ -498,17 +845,71 @@ def main() -> None:
     args = parse_args()
     if args.metrics_file is None:
         args.metrics_file = args.output_dir / "metrics.jsonl"
+    if args.test_metrics_file is None:
+        args.test_metrics_file = args.output_dir / "test_metrics.json"
     if not args.append_metrics and args.metrics_file.exists():
         args.metrics_file.unlink()
     device = resolve_device(args.device)
     args.resolved_device = device
     args.resolved_policy_dtype = resolve_policy_dtype(args.policy_dtype, device)
-    cfg = _configure_train_config(args)
-    print(f"loading dataset {cfg.dataset.repo_id} episodes={cfg.dataset.episodes}", flush=True)
+    train_episodes = _training_episodes_arg(args)
+    cfg = _configure_train_config(args, episodes=None if args.episode_split is not None else train_episodes)
+    if args.episode_split is not None:
+        print(f"loading split source dataset {cfg.dataset.repo_id} episodes=all", flush=True)
+        split_source_dataset = make_dataset(cfg)
+        auto_train, auto_val, auto_test = _split_episode_ids(
+            _all_episode_ids(split_source_dataset),
+            args.episode_split,
+            seed=args.episode_split_seed,
+        )
+        train_episodes = train_episodes or _format_episode_ids(auto_train)
+        args.val_episodes = args.val_episodes or _format_episode_ids(auto_val)
+        args.test_episodes = args.test_episodes or _format_episode_ids(auto_test)
+        print(
+            "episode split "
+            f"train={_episode_summary(_parse_episode_ids(train_episodes))} "
+            f"val={_episode_summary(_parse_episode_ids(args.val_episodes))} "
+            f"test={_episode_summary(_parse_episode_ids(args.test_episodes))}",
+            flush=True,
+        )
+        cfg = _config_with_episodes(cfg, train_episodes)
+    print(f"loading dataset {cfg.dataset.repo_id} episodes={_episode_summary(cfg.dataset.episodes)}", flush=True)
     dataset = make_dataset(cfg)
     print("building dataloader", flush=True)
     dataloader = _make_dataloader(cfg, dataset)
+    print(f"train frames={len(dataset)} train_batches={len(dataloader)} batch_size={cfg.batch_size}", flush=True)
     data_iter = cycle(dataloader)
+    val_data_iter = None
+    val_dataloader = None
+    val_dataset = None
+    if args.val_episodes is not None:
+        val_cfg = _config_with_episodes(cfg, args.val_episodes)
+        print(
+            f"loading validation dataset {val_cfg.dataset.repo_id} episodes={_episode_summary(val_cfg.dataset.episodes)}",
+            flush=True,
+        )
+        val_dataset = make_dataset(val_cfg)
+        print("building validation dataloader", flush=True)
+        val_dataloader = _make_dataloader(val_cfg, val_dataset)
+        print(f"validation frames={len(val_dataset)} validation_batches={len(val_dataloader)}", flush=True)
+        val_data_iter = cycle(val_dataloader)
+    test_data_iter = None
+    test_dataloader = None
+    test_dataset = None
+    if args.test_episodes is not None:
+        test_cfg = _config_with_episodes(cfg, args.test_episodes)
+        print(
+            f"loading test dataset {test_cfg.dataset.repo_id} episodes={_episode_summary(test_cfg.dataset.episodes)}",
+            flush=True,
+        )
+        test_dataset = make_dataset(test_cfg)
+        print("building test dataloader", flush=True)
+        test_dataloader = _make_dataloader(test_cfg, test_dataset)
+        print(f"test frames={len(test_dataset)} test_batches={len(test_dataloader)}", flush=True)
+        test_data_iter = cycle(test_dataloader)
+    if args.plan_only:
+        print("plan-only requested; exiting before model load", flush=True)
+        return
     print("loading preprocessor/tokenizer", flush=True)
     preprocessor = _make_preprocessor(cfg, dataset, args.policy_path)
 
@@ -542,33 +943,77 @@ def main() -> None:
         f"device={device} policy_dtype={args.resolved_policy_dtype} "
         f"collection_mode={args.collection_mode}"
     )
+    if val_dataset is not None and args.eval_every > 0:
+        print(
+            f"validation episodes={_episode_summary(val_dataset.episodes)} every={args.eval_every} "
+            f"eval_feed_forwards={args.eval_feed_forwards}",
+            flush=True,
+        )
+    if test_dataset is not None:
+        print(
+            f"test episodes={_episode_summary(test_dataset.episodes)} "
+            f"test_feed_forwards={args.test_feed_forwards or args.eval_feed_forwards}",
+            flush=True,
+        )
 
     last_metrics: dict[str, float] | None = None
-    metrics_history: list[dict[str, float | int | str | None]] = []
+    metrics_history: list[dict[str, Any]] = []
     started_at = time.time()
+
+    def iter_training_batches():
+        feed_forward_count = 0
+        if args.train_epochs is None:
+            for _ in range(args.num_feed_forwards):
+                feed_forward_count += 1
+                yield None, None, feed_forward_count, next(data_iter)
+            return
+
+        for epoch in range(1, args.train_epochs + 1):
+            for batch_index, raw_batch in enumerate(dataloader, start=1):
+                if args.max_train_batches is not None and batch_index > args.max_train_batches:
+                    break
+                feed_forward_count += 1
+                yield epoch, batch_index, feed_forward_count, raw_batch
+
+    if args.train_epochs is None:
+        planned_train_batches = args.num_feed_forwards
+    else:
+        batches_per_epoch = len(dataloader)
+        if args.max_train_batches is not None:
+            batches_per_epoch = min(batches_per_epoch, args.max_train_batches)
+        planned_train_batches = args.train_epochs * batches_per_epoch
+        args.num_feed_forwards = planned_train_batches
+
     feed_forward_iter = tqdm(
-        range(1, args.num_feed_forwards + 1),
+        iter_training_batches(),
+        total=planned_train_batches,
         desc="Pi0.5 feed-forwards",
         disable=args.no_progress,
     )
-    for feed_forward in feed_forward_iter:
-        raw_batch = next(data_iter)
-        raw_batch = _prepare_raw_batch(raw_batch, dataset.meta.camera_keys)
-        batch = preprocessor(raw_batch)
-
-        context.clear_records()
-        with torch.no_grad():
-            if args.collection_mode == "random-timestep":
-                _collect_random_timestep_records(policy, batch)
-            elif args.collection_mode == "inference":
-                policy.predict_action_chunk(batch, num_steps=args.num_inference_steps)
-            else:
-                policy.forward(batch)
-        added_by_layer = buffers.add_context_records(context)
+    for epoch, batch_index, feed_forward, raw_batch in feed_forward_iter:
+        latest_buffers = None
+        if args.train_record_scope == "latest":
+            latest_buffers = MultiLayerActivationBuffer(
+                layer_names=wrapped_names,
+                d_model=next(iter(buffers.buffers.values())).d_model,
+                capacity_per_layer=_latest_buffer_capacity(args, policy),
+            )
+        added_by_layer = _collect_records_for_batch(
+            policy=policy,
+            raw_batch=raw_batch,
+            dataset=dataset,
+            preprocessor=preprocessor,
+            context=context,
+            buffers=buffers,
+            args=args,
+            extra_buffers=latest_buffers,
+        )
+        train_source_buffers = latest_buffers if latest_buffers is not None else buffers
 
         metrics = _train_transcoders_for_epochs(
             transcoders=transcoders,
-            buffers=buffers,
+            buffers=train_source_buffers,
+            denominator_buffers=buffers,
             optimizer=optimizer,
             layer_names=wrapped_names,
             args=args,
@@ -577,10 +1022,36 @@ def main() -> None:
         if metrics is not None:
             last_metrics = metrics
 
+        val_metrics = None
+        if (
+            val_data_iter is not None
+            and val_dataset is not None
+            and args.eval_every > 0
+            and feed_forward % args.eval_every == 0
+        ):
+            val_metrics = _evaluate_transcoders(
+                split="validation",
+                transcoders=transcoders,
+                train_buffers=buffers,
+                layer_names=wrapped_names,
+                policy=policy,
+                batch_source=val_data_iter,
+                dataset=val_dataset,
+                preprocessor=preprocessor,
+                context=context,
+                args=args,
+                device=device,
+                feed_forwards=args.eval_feed_forwards,
+            )
+
         filled = min(stats.size for stats in buffers.stats().values())
         added = sum(added_by_layer.values())
         metrics_row: dict[str, float | int | str | None] = {
             "feed_forward": feed_forward,
+            "epoch": epoch,
+            "batch_index": batch_index,
+            "train_mode": "fixed-feed-forwards" if args.train_epochs is None else "epochs",
+            "train_record_scope": args.train_record_scope,
             "elapsed_s": time.time() - started_at,
             "added_records": added,
             "min_buffer": filled,
@@ -590,6 +1061,14 @@ def main() -> None:
             "l1": None,
             "ready_layers": 0,
             "minibatches": 0,
+            "val_loss": None,
+            "val_normalized_mse": None,
+            "val_l1": None,
+            "val_ready_layers": 0,
+            "val_minibatches": 0,
+            "val_records": 0,
+            "val_feed_forwards": 0,
+            "val_added_records": 0,
         }
         if metrics is not None:
             metrics_row.update(
@@ -599,6 +1078,19 @@ def main() -> None:
                     "l1": metrics["l1"],
                     "ready_layers": int(metrics["ready_layers"]),
                     "minibatches": int(metrics["minibatches"]),
+                }
+            )
+        if val_metrics is not None:
+            metrics_row.update(
+                {
+                    "val_loss": val_metrics["loss"],
+                    "val_normalized_mse": val_metrics["normalized_mse"],
+                    "val_l1": val_metrics["l1"],
+                    "val_ready_layers": int(val_metrics["ready_layers"]),
+                    "val_minibatches": int(val_metrics["minibatches"]),
+                    "val_records": int(val_metrics["records"]),
+                    "val_feed_forwards": int(val_metrics["feed_forwards"]),
+                    "val_added_records": int(val_metrics["added_records"]),
                 }
             )
         metrics_history.append(metrics_row)
@@ -620,6 +1112,12 @@ def main() -> None:
                     ready_layers=int(last_metrics["ready_layers"]),
                 )
             progress_line = f"feed_forward={feed_forward} added_records={added} min_buffer={filled} {metric_text}"
+            if val_metrics is not None:
+                progress_line += (
+                    f" val_loss={val_metrics['loss']:.4f} "
+                    f"val_norm_mse={val_metrics['normalized_mse']:.4f} "
+                    f"val_l1={val_metrics['l1']:.4f}"
+                )
             if args.no_progress:
                 print(progress_line, flush=True)
             else:
@@ -637,7 +1135,97 @@ def main() -> None:
                 metrics_history=metrics_history,
             )
 
-    if args.save_every <= 0 or args.num_feed_forwards % args.save_every != 0:
+    test_metrics = None
+    if val_dataloader is not None and val_dataset is not None and args.train_epochs is not None and args.eval_every <= 0:
+        val_metrics = _evaluate_transcoders(
+            split="validation",
+            transcoders=transcoders,
+            train_buffers=buffers,
+            layer_names=wrapped_names,
+            policy=policy,
+            batch_source=val_dataloader,
+            dataset=val_dataset,
+            preprocessor=preprocessor,
+            context=context,
+            args=args,
+            device=device,
+            feed_forwards=None,
+            max_batches=args.max_eval_batches,
+        )
+        if val_metrics is not None:
+            final_val_row: dict[str, Any] = {
+                "event": "final_validation",
+                "feed_forward": args.num_feed_forwards,
+                "elapsed_s": time.time() - started_at,
+                "collection_mode": args.collection_mode,
+                "val_loss": val_metrics["loss"],
+                "val_normalized_mse": val_metrics["normalized_mse"],
+                "val_l1": val_metrics["l1"],
+                "val_ready_layers": int(val_metrics["ready_layers"]),
+                "val_minibatches": int(val_metrics["minibatches"]),
+                "val_records": int(val_metrics["records"]),
+                "val_feed_forwards": int(val_metrics["feed_forwards"]),
+                "val_batches": int(val_metrics["batches"]),
+                "val_noise_samples": int(val_metrics["noise_samples"]),
+                "val_added_records": int(val_metrics["added_records"]),
+            }
+            metrics_history.append(final_val_row)
+            _append_metrics_row(args.metrics_file, final_val_row)
+            print(
+                f"final validation loss={val_metrics['loss']:.4f} "
+                f"norm_mse={val_metrics['normalized_mse']:.4f} "
+                f"l1={val_metrics['l1']:.4f} "
+                f"records={int(val_metrics['records'])}",
+                flush=True,
+            )
+
+    if test_data_iter is not None and test_dataset is not None:
+        test_metrics = _evaluate_transcoders(
+            split="test",
+            transcoders=transcoders,
+            train_buffers=buffers,
+            layer_names=wrapped_names,
+            policy=policy,
+            batch_source=test_dataloader if args.train_epochs is not None and test_dataloader is not None else test_data_iter,
+            dataset=test_dataset,
+            preprocessor=preprocessor,
+            context=context,
+            args=args,
+            device=device,
+            feed_forwards=None if args.train_epochs is not None else args.test_feed_forwards or args.eval_feed_forwards,
+            max_batches=args.max_eval_batches if args.train_epochs is not None else None,
+        )
+        if test_metrics is not None:
+            args.test_metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            test_row = {
+                "feed_forward": args.num_feed_forwards,
+                "elapsed_s": time.time() - started_at,
+                "collection_mode": args.collection_mode,
+                "episodes": test_dataset.episodes,
+                "loss": test_metrics["loss"],
+                "normalized_mse": test_metrics["normalized_mse"],
+                "l1": test_metrics["l1"],
+                "ready_layers": int(test_metrics["ready_layers"]),
+                "minibatches": int(test_metrics["minibatches"]),
+                "records": int(test_metrics["records"]),
+                "feed_forwards": int(test_metrics["feed_forwards"]),
+                "batches": int(test_metrics["batches"]),
+                "noise_samples": int(test_metrics["noise_samples"]),
+                "added_records": int(test_metrics["added_records"]),
+            }
+            with args.test_metrics_file.open("w") as f:
+                json.dump(test_row, f, indent=2, sort_keys=True)
+                f.write("\n")
+            metrics_history.append({"event": "test", **test_row})
+            print(
+                f"test loss={test_metrics['loss']:.4f} "
+                f"norm_mse={test_metrics['normalized_mse']:.4f} "
+                f"l1={test_metrics['l1']:.4f} "
+                f"records={int(test_metrics['records'])}",
+                flush=True,
+            )
+
+    if test_metrics is not None or args.save_every <= 0 or args.num_feed_forwards % args.save_every != 0:
         _save_checkpoint(
             output_dir=args.output_dir,
             step=args.num_feed_forwards,

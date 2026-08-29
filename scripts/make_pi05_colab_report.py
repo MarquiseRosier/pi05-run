@@ -355,7 +355,7 @@ def draw_action_tile(
     n_action_steps: int,
     cap: float,
 ) -> None:
-    put_text(canvas, "executed actions: dim x step", (x, y + 14), scale=0.36, color=MUTED)
+    put_text(canvas, "policy chunk: dim x step", (x, y + 14), scale=0.36, color=MUTED)
     window = action_window_for_chunk(actions, n_action_steps)
     label_w = 44
     plot_x = x + label_w
@@ -390,7 +390,7 @@ def draw_action_summary_tile(
     n_action_steps: int,
     cap: float,
 ) -> None:
-    put_text(canvas, "action summary", (x, y + 14), scale=0.38, color=MUTED)
+    put_text(canvas, "policy action summary", (x, y + 14), scale=0.38, color=MUTED)
     window = action_window_for_chunk(actions, n_action_steps)
     if window.size == 0:
         put_text(canvas, "no action capture", (x + 10, y + 54), scale=0.42, color=MUTED)
@@ -804,8 +804,8 @@ def make_chunk_matrix(
         (170, 190, "sim third-person"),
         (380, 190, "input image"),
         (590, 190, "input image2"),
-        (815, 360, "executed 10-step action"),
-        (1198, 230, "action summary"),
+        (815, 360, "policy 10-step chunk"),
+        (1198, 230, "policy action summary"),
         (1460, 250, "expert layer delta"),
         (1740, 340, "expert denoise delta"),
         (2100, 160, "top action/layer links"),

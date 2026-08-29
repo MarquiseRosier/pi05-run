@@ -469,7 +469,7 @@ def render_action(capture: dict[str, Any], chunk: int, phase: int, n_action_step
         )
     panel = np.zeros((PANEL_H, PANEL_W, 3), dtype=np.uint8)
     panel[:] = PANEL_BG
-    draw_header(panel, "Signed Action Chunk", f"chunk {chunk} | predicts 50, executes first {n_action_steps}")
+    draw_header(panel, "Signed Policy Action Chunk", f"chunk {chunk} | model predicts 50; first {n_action_steps} are postprocessed and executed")
     dims = ["dx", "dy", "dz", "dRx", "dRy", "dRz", "grip"]
     matrix = values.T
     plot = draw_heatmap(
@@ -490,7 +490,7 @@ def render_action(capture: dict[str, Any], chunk: int, phase: int, n_action_step
     cv2.line(panel, (int(px + current_frac * pw), py), (int(px + current_frac * pw), py + ph), (255, 255, 255), 2)
     cv2.line(panel, (int(px + executed_frac * pw), py), (int(px + executed_frac * pw), py + ph), ACCENT, 2)
     put_text(panel, "white = current env step", (px, py + ph + 34), scale=0.44, color=TEXT)
-    put_text(panel, "cyan = end of executed window", (px + 260, py + ph + 34), scale=0.44, color=ACCENT)
+    put_text(panel, "cyan = end of queue window", (px + 260, py + ph + 34), scale=0.44, color=ACCENT)
 
     norms = np.linalg.norm(values, axis=1)
     chart_x, chart_y, chart_w, chart_h = 80, 434, 805, 72

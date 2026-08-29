@@ -38,6 +38,17 @@ gcloud compute ssh "${VM_NAME}" \
     export CAPTURE_MAX_BINS='${CAPTURE_MAX_BINS:-64}' && \
     export CAPTURE_FAMILIES='${CAPTURE_FAMILIES:-vision,prefix,expert,projection}' && \
     export CAPTURE_PARAM_STATS='${CAPTURE_PARAM_STATS:-0}' && \
+    export CAPTURE_FEEDBACK_TRACE='${CAPTURE_FEEDBACK_TRACE:-1}' && \
+    export CAPTURE_ENV_STEPS='${CAPTURE_ENV_STEPS:-1}' && \
+    export CAPTURE_ENV_STEP_IMAGES='${CAPTURE_ENV_STEP_IMAGES:-0}' && \
+    export CAPTURE_ENV_STEP_IMAGE_EVERY_N='${CAPTURE_ENV_STEP_IMAGE_EVERY_N:-10}' && \
+    export CAPTURE_MAX_ENV_STEP_IMAGES='${CAPTURE_MAX_ENV_STEP_IMAGES:-80}' && \
+    export CAPTURE_TOKEN_IDS='${CAPTURE_TOKEN_IDS:-1}' && \
+    export CAPTURE_DECODE_LANGUAGE='${CAPTURE_DECODE_LANGUAGE:-0}' && \
+    export CAPTURE_BATCH_TENSOR_SUMMARY='${CAPTURE_BATCH_TENSOR_SUMMARY:-1}' && \
+    export CAPTURE_DENOISE_TRACE='${CAPTURE_DENOISE_TRACE:-1}' && \
+    export CAPTURE_MAX_TENSOR_VALUES='${CAPTURE_MAX_TENSOR_VALUES:-64}' && \
+    export PI05_PROMPT_FEEDBACK_MODE='${PI05_PROMPT_FEEDBACK_MODE:-off}' && \
     export TASK_IDS='${TASK_IDS:-}' && \
     . .venv/bin/activate && \
     ./cloud/libero/run_pi05_libero.sh '${TASKS}' '${EPISODES}'"

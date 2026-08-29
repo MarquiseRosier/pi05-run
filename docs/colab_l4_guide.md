@@ -138,6 +138,10 @@ EVAL_PROGRESS_SECONDS = 30
 CAPTURE_ACTIVATIONS = True
 CAPTURE_PARAM_STATS = False
 CAPTURE_MAX_CHUNKS = 40
+CAPTURE_FEEDBACK_TRACE = True
+CAPTURE_ENV_STEPS = True
+CAPTURE_DENOISE_TRACE = True
+PI05_PROMPT_FEEDBACK_MODE = "off"
 MIN_GPU_MEMORY_GB = 20
 MIN_SYSTEM_RAM_GB = 24
 REPORT_MAX_ROWS = 80
@@ -172,6 +176,7 @@ The notebook display cell runs automatically after eval and shows:
 - Rollout video from the simulator.
 - Optional four-panel diagnostic video with rollout, camera tensors, signed action chunk, and expert activation heatmaps.
 - Chunk matrix PNG: one row per policy call / 10-action execution window, with action labels and expert activation deltas aligned in the same row.
+- Feedback trace summary: compact Markdown/CSV view of chunk prompts, token counts, normalized state, flow-matching denoise steps, selected queued actions, exact postprocessed actions sent to LIBERO, and fresh post-step simulator observations.
 - Action-to-layer correlation PNG: quick cross-chunk view of which action features co-vary with which expert-layer activation deltas.
 - Family heatmaps for `vision`, `prefix` language/task, and `expert` action layers over chunks.
 - Interactive HTML report with dropdowns for activation family, metric, layer, and optional action overlay.
@@ -180,10 +185,10 @@ The notebook display cell runs automatically after eval and shows:
 The chunk matrix row is the first granular view to inspect. Each row contains:
 
 ```text
-chunk/task | simulator third-person frame | input image | input image2 | executed 10-step action | action summary | expert layer delta | expert denoise delta | top action/layer links
+chunk/task | simulator third-person frame | input image | input image2 | policy-normalized 10-step chunk | action summary | expert layer delta | expert denoise delta | top action/layer links
 ```
 
-The signed action heatmap uses rows `dx`, `dy`, `dz`, `dRx`, `dRy`, `dRz`, `grip` and columns for the executed action steps. Red is positive, blue is negative. The activation panels are signed deltas relative to the first denoise pass, which is more useful for attribution than raw absolute activation magnitude.
+The signed action heatmap uses rows `dx`, `dy`, `dz`, `dRx`, `dRy`, `dRz`, `grip` and columns for the queued policy actions before output postprocessing. Red is positive, blue is negative. Exact simulator-space actions are in the feedback trace summary. The activation panels are signed deltas relative to the first denoise pass, which is more useful for attribution than raw absolute activation magnitude.
 
 Generated report artifacts are persisted under:
 
@@ -206,6 +211,16 @@ python scripts/make_pi05_colab_report.py --run latest --task-id 0 --episode 0 --
 You normally do not need to run that command manually in Colab; the notebook runs it when `CAPTURE_ACTIVATIONS=True`.
 
 For speed, leave `GENERATE_DIAGNOSTIC_VIDEO=False`. Turn it on only when you want the MP4.
+
+For action-feedback experiments, use:
+
+```bash
+python scripts/summarize_pi05_feedback_trace.py --run latest --max-steps 80
+```
+
+The baseline is `PI05_PROMPT_FEEDBACK_MODE="off"`. Set it to `"last_action"` or
+`"chunk_summary"` for visible prompt-feedback ablations. This injects ordinary
+text into the model prompt; it is not hidden reasoning.
 
 ## Plaintext Prompt Probe
 

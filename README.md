@@ -45,11 +45,18 @@ GENERATE_DIAGNOSTIC_VIDEO = False
 Generated Colab outputs include:
 
 - rollout videos from LIBERO;
-- chunk matrix PNGs with camera inputs, executed 10-step action chunks, and expert activation deltas;
+- chunk matrix PNGs with camera inputs, policy-normalized 10-step action windows, and expert activation deltas;
 - action-to-layer correlation plots;
+- feedback trace summaries showing prompt tokens, normalized state, selected queued actions, applied simulator actions, and post-step observations;
 - interactive HTML reports with activation family/layer/metric controls and action overlays;
 - prompt probe images and predicted action chunks;
 - persisted logs and summaries under the shared Drive `outputs/` folder.
+
+For the action-feedback mechanistic-interpretability workflow, read:
+
+```text
+docs/pi05_action_feedback_mechinterp.md
+```
 
 Read the full notebook workflow here:
 
@@ -273,10 +280,17 @@ The diagnostic video shows:
 
 - rollout behavior;
 - the two camera tensors the model saw;
-- signed 50-step action chunks;
-- the current executed action inside the first 10 executed actions;
+- signed 50-step policy-normalized action chunks;
+- the current queued policy action inside the first 10-action execution window;
 - action-expert activation magnitude by layer and denoise step;
 - final-denoise layer x action-token activations.
+
+For exact postprocessed actions sent to LIBERO and the fresh observations returned
+after each step, run:
+
+```bash
+./scripts/summarize_pi05_feedback_trace.py --run latest --max-steps 80
+```
 
 On a headless server, omit `--open-preview --open` and copy the generated files from:
 

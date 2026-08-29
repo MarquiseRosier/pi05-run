@@ -71,6 +71,7 @@ CAPTURE_DECODE_LANGUAGE = False
 CAPTURE_DENOISE_TRACE = True
 CAPTURE_MAX_TENSOR_VALUES = 64
 PI05_PROMPT_FEEDBACK_MODE = "off"
+RUN_FEEDBACK_ABLATION = False
 ```
 
 `CAPTURE_DECODE_LANGUAGE=True` asks the capture shim to decode token IDs back
@@ -97,7 +98,7 @@ Last-action feedback:
 PI05_PROMPT_FEEDBACK_MODE = "last_action"
 ```
 
-Recent-window feedback:
+Recent action-window feedback:
 
 ```text
 PI05_PROMPT_FEEDBACK_MODE = "chunk_summary"
@@ -114,7 +115,41 @@ Example injected string:
 Feedback: last applied action dx=+0.012, dy=-0.004, dz=+0.021, dRx=+0.000, dRy=+0.002, dRz=-0.001, grip=+0.433;
 ```
 
-## Summary Script
+## Rollout Ablation
+
+For the question "does visible feedback accomplish the task faster?", use the
+rollout ablation runner rather than the one-chunk prompt probe:
+
+```bash
+CAPTURE_ACTIVATIONS=1 TASK_IDS='[0]' SEED=1000 ./scripts/run_pi05_feedback_ablation.sh libero_spatial 5
+```
+
+For Docker, add `PI05_EVAL_RUNNER=./scripts/run_pi05_libero_docker.sh`.
+
+By default this runs:
+
+```text
+off,last_action,chunk_summary
+```
+
+and writes:
+
+```text
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_comparison.md
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_comparison.csv
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_episodes.csv
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_comparison.json
+```
+
+The comparison table reports official success rate, average reward, total
+environment steps, total chunk calls, and steps/chunks to the first official
+success signal recorded in the feedback trace.
+
+Keep the suite, task IDs, episode count, and seed fixed across modes. One
+episode is useful for debugging the trace; use several episodes before treating
+speed differences as meaningful.
+
+## Trace Summary Script
 
 After a captured run:
 
@@ -145,18 +180,10 @@ enabled. Inspect `feedback_trace_summary.md` first. It answers:
 
 ## Suggested Analysis
 
-Run three paired one-episode traces:
-
-```bash
-CAPTURE_ACTIVATIONS=1 TASK_IDS='[0]' PI05_PROMPT_FEEDBACK_MODE=off ./scripts/run_pi05_libero_docker.sh libero_spatial 1
-CAPTURE_ACTIVATIONS=1 TASK_IDS='[0]' PI05_PROMPT_FEEDBACK_MODE=last_action ./scripts/run_pi05_libero_docker.sh libero_spatial 1
-CAPTURE_ACTIVATIONS=1 TASK_IDS='[0]' PI05_PROMPT_FEEDBACK_MODE=chunk_summary ./scripts/run_pi05_libero_docker.sh libero_spatial 1
-```
-
-Then compare:
+After the ablation runner finishes, compare:
 
 - chunk action deltas between baseline and feedback runs;
 - token count changes and whether feedback caused prompt truncation;
 - action-expert layer deltas for chunks after the first feedback-bearing prompt;
-- success and trajectory divergence in rollout videos;
+- success, steps-to-success, and trajectory divergence in rollout videos;
 - applied env-action differences versus normalized selected-action differences.

@@ -8,6 +8,7 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/eval/pi05_libero}"
 OUTPUT_DIR="${OUTPUT_ROOT}/${RUN_ID}"
 POLICY_PATH="${POLICY_PATH:-lerobot/pi05_libero_finetuned}"
 DEVICE="${DEVICE:-cuda}"
+SEED="${SEED:-1000}"
 MIN_GPU_MEM_GB="${MIN_GPU_MEM_GB:-0}"
 MIN_HOST_RAM_GB="${MIN_HOST_RAM_GB:-0}"
 if [[ -z "${DTYPE:-}" ]]; then
@@ -230,6 +231,7 @@ args=(
   --eval.batch_size="${BATCH_SIZE}" \
   --eval.n_episodes="${EPISODES}" \
   --eval.use_async_envs="${USE_ASYNC_ENVS}" \
+  --seed="${SEED}" \
   --output_dir="${OUTPUT_DIR}"
 )
 

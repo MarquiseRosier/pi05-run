@@ -30,6 +30,9 @@ gcloud compute ssh "${VM_NAME}" \
     export MUJOCO_GL=egl && \
     export PYOPENGL_PLATFORM=egl && \
     export MUJOCO_EGL_DEVICE_ID=0 && \
+    export RUN_ID='${RUN_ID:-}' && \
+    export OUTPUT_ROOT='${OUTPUT_ROOT:-outputs/eval/pi05_libero}' && \
+    export SEED='${SEED:-1000}' && \
     export MIN_GPU_MEM_GB='${MIN_GPU_MEM_GB:-0}' && \
     export MIN_HOST_RAM_GB='${MIN_HOST_RAM_GB:-0}' && \
     export CAPTURE_ACTIVATIONS='${CAPTURE_ACTIVATIONS:-0}' && \

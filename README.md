@@ -292,6 +292,21 @@ after each step, run:
 ./scripts/summarize_pi05_feedback_trace.py --run latest --max-steps 80
 ```
 
+To test whether explicit visible action feedback helps the policy finish faster,
+run the baseline and feedback modes with the same tasks, episodes, and seed:
+
+```bash
+CAPTURE_ACTIVATIONS=1 TASK_IDS='[0]' SEED=1000 ./scripts/run_pi05_feedback_ablation.sh libero_spatial 5
+```
+
+For Docker, add `PI05_EVAL_RUNNER=./scripts/run_pi05_libero_docker.sh`.
+
+This runs `off`, `last_action`, and `chunk_summary`, then writes:
+
+```text
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_comparison.md
+```
+
 On a headless server, omit `--open-preview --open` and copy the generated files from:
 
 ```text

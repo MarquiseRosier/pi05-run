@@ -134,6 +134,7 @@ SUITE = "libero_spatial"
 TASK_IDS = "[0]"
 ANALYSIS_TASK_ID = 0
 EPISODES = 1
+EVAL_SEED = 1000
 EVAL_PROGRESS_SECONDS = 30
 CAPTURE_ACTIVATIONS = True
 CAPTURE_PARAM_STATS = False
@@ -142,6 +143,10 @@ CAPTURE_FEEDBACK_TRACE = True
 CAPTURE_ENV_STEPS = True
 CAPTURE_DENOISE_TRACE = True
 PI05_PROMPT_FEEDBACK_MODE = "off"
+RUN_FEEDBACK_ABLATION = False
+FEEDBACK_ABLATION_MODES = "off,last_action,chunk_summary"
+FEEDBACK_ABLATION_EPISODES = 1
+FEEDBACK_ABLATION_CAPTURE_DENOISE = False
 MIN_GPU_MEMORY_GB = 20
 MIN_SYSTEM_RAM_GB = 24
 REPORT_MAX_ROWS = 80
@@ -221,6 +226,20 @@ python scripts/summarize_pi05_feedback_trace.py --run latest --max-steps 80
 The baseline is `PI05_PROMPT_FEEDBACK_MODE="off"`. Set it to `"last_action"` or
 `"chunk_summary"` for visible prompt-feedback ablations. This injects ordinary
 text into the model prompt; it is not hidden reasoning.
+
+For the rollout-level question, set `RUN_FEEDBACK_ABLATION=True`. The ablation
+cell runs the same suite, task IDs, episode count, and `EVAL_SEED` across
+`off`, `last_action`, and `chunk_summary`, then displays:
+
+```text
+outputs/eval/pi05_libero/<ablation-id>_analysis/feedback_ablation_comparison.md
+```
+
+That table compares success rate, average reward, total chunk calls, and
+steps/chunks to official success. Keep `FEEDBACK_ABLATION_CAPTURE_DENOISE=False`
+for speed; turn it on only when you also want denoise traces for each mode.
+Outside Colab, use `scripts/run_pi05_feedback_ablation.sh`; add
+`PI05_EVAL_RUNNER=./scripts/run_pi05_libero_docker.sh` for Docker.
 
 ## Plaintext Prompt Probe
 

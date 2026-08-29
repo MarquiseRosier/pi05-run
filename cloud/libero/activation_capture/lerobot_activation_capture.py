@@ -629,7 +629,13 @@ class ActivationRecorder:
             }
         )
 
-    def record_env_reset(self, observation: Any, info: Any) -> None:
+    def record_env_reset(
+        self,
+        observation: Any,
+        info: Any,
+        task_group: str | None = None,
+        task_id: int | None = None,
+    ) -> None:
         if not self.capture_env_steps:
             return
         self.reset_index += 1
@@ -642,12 +648,24 @@ class ActivationRecorder:
                 "type": "env_reset",
                 "time": time.time(),
                 "reset": self.reset_index,
+                "task_group": task_group,
+                "task_id": task_id,
                 "observation": self._observation_summary(observation),
                 "info_keys": sorted(str(key) for key in info.keys()) if isinstance(info, dict) else [],
             }
         )
 
-    def record_env_step(self, action: Any, observation: Any, reward: Any, terminated: Any, truncated: Any, info: Any) -> None:
+    def record_env_step(
+        self,
+        action: Any,
+        observation: Any,
+        reward: Any,
+        terminated: Any,
+        truncated: Any,
+        info: Any,
+        task_group: str | None = None,
+        task_id: int | None = None,
+    ) -> None:
         if not self.capture_env_steps:
             return
         self.env_step_index += 1
@@ -660,6 +678,9 @@ class ActivationRecorder:
         payload = {
             "type": "env_step",
             "time": time.time(),
+            "reset": self.reset_index,
+            "task_group": task_group,
+            "task_id": task_id,
             "env_step": self.env_step_index,
             "policy_step": selected.get("policy_step"),
             "chunk": selected.get("chunk", self.chunk_index),
@@ -687,12 +708,13 @@ class ActivationRecorder:
         if mode in {"last_action", "action", "visible_last_action"}:
             return f"last applied action {_format_action_feedback(self.last_applied_action_values)}"
         if mode in {"chunk_summary", "recent_actions", "window"}:
-            recent = list(self.recent_applied_actions)
+            window = max(1, int(self.policy_n_action_steps or 10))
+            recent = list(self.recent_applied_actions)[-window:]
             if not recent:
                 return ""
             arr = np.stack(recent, axis=0)
             mean = arr.mean(axis=0)
-            return f"recent applied action mean {_format_action_feedback(mean)}"
+            return f"recent {len(recent)} applied action mean {_format_action_feedback(mean)}"
         return f"last applied action {_format_action_feedback(self.last_applied_action_values)}"
 
     def record_prompt_feedback(self, feedback: str, prompts: list[str]) -> None:
@@ -1052,12 +1074,21 @@ class _CaptureVectorEnv:
 
     def reset(self, *args: Any, **kwargs: Any):
         observation, info = self.env.reset(*args, **kwargs)
-        _RECORDER.record_env_reset(observation, info)
+        _RECORDER.record_env_reset(observation, info, self.task_group, self.task_id)
         return observation, info
 
     def step(self, action: Any):
         observation, reward, terminated, truncated, info = self.env.step(action)
-        _RECORDER.record_env_step(action, observation, reward, terminated, truncated, info)
+        _RECORDER.record_env_step(
+            action,
+            observation,
+            reward,
+            terminated,
+            truncated,
+            info,
+            self.task_group,
+            self.task_id,
+        )
         return observation, reward, terminated, truncated, info
 
     def call(self, *args: Any, **kwargs: Any):

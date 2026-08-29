@@ -35,7 +35,10 @@ gcloud compute ssh "${VM_NAME}" \
     -e PYOPENGL_PLATFORM=egl \
     -e MUJOCO_EGL_DEVICE_ID=0 \
     -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video \
+    -e RUN_ID='${RUN_ID:-}' \
+    -e OUTPUT_ROOT=/workspace/outputs/eval/pi05_libero \
     -e DEVICE=cuda \
+    -e SEED='${SEED:-1000}' \
     -e DTYPE=bfloat16 \
     -e MIN_GPU_MEM_GB='${MIN_GPU_MEM_GB:-0}' \
     -e MIN_HOST_RAM_GB='${MIN_HOST_RAM_GB:-0}' \

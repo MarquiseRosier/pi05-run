@@ -147,6 +147,9 @@ def build_summary(events: list[dict[str, Any]], max_steps: int) -> dict[str, Any
         applied_values = values(applied.get("summary") if isinstance(applied, dict) else {}, limit=7)
         step_rows.append(
             {
+                "reset": event.get("reset"),
+                "task_group": event.get("task_group"),
+                "task_id": event.get("task_id"),
                 "env_step": event.get("env_step"),
                 "policy_step": event.get("policy_step"),
                 "chunk": event.get("chunk"),
@@ -270,6 +273,9 @@ def write_markdown(path: Path, summary: dict[str, Any], max_steps: int) -> None:
     lines.extend(["", "## Executed Simulator Steps", ""])
     step_rows = [
         [
+            row["reset"],
+            row["task_group"],
+            row["task_id"],
             row["env_step"],
             row["policy_step"],
             row["chunk"],
@@ -286,6 +292,9 @@ def write_markdown(path: Path, summary: dict[str, Any], max_steps: int) -> None:
     lines.append(
         markdown_table(
             [
+                "reset",
+                "task",
+                "id",
                 "env_step",
                 "policy_step",
                 "chunk",

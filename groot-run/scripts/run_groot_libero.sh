@@ -57,6 +57,21 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export MUJOCO_EGL_DEVICE_ID="${MUJOCO_EGL_DEVICE_ID:-0}"
 export MPLBACKEND="Agg"
 export PYTHONUNBUFFERED=1
+
+# LIBERO's import asks for a dataset path if ~/.libero/config.yaml is missing.
+# Colab/headless stdin hits EOF. Write the default config non-interactively.
+LIBERO_PKG="${ISAAC_ROOT}/external_dependencies/LIBERO/libero/libero"
+LIBERO_CFG_DIR="${LIBERO_CONFIG_PATH:-${HOME}/.libero}"
+mkdir -p "${LIBERO_CFG_DIR}"
+if [[ ! -f "${LIBERO_CFG_DIR}/config.yaml" ]]; then
+  cat > "${LIBERO_CFG_DIR}/config.yaml" <<EOF
+assets: ${LIBERO_PKG}/assets
+bddl_files: ${LIBERO_PKG}/bddl_files
+benchmark_root: ${LIBERO_PKG}
+datasets: ${ISAAC_ROOT}/external_dependencies/LIBERO/libero/datasets
+init_states: ${LIBERO_PKG}/init_files
+EOF
+fi
 export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER="${HF_HUB_ENABLE_HF_TRANSFER:-1}"
 

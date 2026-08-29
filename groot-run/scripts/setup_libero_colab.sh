@@ -68,5 +68,16 @@ uv pip install --python "${PY}" \
 uv pip install --python "${PY}" numpy==1.26.4 mujoco==3.3.1
 
 "${PY}" -c "import sysconfig, pathlib; pathlib.Path(sysconfig.get_path('purelib'), 'gr00t.pth').write_text(pathlib.Path('${ISAAC_ROOT}').resolve().as_posix() + chr(10))"
-"${PY}" -c "import numpy, gymnasium, libero; print('libero ok', numpy.__version__)"
+
+LIBERO_PKG="${ISAAC_ROOT}/external_dependencies/LIBERO/libero/libero"
+LIBERO_CFG_DIR="${HOME}/.libero"
+mkdir -p "${LIBERO_CFG_DIR}"
+cat > "${LIBERO_CFG_DIR}/config.yaml" <<EOF
+assets: ${LIBERO_PKG}/assets
+bddl_files: ${LIBERO_PKG}/bddl_files
+benchmark_root: ${LIBERO_PKG}
+datasets: ${ISAAC_ROOT}/external_dependencies/LIBERO/libero/datasets
+init_states: ${LIBERO_PKG}/init_files
+EOF
+"${PY}" -c "import numpy, gymnasium, libero; print('libero ok', numpy.__version__, libero.__file__)"
 echo "LIBERO venv ready: ${PY}"

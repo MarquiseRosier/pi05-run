@@ -143,7 +143,6 @@ CAPTURE_FEEDBACK_TRACE = True
 CAPTURE_ENV_STEPS = True
 CAPTURE_DENOISE_TRACE = True
 PI05_PROMPT_FEEDBACK_MODE = "off"
-RUN_FEEDBACK_ABLATION = False
 FEEDBACK_ABLATION_MODES = "off,last_action,chunk_summary"
 FEEDBACK_ABLATION_EPISODES = 1
 FEEDBACK_ABLATION_CAPTURE_DENOISE = False
@@ -227,8 +226,8 @@ The baseline is `PI05_PROMPT_FEEDBACK_MODE="off"`. Set it to `"last_action"` or
 `"chunk_summary"` for visible prompt-feedback ablations. This injects ordinary
 text into the model prompt; it is not hidden reasoning.
 
-For the rollout-level question, set `RUN_FEEDBACK_ABLATION=True`. The ablation
-cell runs the same suite, task IDs, episode count, and `EVAL_SEED` across
+For the rollout-level question, run the visible feedback ablation cell. It runs
+the same suite, task IDs, episode count, and `EVAL_SEED` across
 `off`, `last_action`, and `chunk_summary`, then displays:
 
 ```text

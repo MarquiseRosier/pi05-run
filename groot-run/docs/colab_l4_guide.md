@@ -114,15 +114,19 @@ This is not an official success metric.
 
 ## First Cache Fill
 
-If the GR00T archives do not exist:
+Checkpoints are not in git. The notebook downloads `nvidia/GR00T-N1.7-LIBERO/libero_10` from Hugging Face when that folder is missing. Pi0.5's `archives/hf_home.tar` is not used.
 
 ```text
-ALLOW_AUTH_REFRESH = True
-FORCE_AUTH_REFRESH = False
 HF_OFFLINE = False
+ALLOW_AUTH_REFRESH = True
 ```
 
-Add a private Colab Secret `HF_TOKEN`, or the optional restricted Drive file `secrets/HF_TOKEN.txt`. Accept both gated NVIDIA models first. After the archives exist, return to `HF_OFFLINE=True`.
+Add a private Colab Secret `HF_TOKEN`, or `DRIVE_ROOT/secrets/HF_TOKEN.txt`. Accept:
+
+- https://huggingface.co/nvidia/GR00T-N1.7-LIBERO
+- https://huggingface.co/nvidia/Cosmos-Reason2-2B
+
+After the first successful run, the notebook can persist `archives/groot_ckpt.tar`. Later runs can use `HF_OFFLINE=True`.
 
 ## Local / Linux Runner
 

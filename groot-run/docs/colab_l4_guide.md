@@ -82,7 +82,7 @@ That is the same official LIBERO spatial task the Pi0.5 notebook runs as `libero
 4. Start `run_gr00t_server.py`, wait for port 5555, then run `rollout_policy.py`.
 5. Write videos and `eval_info.json` under `outputs/eval/groot_libero/<timestamp>/`.
 6. If capture is on, write `activation_capture/events.jsonl` and build the HTML report.
-7. Optional prompt probe against a one-chunk language swap.
+7. Optional language intervention probe: same cameras/state, original vs `PROBE_LANGUAGE`, compare each 8-step replan.
 
 Heartbeat lines print elapsed time, videos vs expected episodes, output size, captured chunks, and the latest log line.
 
@@ -99,15 +99,18 @@ The hooks are not PaliGemma layers. GR00T families are:
 
 Each chunk row is one policy call. The sim executes the first 8 actions (`N_ACTION_STEPS`), then replans. Pi0.5 executes 10.
 
-## Prompt Probe
+## Language Intervention Probe
 
-The last cell resets the mapped LIBERO task, replaces the language with `PROBE_LANGUAGE`, and asks GR00T for one action chunk. Artifacts:
+The last cell is a counterfactual language probe, not a second eval. At each replan it queries GR00T twice on the same cameras and state: the original LIBERO instruction, then `PROBE_LANGUAGE`. The robot executes the original-language chunk so the scene follows the real task. The table is the 8-step delta.
+
+`PROBE_LANGUAGE` must differ from the official instruction. Artifacts:
 
 ```text
+outputs/probes/<suite>/task_<id>/compare.md
+outputs/probes/<suite>/task_<id>/language_probe.json
 outputs/probes/<suite>/task_<id>/render.png
 outputs/probes/<suite>/task_<id>/observation_images_image.png
 outputs/probes/<suite>/task_<id>/observation_images_image2.png
-outputs/probes/<suite>/task_<id>/action_chunk.json
 ```
 
 This is not an official success metric.

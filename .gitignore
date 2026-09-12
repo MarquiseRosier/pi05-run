@@ -14,6 +14,8 @@ pi0.5/
 outputs/
 data/
 .libero/
+.codex-build/
+.codex-finalizer/
 
 # Local-only notes and secrets
 next_steps.md

@@ -25,17 +25,27 @@ from .patch_pi05 import (
     install_pi05_action_expert_wrappers,
     list_pi05_action_expert_mlp_targets,
 )
+from .feature_discovery import (
+    FeatureDiscoveryCollector,
+    FeatureDiscoveryConfig,
+    FeatureTopK,
+    RunningFeatureStats,
+)
 
 __all__ = [
     "ActionExpertMLPTarget",
     "ActivationBatch",
     "ActivationBuffer",
     "ActivationBufferStats",
+    "FeatureDiscoveryCollector",
+    "FeatureDiscoveryConfig",
+    "FeatureTopK",
     "MLPActivationRecord",
     "MLPTranscoderLatentRecord",
     "MultiLayerActivationBuffer",
     "Pi05TranscoderContext",
     "RunningVarianceDenominator",
+    "RunningFeatureStats",
     "TimeConditionedTranscoder",
     "TimeConditionedTranscoderConfig",
     "TranscoderLoss",

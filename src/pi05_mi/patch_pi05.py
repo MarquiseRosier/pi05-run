@@ -7,7 +7,7 @@ import types
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 import torch
 from torch import Tensor, nn
@@ -70,6 +70,8 @@ class Pi05TranscoderContext:
         capture_latents: bool = False,
         latent_top_k: int = 64,
         save_full_latents: bool = False,
+        latent_callback: Callable[[str, int, Tensor, Tensor], None] | None = None,
+        store_latent_summaries: bool = True,
     ):
         self.mode = mode
         self.detach_records = detach_records
@@ -77,6 +79,8 @@ class Pi05TranscoderContext:
         self.capture_latents = capture_latents
         self.latent_top_k = latent_top_k
         self.save_full_latents = save_full_latents
+        self.latent_callback = latent_callback
+        self.store_latent_summaries = store_latent_summaries
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
         self.latents: dict[str, list[MLPTranscoderLatentRecord]] = defaultdict(list)
@@ -134,6 +138,10 @@ class Pi05TranscoderContext:
 
     def record_latent(self, name: str, layer_index: int, latent: Tensor, timestep: Tensor) -> None:
         if not self.capture_latents:
+            return
+        if self.latent_callback is not None:
+            self.latent_callback(name, layer_index, latent, timestep)
+        if not self.store_latent_summaries:
             return
         with torch.no_grad():
             z = latent.detach().float()

@@ -71,15 +71,19 @@ class Pi05TranscoderContext:
         latent_top_k: int = 64,
         save_full_latents: bool = False,
         latent_callback: Callable[[str, int, Tensor, Tensor], None] | None = None,
+        diffusion_callback: Callable[[str, Tensor, Tensor | None], None] | None = None,
         store_latent_summaries: bool = True,
+        capture_diffusion: bool = False,
     ):
         self.mode = mode
         self.detach_records = detach_records
         self.capture_records = capture_records
         self.capture_latents = capture_latents
+        self.capture_diffusion = capture_diffusion
         self.latent_top_k = latent_top_k
         self.save_full_latents = save_full_latents
         self.latent_callback = latent_callback
+        self.diffusion_callback = diffusion_callback
         self.store_latent_summaries = store_latent_summaries
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
@@ -176,6 +180,11 @@ class Pi05TranscoderContext:
                 )
             )
 
+    def record_diffusion(self, kind: str, value: Tensor, timestep: Tensor | None = None) -> None:
+        if not self.capture_diffusion or self.diffusion_callback is None:
+            return
+        self.diffusion_callback(kind, value, timestep)
+
 
 class WrappedActionExpertMLP(nn.Module):
     """Wrapper that preserves, observes, or replaces one Pi0.5 action-expert MLP."""
@@ -271,9 +280,12 @@ def _patch_timestep_methods(model: nn.Module, context: Pi05TranscoderContext) ->
         model._pi05_mi_original_forward = model.forward  # type: ignore[attr-defined]
     if not hasattr(model, "_pi05_mi_original_denoise_step"):
         model._pi05_mi_original_denoise_step = model.denoise_step  # type: ignore[attr-defined]
+    if not hasattr(model, "_pi05_mi_original_sample_noise"):
+        model._pi05_mi_original_sample_noise = model.sample_noise  # type: ignore[attr-defined]
 
     original_forward = model._pi05_mi_original_forward  # type: ignore[attr-defined]
     original_denoise_step = model._pi05_mi_original_denoise_step  # type: ignore[attr-defined]
+    original_sample_noise = model._pi05_mi_original_sample_noise  # type: ignore[attr-defined]
 
     def forward_with_timestep(_self: nn.Module, *args, **kwargs):
         timestep = kwargs.get("time")
@@ -290,11 +302,25 @@ def _patch_timestep_methods(model: nn.Module, context: Pi05TranscoderContext) ->
             if len(args) < 4:
                 raise TypeError("PI05Pytorch.denoise_step wrapper could not find positional argument `timestep`")
             timestep = args[3]
+        x_t = kwargs.get("x_t")
+        if x_t is None:
+            if len(args) < 3:
+                raise TypeError("PI05Pytorch.denoise_step wrapper could not find positional argument `x_t`")
+            x_t = args[2]
+        context.record_diffusion("denoise_input", x_t, timestep)
         with context.use_timestep(timestep):
-            return original_denoise_step(*args, **kwargs)
+            velocity = original_denoise_step(*args, **kwargs)
+        context.record_diffusion("denoise_velocity", velocity, timestep)
+        return velocity
+
+    def sample_noise_with_trace(_self: nn.Module, *args, **kwargs):
+        noise = original_sample_noise(*args, **kwargs)
+        context.record_diffusion("initial_noise", noise, None)
+        return noise
 
     model.forward = types.MethodType(forward_with_timestep, model)  # type: ignore[method-assign]
     model.denoise_step = types.MethodType(denoise_step_with_timestep, model)  # type: ignore[method-assign]
+    model.sample_noise = types.MethodType(sample_noise_with_trace, model)  # type: ignore[method-assign]
     model._pi05_mi_timestep_context = context  # type: ignore[attr-defined]
 
 

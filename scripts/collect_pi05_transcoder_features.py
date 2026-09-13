@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from lerobot.datasets.factory import make_dataset
 from lerobot.policies import make_policy
 
 from pi05_mi.feature_discovery import FeatureDiscoveryCollector, FeatureDiscoveryConfig
+from pi05_mi.langfuse_tracing import make_langfuse_tracer
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
 from train_pi05_transcoders import (
@@ -87,6 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--langfuse-trace", action="store_true", help="Enable Langfuse tracing for this collection run.")
     return parser.parse_args()
 
 
@@ -162,6 +165,8 @@ def main() -> None:
     patch_transformers_causal_mask_compat()
     patch_pi05_checkpoint_key_compat()
     args = parse_args()
+    if args.langfuse_trace:
+        os.environ["PI05_LANGFUSE_TRACE"] = "1"
     if args.noise_samples <= 0:
         raise ValueError(f"--noise-samples must be positive, got {args.noise_samples}")
 
@@ -245,6 +250,33 @@ def main() -> None:
     if metrics_path.exists():
         metrics_path.unlink()
 
+    tracer = make_langfuse_tracer(feature="pi05-transcoder-feature-collection", output_root=args.output_dir)
+    trace_input = {
+        "policy_path": args.policy_path,
+        "checkpoint": str(args.checkpoint),
+        "dataset_repo_id": cfg.dataset.repo_id,
+        "episodes": _parse_episode_ids(episodes),
+        "split_info": split_info,
+        "planned_batches": planned_batches,
+        "collection_mode": args.collection_mode,
+        "noise_samples": args.noise_samples,
+        "num_inference_steps": args.num_inference_steps,
+    }
+
+    extra_config = {
+        "policy_path": args.policy_path,
+        "checkpoint": str(args.checkpoint),
+        "dataset_repo_id": cfg.dataset.repo_id,
+        "episodes": _parse_episode_ids(episodes),
+        "split_info": split_info,
+        "batch_size": args.batch_size,
+        "planned_batches": planned_batches,
+        "collection_mode": args.collection_mode,
+        "noise_samples": args.noise_samples,
+        "num_inference_steps": args.num_inference_steps,
+        "device": str(device),
+        "policy_dtype": args.resolved_policy_dtype,
+    }
     started_at = time.time()
     batch_iter = tqdm(
         enumerate(dataloader, start=1),
@@ -252,59 +284,68 @@ def main() -> None:
         desc="feature feed-forwards",
         disable=args.no_progress,
     )
-    try:
-        for batch_index, raw_batch in batch_iter:
-            if batch_index > planned_batches:
-                break
-            batch_size = collector.begin_batch(raw_batch)
-            _collect_for_batch(
-                args=args,
-                policy=policy,
-                dataset=dataset,
-                preprocessor=preprocessor,
-                context=context,
-                raw_batch=raw_batch,
-            )
-            updated = collector.end_batch()
-            context.clear_records()
-            row = {
-                "batch_index": batch_index,
-                "elapsed_s": time.time() - started_at,
-                "observations": collector.observation_count,
-                "batch_size": batch_size,
-                "layers_updated": len(updated),
-                "collection_mode": args.collection_mode,
-                "noise_samples": args.noise_samples,
-            }
-            with metrics_path.open("a") as f:
-                f.write(json.dumps(row, sort_keys=True) + "\n")
-            if args.no_progress:
-                print(
-                    f"batch={batch_index} observations={collector.observation_count} layers_updated={len(updated)}",
-                    flush=True,
-                )
-            else:
-                batch_iter.set_postfix(observations=collector.observation_count, layers=len(updated))
-    finally:
-        collector.close()
+    with tracer.trace(
+        "collect-transcoder-features",
+        input=trace_input,
+        metadata={"collection_mode": args.collection_mode, "output_dir": str(args.output_dir)},
+        tags=["feature-collection"],
+    ) as root_trace:
+        try:
+            for batch_index, raw_batch in batch_iter:
+                if batch_index > planned_batches:
+                    break
+                with tracer.observation(
+                    "collect-feature-batch",
+                    as_type="span",
+                    input=tracer.batch_input(raw_batch),
+                    metadata={"batch_index": batch_index, "collection_mode": args.collection_mode},
+                ) as batch_trace:
+                    batch_size = collector.begin_batch(raw_batch)
+                    _collect_for_batch(
+                        args=args,
+                        policy=policy,
+                        dataset=dataset,
+                        preprocessor=preprocessor,
+                        context=context,
+                        raw_batch=raw_batch,
+                    )
+                    updated = collector.end_batch()
+                    context.clear_records()
+                    row = {
+                        "batch_index": batch_index,
+                        "elapsed_s": time.time() - started_at,
+                        "observations": collector.observation_count,
+                        "batch_size": batch_size,
+                        "layers_updated": len(updated),
+                        "collection_mode": args.collection_mode,
+                        "noise_samples": args.noise_samples,
+                    }
+                    with metrics_path.open("a") as f:
+                        f.write(json.dumps(row, sort_keys=True) + "\n")
+                    tracer.update(batch_trace, output={**row, "updated_layers": sorted(updated)})
+                if args.no_progress:
+                    print(
+                        f"batch={batch_index} observations={collector.observation_count} layers_updated={len(updated)}",
+                        flush=True,
+                    )
+                else:
+                    batch_iter.set_postfix(observations=collector.observation_count, layers=len(updated))
+        finally:
+            collector.close()
 
-    collector.save(
-        args.output_dir,
-        extra_config={
-            "policy_path": args.policy_path,
-            "checkpoint": str(args.checkpoint),
-            "dataset_repo_id": cfg.dataset.repo_id,
-            "episodes": _parse_episode_ids(episodes),
-            "split_info": split_info,
-            "batch_size": args.batch_size,
-            "planned_batches": planned_batches,
-            "collection_mode": args.collection_mode,
-            "noise_samples": args.noise_samples,
-            "num_inference_steps": args.num_inference_steps,
-            "device": str(device),
-            "policy_dtype": args.resolved_policy_dtype,
-        },
-    )
+        collector.save(args.output_dir, extra_config=extra_config)
+        tracer.update(
+            root_trace,
+            output={
+                "output_dir": str(args.output_dir),
+                "observations": collector.observation_count,
+                "layers": len(layer_names),
+                "feature_stats": str(args.output_dir / "feature_stats.pt"),
+                "feature_topk": str(args.output_dir / "feature_topk.pt"),
+                "observations_jsonl": str(args.output_dir / "observations.jsonl"),
+            },
+        )
+    tracer.flush()
     print(
         f"saved feature discovery artifacts to {args.output_dir} "
         f"observations={collector.observation_count} layers={len(layer_names)}",

@@ -5,11 +5,19 @@ This repo is centered around one shared Google Colab notebook for running and in
 Most collaborators should start here:
 
 - Notebook: `notebooks/pi05_libero_colab_l4.ipynb`
+- Transcoder notebook: `notebooks/pi05_libero_transcoder_colab.ipynb`
+- Jayden transcoder notebook: `notebooks/pi05_libero_transcoder_colab_jayden.ipynb`
 - Guide: `docs/colab_l4_guide.md`
 - Open in Colab:
 
 ```text
 https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/main/notebooks/pi05_libero_colab_l4.ipynb
+```
+
+Transcoder feature-inspection branch notebook:
+
+```text
+https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-transcoder-feature-inspection/notebooks/pi05_libero_transcoder_colab_jayden.ipynb
 ```
 
 The notebook runs Pi0.5/LIBERO eval natively on a Colab L4 or A100 runtime because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, videos, and prompt probes.
@@ -49,7 +57,12 @@ Generated Colab outputs include:
 - action-to-layer correlation plots;
 - interactive HTML reports with activation family/layer/metric controls and action overlays;
 - prompt probe images and predicted action chunks;
+- transcoder layer-flow reports under `outputs/features/pi05_libero/transcoder-probe`;
 - persisted logs and summaries under the shared Drive `outputs/` folder.
+
+For the GCP L4 path, `scripts/gcp_run_transcoder_probe.sh` creates
+`~/groot-run/outputs/features/pi05_libero/transcoder-probe/`, renders the feature
+browser and flowchart, and archives it as `transcoder-probe.tar.gz`.
 
 Read the full notebook workflow here:
 

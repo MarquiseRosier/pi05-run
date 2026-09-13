@@ -40,7 +40,9 @@ mkdir -p "$HOME/groot-run/outputs" "$HOME/.cache/huggingface"
 uv venv "$HOME/groot-run/.venv" --python 3.12
 uv pip install --python "$HOME/groot-run/.venv/bin/python" --torch-backend cu128 \
   "lerobot[evaluation,libero,pi]" \
-  hf-transfer
+  hf-transfer \
+  langfuse \
+  opencv-python
 "$HOME/groot-run/.venv/bin/python" - <<PY
 import torch
 import lerobot

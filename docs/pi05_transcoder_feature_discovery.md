@@ -115,6 +115,65 @@ Thumbnails are optional. When `--save-thumbnails` is set, the script reloads the
 selected LIBERO observations and saves small images next to the report. Without
 that flag, the report remains lightweight and uses only the saved metadata.
 
+## Layer Flow Report
+
+`scripts/make_pi05_transcoder_flow_report.py` renders the aggregate layer-to-layer
+view used for the activation-flow probe:
+
+```bash
+python scripts/make_pi05_transcoder_flow_report.py \
+  --feature-dir outputs/features/pi05_libero/transcoder-probe \
+  --checkpoint /path/to/step_027233.pt \
+  --top-features-per-layer 6
+```
+
+It writes:
+
+```text
+transcoder_flow_report.html
+transcoder_flow_chart.svg
+transcoder_flow_summary.json
+transcoder_flow_layers.csv
+```
+
+Each node is one Pi0.5 action-expert MLP transcoder layer. Node intensity and
+edge width summarize sparse latent activity accumulated across the collected
+LIBERO observations and denoising passes. When the checkpoint is available, the
+default attribution proxy is `E[z_i] * ||decoder_i||`; otherwise the report falls
+back to `E[z_i]`. Edges are adjacent-layer aggregate statistics, not causal proof
+of connectivity.
+
+## Langfuse Tracing
+
+Langfuse tracing is opt-in via environment variables and never requires secrets
+inside notebooks or committed files:
+
+```bash
+export PI05_LANGFUSE_TRACE=1
+export LANGFUSE_PUBLIC_KEY=...
+export LANGFUSE_SECRET_KEY=...
+export LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
+```
+
+The Colab notebook reads `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` from
+private Colab Secrets. The runtime writes one trace per rollout policy chunk:
+
+```text
+pi05-transcoder-rollout-chunk
+  capture-observation inputs: task text, tensor shapes, optional camera media
+  trace-diffusion-trajectory: initial noise, denoise x_t, denoise velocity summaries
+  decode-action-chunk: final 50-step action chunk and first 10 executed actions
+  trace-transcoder-layer-activation: one span per action-expert layer with top sparse features
+```
+
+The offline feature pass writes one root trace for the aggregate collection and
+child spans per dataset batch. The flow report logs its SVG/HTML/JSON/CSV output
+paths and attaches the SVG chart when media upload is enabled.
+
+Use `PI05_LANGFUSE_MAX_IMAGES`, `PI05_LANGFUSE_MAX_MEDIA_BYTES`,
+`PI05_LANGFUSE_MAX_DIFFUSION_EVENTS`, and `PI05_LANGFUSE_MAX_LAYER_SPANS` to cap
+trace size.
+
 ## Output Files
 
 The collector writes:
@@ -134,6 +193,10 @@ feature_report.html
 feature_candidates.csv
 feature_candidates.json
 feature_report_thumbnails/
+transcoder_flow_report.html
+transcoder_flow_chart.svg
+transcoder_flow_summary.json
+transcoder_flow_layers.csv
 ```
 
 Thumbnails are optional. Without thumbnails, the report still contains scores,
@@ -206,3 +269,28 @@ of downloading `feature_topk.pt` locally:
   --top-examples 20 \
   --sort-by interesting
 ```
+
+## GCP Transcoder Probe
+
+The GCP runner builds the requested artifact folder and archive on the L4 VM:
+
+```bash
+LOCAL_TRANSCODER_CHECKPOINT=/path/to/step_027233.pt \
+PI05_LANGFUSE_TRACE=1 \
+./scripts/gcp_run_transcoder_probe.sh
+```
+
+Default remote outputs:
+
+```text
+~/groot-run/outputs/features/pi05_libero/transcoder-probe/
+~/groot-run/transcoder-probe/transcoder-probe.tar.gz
+```
+
+The archive is fetched locally to:
+
+```text
+outputs/transcoder-probe/transcoder-probe.tar.gz
+```
+
+Set `GCS_URI=gs://bucket/prefix` to also upload the archive to Cloud Storage.

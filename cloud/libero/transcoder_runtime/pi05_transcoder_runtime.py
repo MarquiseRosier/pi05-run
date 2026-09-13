@@ -8,16 +8,19 @@ Loaded by ``sitecustomize`` when ``PI05_TRANSCODER_MODE`` is ``probe`` or
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import sys
 import time
 import types
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tensor, summarize_diffusion_tensor
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
 
@@ -99,8 +102,13 @@ class TranscoderRecorder:
         self.events_path = self.root / "events.jsonl"
         self.file = self.events_path.open("a", buffering=1)
         self.capture_latents = _bool_env("PI05_TRANSCODER_CAPTURE_LATENTS", True)
+        self.capture_diffusion = _bool_env("PI05_TRANSCODER_CAPTURE_DIFFUSION", True)
         self.max_chunks = _int_env("PI05_TRANSCODER_MAX_CHUNKS", 40)
         self.top_k = _int_env("PI05_TRANSCODER_TOP_K", 64)
+        self.langfuse_top_k = _int_env("PI05_LANGFUSE_TOP_FEATURES", 10)
+        self.langfuse_max_diffusion_events = _int_env("PI05_LANGFUSE_MAX_DIFFUSION_EVENTS", 64)
+        self.langfuse_max_layer_spans = _int_env("PI05_LANGFUSE_MAX_LAYER_SPANS", 512)
+        self.langfuse_layer_spans = 0
         self.save_full_latents = _bool_env("PI05_TRANSCODER_SAVE_FULL_LATENTS", False)
         if self.save_full_latents:
             self.full_dir.mkdir(parents=True, exist_ok=True)
@@ -108,12 +116,17 @@ class TranscoderRecorder:
         self.captured_chunks = 0
         self.active = False
         self.call_index = 0
+        self.diffusion_call_index = 0
+        self.diffusion_events: list[dict[str, Any]] = []
+        self._current_trace: Any | None = None
+        self.langfuse = make_langfuse_tracer(feature="pi05-transcoder-rollout", output_root=self.root)
         self._write(
             {
                 "type": "transcoder_capture_start",
                 "time": time.time(),
                 "mode": _mode(),
                 "capture_latents": self.capture_latents,
+                "capture_diffusion": self.capture_diffusion,
                 "top_k": self.top_k,
                 "max_chunks": self.max_chunks,
                 "save_full_latents": self.save_full_latents,
@@ -125,6 +138,7 @@ class TranscoderRecorder:
         if not self.file.closed:
             self._write({"type": "transcoder_capture_end", "time": time.time()})
             self.file.close()
+        self.langfuse.flush()
 
     def _write(self, payload: dict[str, Any]) -> None:
         self.file.write(json.dumps(payload, separators=(",", ":"), allow_nan=False) + "\n")
@@ -132,8 +146,12 @@ class TranscoderRecorder:
     def begin_chunk(self, batch: dict[str, Any], context: Pi05TranscoderContext) -> None:
         self.chunk_index += 1
         self.call_index = 0
+        self.diffusion_call_index = 0
+        self.diffusion_events = []
         context.clear_records()
-        self.active = self.capture_latents and (self.max_chunks <= 0 or self.captured_chunks < self.max_chunks)
+        self.active = (self.capture_latents or self.capture_diffusion) and (
+            self.max_chunks <= 0 or self.captured_chunks < self.max_chunks
+        )
         if not self.active:
             return
         self.captured_chunks += 1
@@ -150,35 +168,142 @@ class TranscoderRecorder:
             payload["task"] = task[0]
         self._write(payload)
 
+    @contextlib.contextmanager
+    def trace_chunk(self, batch: dict[str, Any]):
+        if not self.active:
+            yield None
+            return
+
+        trace_input = self.langfuse.batch_input(batch)
+        trace_input.update(
+            {
+                "chunk": self.chunk_index,
+                "mode": _mode(),
+                "simulator_feedback": (
+                    "LeRobot executes the first n_action_steps from the predicted action chunk, "
+                    "then replans from fresh simulator camera/state observations and the same task text."
+                ),
+            }
+        )
+        with self.langfuse.trace(
+            "pi05-transcoder-rollout-chunk",
+            input=trace_input,
+            metadata={"chunk": self.chunk_index, "mode": _mode()},
+            tags=["rollout"],
+        ) as trace:
+            self._current_trace = trace
+            try:
+                with self.langfuse.observation(
+                    "capture-observation",
+                    as_type="span",
+                    input=trace_input,
+                    output={
+                        "chunk": self.chunk_index,
+                        "captured_images": len(trace_input.get("images", {})),
+                    },
+                    metadata={"chunk": self.chunk_index},
+                ):
+                    pass
+                yield trace
+            finally:
+                self._current_trace = None
+
     def end_chunk(self, context: Pi05TranscoderContext, actions: torch.Tensor | None = None) -> None:
         if not self.active:
             context.clear_records()
             return
+        action_summary = None
         if actions is not None:
-            self._record_action_chunk(actions)
-        self._record_latents(context)
+            action_summary = self._record_action_chunk(actions)
+        diffusion_summary = self._trace_diffusion_events()
+        latent_summary = self._record_latents(context)
+        if self._current_trace is not None:
+            self.langfuse.update(
+                self._current_trace,
+                output={
+                    "chunk": self.chunk_index,
+                    "action_output": action_summary,
+                    "diffusion": diffusion_summary,
+                    "transcoder": latent_summary,
+                },
+            )
         self._write({"type": "chunk_end", "chunk": self.chunk_index, "time": time.time()})
         context.clear_records()
         self.active = False
 
-    def _record_action_chunk(self, actions: torch.Tensor) -> None:
+    def _record_action_chunk(self, actions: torch.Tensor) -> dict[str, Any]:
         try:
             arr = actions.detach()[0].to("cpu").float()
             values = arr[:, : min(arr.shape[-1], 12)]
-            self._write(
+            payload = {
+                "type": "action_chunk",
+                "chunk": self.chunk_index,
+                "shape": list(actions.shape),
+                "values": [[round(float(x), 6) for x in row] for row in values.tolist()],
+                "norm_per_step": [round(float(x), 6) for x in arr.norm(dim=-1).tolist()],
+                "abs_per_dim": [round(float(x), 6) for x in arr.abs().mean(dim=0).tolist()],
+            }
+            self._write(payload)
+            summary = summarize_action_tensor(actions, executed_steps=_int_env("PI05_N_ACTION_STEPS", 10))
+            with self.langfuse.observation(
+                "decode-action-chunk",
+                as_type="generation",
+                model="pi05-libero",
+                input={"chunk": self.chunk_index, "mode": _mode()},
+                output=summary,
+                metadata={"chunk": self.chunk_index},
+            ):
+                pass
+            return summary
+        except Exception as exc:
+            payload = {"type": "action_error", "chunk": self.chunk_index, "error": str(exc)}
+            self._write(payload)
+            return payload
+
+    def record_diffusion_state(self, kind: str, value: torch.Tensor, timestep: torch.Tensor | None) -> None:
+        if not self.active or not self.capture_diffusion:
+            return
+        try:
+            payload = summarize_diffusion_tensor(kind, value, timestep)
+            payload.update(
                 {
-                    "type": "action_chunk",
+                    "type": "diffusion_state",
                     "chunk": self.chunk_index,
-                    "shape": list(actions.shape),
-                    "values": [[round(float(x), 6) for x in row] for row in values.tolist()],
-                    "norm_per_step": [round(float(x), 6) for x in arr.norm(dim=-1).tolist()],
-                    "abs_per_dim": [round(float(x), 6) for x in arr.abs().mean(dim=0).tolist()],
+                    "call": self.diffusion_call_index,
                 }
             )
+            self.diffusion_call_index += 1
+            self.diffusion_events.append(payload)
+            self._write(payload)
         except Exception as exc:
-            self._write({"type": "action_error", "chunk": self.chunk_index, "error": str(exc)})
+            self._write({"type": "diffusion_state_error", "chunk": self.chunk_index, "kind": kind, "error": str(exc)})
 
-    def _record_latents(self, context: Pi05TranscoderContext) -> None:
+    def _trace_diffusion_events(self) -> dict[str, Any]:
+        if not self.diffusion_events:
+            return {"event_count": 0, "captured": self.capture_diffusion}
+        counts: dict[str, int] = defaultdict(int)
+        for event in self.diffusion_events:
+            counts[str(event.get("kind", "unknown"))] += 1
+        events = self.diffusion_events[: max(0, self.langfuse_max_diffusion_events)]
+        summary = {
+            "event_count": len(self.diffusion_events),
+            "captured_events": len(events),
+            "counts": dict(sorted(counts.items())),
+            "events": events,
+        }
+        with self.langfuse.observation(
+            "trace-diffusion-trajectory",
+            as_type="span",
+            input={"chunk": self.chunk_index, "mode": _mode()},
+            output=summary,
+            metadata={"chunk": self.chunk_index},
+        ):
+            pass
+        return summary
+
+    def _record_latents(self, context: Pi05TranscoderContext) -> dict[str, Any]:
+        layer_events: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        event_count = 0
         for records in context.latents.values():
             for record in records:
                 payload = {
@@ -212,7 +337,54 @@ class TranscoderRecorder:
                     torch.save(record.full_latent, path)
                     payload["full_latent_path"] = str(path.relative_to(self.root))
                 self._write(payload)
+                layer_events[int(record.layer_index)].append(payload)
+                event_count += 1
                 self.call_index += 1
+        layer_summaries = [self._trace_layer_summary(layer, events) for layer, events in sorted(layer_events.items())]
+        return {
+            "event_count": event_count,
+            "layer_count": len(layer_summaries),
+            "layers": layer_summaries,
+        }
+
+    def _compact_latent_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "call": payload.get("call"),
+            "layer": payload.get("layer"),
+            "module": payload.get("module"),
+            "timestep": payload.get("timestep"),
+            "shape": payload.get("shape"),
+            "l0_mean": payload.get("l0_mean"),
+            "l1_mean": payload.get("l1_mean"),
+            "max_value": payload.get("max_value"),
+            "top": payload.get("top", [])[: max(0, self.langfuse_top_k)],
+        }
+
+    def _trace_layer_summary(self, layer: int, events: list[dict[str, Any]]) -> dict[str, Any]:
+        compact_events = [self._compact_latent_event(event) for event in events]
+        l0_values = [float(event.get("l0_mean", 0.0)) for event in events]
+        l1_values = [float(event.get("l1_mean", 0.0)) for event in events]
+        max_values = [float(event.get("max_value", 0.0)) for event in events]
+        summary = {
+            "layer": layer,
+            "module": events[0].get("module") if events else None,
+            "call_count": len(events),
+            "mean_l0": round(sum(l0_values) / max(1, len(l0_values)), 6),
+            "mean_l1": round(sum(l1_values) / max(1, len(l1_values)), 6),
+            "max_value": round(max(max_values) if max_values else 0.0, 6),
+            "events": compact_events,
+        }
+        if self.langfuse_layer_spans < self.langfuse_max_layer_spans:
+            self.langfuse_layer_spans += 1
+            with self.langfuse.observation(
+                "trace-transcoder-layer-activation",
+                as_type="span",
+                input={"chunk": self.chunk_index, "layer": layer, "mode": _mode()},
+                output=summary,
+                metadata={"chunk": self.chunk_index, "layer": layer, "module": summary["module"]},
+            ):
+                pass
+        return summary
 
 
 _RECORDER = TranscoderRecorder()
@@ -239,6 +411,8 @@ def _install_on_policy(policy: Any) -> None:
         mode=mode,  # type: ignore[arg-type]
         capture_records=False,
         capture_latents=_RECORDER.capture_latents,
+        capture_diffusion=_RECORDER.capture_diffusion,
+        diffusion_callback=_RECORDER.record_diffusion_state,
         latent_top_k=_RECORDER.top_k,
         save_full_latents=_RECORDER.save_full_latents,
     )
@@ -254,11 +428,12 @@ def _install_on_policy(policy: Any) -> None:
     def wrapped_predict_action_chunk(self: Any, batch: dict[str, Any], *args: Any, **kwargs: Any):
         _RECORDER.begin_chunk(batch, context)
         actions = None
-        try:
-            actions = original_predict(batch, *args, **kwargs)
-            return actions
-        finally:
-            _RECORDER.end_chunk(context, actions)
+        with _RECORDER.trace_chunk(batch):
+            try:
+                actions = original_predict(batch, *args, **kwargs)
+                return actions
+            finally:
+                _RECORDER.end_chunk(context, actions)
 
     policy.predict_action_chunk = types.MethodType(wrapped_predict_action_chunk, policy)
     policy._pi05_transcoder_runtime_installed = True

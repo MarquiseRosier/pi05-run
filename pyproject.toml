@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "langfuse>=4.15.2",
     "lerobot[aloha,diffusion,evaluation,pusht]",
     "modal",
     "transformers",

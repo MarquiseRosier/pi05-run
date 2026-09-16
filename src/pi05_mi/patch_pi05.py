@@ -49,6 +49,18 @@ class MLPTranscoderLatentRecord:
 
 
 @dataclass(frozen=True)
+class MLPTranscoderTraceRecord:
+    """Gradient-preserving transcoder tensors from one wrapped MLP call."""
+
+    name: str
+    layer_index: int
+    mode: str
+    timestep: Tensor
+    preactivation: Tensor
+    latent: Tensor
+
+
+@dataclass(frozen=True)
 class ActionExpertMLPTarget:
     """One Pi0.5 action-expert MLP target."""
 
@@ -68,22 +80,27 @@ class Pi05TranscoderContext:
         detach_records: bool = True,
         capture_records: bool = True,
         capture_latents: bool = False,
+        capture_traces: bool = False,
         latent_top_k: int = 64,
         save_full_latents: bool = False,
         latent_callback: Callable[[str, int, Tensor, Tensor], None] | None = None,
+        trace_callback: Callable[[str, int, Tensor, Tensor, Tensor], None] | None = None,
         store_latent_summaries: bool = True,
     ):
         self.mode = mode
         self.detach_records = detach_records
         self.capture_records = capture_records
         self.capture_latents = capture_latents
+        self.capture_traces = capture_traces
         self.latent_top_k = latent_top_k
         self.save_full_latents = save_full_latents
         self.latent_callback = latent_callback
+        self.trace_callback = trace_callback
         self.store_latent_summaries = store_latent_summaries
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
         self.latents: dict[str, list[MLPTranscoderLatentRecord]] = defaultdict(list)
+        self.trace_records: dict[str, list[MLPTranscoderTraceRecord]] = defaultdict(list)
 
     @contextmanager
     def use_timestep(self, timestep: Tensor) -> Iterator[None]:
@@ -97,6 +114,7 @@ class Pi05TranscoderContext:
     def clear_records(self) -> None:
         self.records.clear()
         self.latents.clear()
+        self.trace_records.clear()
 
     def timestep_for(self, x: Tensor) -> Tensor:
         if self.current_timestep is None:
@@ -133,6 +151,30 @@ class Pi05TranscoderContext:
                 x=x,
                 y=y,
                 timestep=timestep,
+            )
+        )
+
+    def record_trace(
+        self,
+        name: str,
+        layer_index: int,
+        preactivation: Tensor,
+        latent: Tensor,
+        timestep: Tensor,
+    ) -> None:
+        if not self.capture_traces:
+            return
+        if self.trace_callback is not None:
+            self.trace_callback(name, layer_index, preactivation, latent, timestep)
+            return
+        self.trace_records[name].append(
+            MLPTranscoderTraceRecord(
+                name=name,
+                layer_index=layer_index,
+                mode=self.mode,
+                timestep=timestep,
+                preactivation=preactivation,
+                latent=latent,
             )
         )
 
@@ -202,7 +244,8 @@ class WrappedActionExpertMLP(nn.Module):
         if self.context.mode == "replace":
             if self.transcoder is None:
                 raise RuntimeError(f"Cannot run {self.name} in replace mode without a transcoder")
-            y_hat, latent = self.transcoder(x, timestep)
+            y_hat, latent, preactivation = self.transcoder(x, timestep, return_preactivation=True)
+            self.context.record_trace(self.name, self.layer_index, preactivation, latent, timestep)
             self.context.record_latent(self.name, self.layer_index, latent, timestep)
             return y_hat.to(dtype=x.dtype)
 
@@ -211,7 +254,8 @@ class WrappedActionExpertMLP(nn.Module):
 
         if self.context.mode == "probe" and self.transcoder is not None:
             with torch.no_grad():
-                _y_hat, latent = self.transcoder(x, timestep)
+                _y_hat, latent, preactivation = self.transcoder(x, timestep, return_preactivation=True)
+                self.context.record_trace(self.name, self.layer_index, preactivation, latent, timestep)
                 self.context.record_latent(self.name, self.layer_index, latent, timestep)
 
         return y

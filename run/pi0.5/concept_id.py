@@ -60,7 +60,7 @@ def resolve_suite(run: Path | None, suite: str | None) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     _repo_sys_path()
-    from pi05_mi.atlas_bridge import compute_concept_scores, expert_mlp_layer_name, load_task_features
+    from pi05_mi.atlas_bridge import compute_concept_scores, discover_task_ids, expert_mlp_layer_name, load_task_features
     from pi05_mi.atlas_concepts import get_concept_task_mapping
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -99,9 +99,23 @@ def main(argv: list[str] | None = None) -> int:
     if not layer_indices:
         raise SystemExit(f"No expert_mlp_L*.pt files under {activations_dir}")
 
+    found_tasks = discover_task_ids(activations_dir)
     print(f"suite={suite} activations={activations_dir}")
+    print(f"task_folders={found_tasks}")
     print(f"layers={layer_indices}")
     print(f"concepts={sum(len(group) for group in mapping.values())}")
+    if args.run is not None:
+        info_path = args.run / "eval_info.json"
+        if info_path.exists():
+            info = json.loads(info_path.read_text(encoding="utf-8"))
+            expected = info.get("task_ids") or list((info.get("per_task") or {}).keys())
+            print(f"eval_info_tasks={expected}")
+    if len(found_tasks) < 2:
+        print(
+            "Only one task folder was exported. Changing TASK_IDS in Controls "
+            "does not rewrite an old run. Re-run Eval, then this cell.",
+            file=sys.stderr,
+        )
 
     all_results: dict[str, Any] = {}
     for layer_index in layer_indices:

@@ -21,7 +21,9 @@ import torch
 from pi05_mi.atlas_bridge import (
     atlas_activation_path,
     flatten_token_rows,
+    load_sparse_features,
     pack_sparse_features,
+    parse_int_list,
     save_sparse_features,
 )
 from pi05_mi.atlas_concepts import task_id_from_prompt
@@ -121,6 +123,7 @@ class TranscoderRecorder:
         self.current_task = ""
         self.episode_task_id: int | None = None
         self.episode_index: int | None = None
+        self._prompt_to_task: dict[str, int] = {}
         self._atlas_records: dict[int, list[dict[str, Any]]] = {}
         self._write(
             {
@@ -286,16 +289,31 @@ class TranscoderRecorder:
         )
         self._atlas_records.setdefault(int(record.layer_index), []).append(packed)
 
+    def _configured_task_ids(self) -> list[int]:
+        return parse_int_list(os.environ.get("PI05_ATLAS_TASK_IDS", ""))
+
     def _resolve_task_id(self) -> int:
         if self.episode_task_id is not None:
             return int(self.episode_task_id)
-        env_task = os.environ.get("PI05_ATLAS_TASK_ID", "").strip()
-        if env_task.isdigit():
-            return int(env_task)
         if self.atlas_suite and self.current_task:
             matched = task_id_from_prompt(self.atlas_suite, self.current_task, space="lerobot")
             if matched is not None:
                 return matched
+        if self.current_task:
+            if self.current_task not in self._prompt_to_task:
+                configured = self._configured_task_ids()
+                next_index = len(self._prompt_to_task)
+                if configured and next_index < len(configured):
+                    self._prompt_to_task[self.current_task] = configured[next_index]
+                else:
+                    self._prompt_to_task[self.current_task] = next_index
+            return self._prompt_to_task[self.current_task]
+        configured = self._configured_task_ids()
+        if configured:
+            return configured[0]
+        env_task = os.environ.get("PI05_ATLAS_TASK_ID", "").strip()
+        if env_task.isdigit():
+            return int(env_task)
         return 0
 
     def _resolve_episode(self) -> int:
@@ -325,6 +343,12 @@ class TranscoderRecorder:
                 "timesteps": torch.cat([item["timesteps"] for item in records], dim=0),
             }
             path = atlas_activation_path(self.atlas_root, task_id, episode, layer_index)
+            if path.exists():
+                previous = load_sparse_features(path)
+                merged["indices"] = torch.cat([previous["indices"], merged["indices"]], dim=0)
+                merged["values"] = torch.cat([previous["values"], merged["values"]], dim=0)
+                merged["timesteps"] = torch.cat([previous["timesteps"], merged["timesteps"]], dim=0)
+                merged["n_tokens"] = int(merged["indices"].shape[0])
             save_sparse_features(path, merged)
             written.append(str(path.relative_to(self.root)))
         self._write(

@@ -15,6 +15,13 @@ from .transcoders import (
     normalized_mse_loss,
     sinusoidal_time_embedding,
 )
+from .atlas_bridge import (
+    TranscoderDictionary,
+    compute_concept_scores,
+    expert_mlp_layer_name,
+    load_task_features,
+)
+from .atlas_concepts import get_concept_task_mapping
 from .patch_pi05 import (
     ActionExpertMLPTarget,
     MLPActivationRecord,
@@ -27,6 +34,11 @@ from .patch_pi05 import (
 )
 
 __all__ = [
+    "TranscoderDictionary",
+    "compute_concept_scores",
+    "expert_mlp_layer_name",
+    "get_concept_task_mapping",
+    "load_task_features",
     "ActionExpertMLPTarget",
     "ActivationBatch",
     "ActivationBuffer",

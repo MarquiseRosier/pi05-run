@@ -1,0 +1,39 @@
+# Edit this file, then:
+#   python run/pi0.5/infer.py run --config run/pi0.5/config.yaml
+#
+# Scene = suite + task_id (0-9). Prompt is what the VLA reads.
+# Leave prompt empty to use the official LIBERO sentence for that task.
+# Success is still judged by the official LIBERO predicate, not by the prompt.
+
+suite: libero_spatial
+task_ids: [1]
+episodes: 1
+seed: 1000
+
+# Free-form VLA language. "" = official task language.
+prompt: ""
+
+# original: Pi0.5 only
+# probe: Pi0.5 actions + save transcoder z
+# replace: transcoder substitutes action-expert MLPs
+mode: probe
+
+policy_path: lerobot/pi05_libero_finetuned
+transcoder_checkpoint: ""
+
+n_action_steps: 10
+max_steps: 280
+device: cuda
+dtype: bfloat16
+save_video: true
+capture_transcoder_latents: true
+transcoder_top_k: 64
+transcoder_max_chunks: 80
+save_full_latents: false
+
+# Action Atlas: transcoder z fills the SAE slot.
+atlas_save_features: true
+ablate_features: ""
+ablate_layers: ""
+steer_features: ""
+steer_strength: 0.0

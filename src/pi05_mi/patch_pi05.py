@@ -12,6 +12,7 @@ from typing import Iterator, Literal
 import torch
 from torch import Tensor, nn
 
+from .atlas_bridge import TranscoderDictionary, parse_int_list, per_token_topk
 from .transcoders import TimeConditionedTranscoder
 
 
@@ -45,6 +46,9 @@ class MLPTranscoderLatentRecord:
     latent_max: Tensor
     top_indices: Tensor
     top_values: Tensor
+    token_top_indices: Tensor | None = None
+    token_top_values: Tensor | None = None
+    d_features: int = 0
     full_latent: Tensor | None = None
 
 
@@ -77,9 +81,32 @@ class Pi05TranscoderContext:
         self.capture_latents = capture_latents
         self.latent_top_k = latent_top_k
         self.save_full_latents = save_full_latents
+        self.ablate_features: list[int] = []
+        self.ablate_layers: set[int] | None = None
+        self.steer_features: list[int] = []
+        self.steer_strength: float = 0.0
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
         self.latents: dict[str, list[MLPTranscoderLatentRecord]] = defaultdict(list)
+
+    def set_intervention(
+        self,
+        *,
+        ablate_features: list[int] | str | None = None,
+        ablate_layers: list[int] | str | None = None,
+        steer_features: list[int] | str | None = None,
+        steer_strength: float = 0.0,
+    ) -> None:
+        self.ablate_features = parse_int_list(ablate_features)
+        layers = parse_int_list(ablate_layers)
+        self.ablate_layers = set(layers) if layers else None
+        self.steer_features = parse_int_list(steer_features)
+        self.steer_strength = float(steer_strength)
+
+    def wants_intervention(self, layer_index: int) -> bool:
+        if self.ablate_layers is not None and layer_index not in self.ablate_layers:
+            return False
+        return bool(self.ablate_features) or bool(self.steer_features and self.steer_strength)
 
     @contextmanager
     def use_timestep(self, timestep: Tensor) -> Iterator[None]:
@@ -151,6 +178,7 @@ class Pi05TranscoderContext:
                 top_values = torch.empty(0, dtype=torch.float32)
                 top_indices = torch.empty((0, z.ndim), dtype=torch.long)
 
+            token_top_values, token_top_indices = per_token_topk(z, self.latent_top_k)
             full_latent = z.cpu() if self.save_full_latents else None
             self.latents[name].append(
                 MLPTranscoderLatentRecord(
@@ -164,6 +192,9 @@ class Pi05TranscoderContext:
                     latent_max=latent_max,
                     top_indices=top_indices.cpu(),
                     top_values=top_values.cpu(),
+                    token_top_indices=token_top_indices.cpu(),
+                    token_top_values=token_top_values.cpu(),
+                    d_features=int(z.shape[-1]),
                     full_latent=full_latent,
                 )
             )
@@ -188,23 +219,38 @@ class WrappedActionExpertMLP(nn.Module):
         self.transcoder = transcoder
         self.context = context
 
+    def _transcoder_forward(self, x: Tensor, timestep: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        if self.transcoder is None:
+            raise RuntimeError(f"Cannot run {self.name} without a transcoder")
+        dictionary = TranscoderDictionary(self.transcoder)
+        if self.context.wants_intervention(self.layer_index):
+            return dictionary.intervene(
+                x,
+                timestep,
+                ablate_features=self.context.ablate_features,
+                steer_features=self.context.steer_features,
+                steer_strength=self.context.steer_strength,
+            )
+        y_hat, latent = self.transcoder(x, timestep)
+        return y_hat, y_hat, latent
+
     def forward(self, x: Tensor) -> Tensor:
         timestep = self.context.timestep_for(x)
 
         if self.context.mode == "replace":
-            if self.transcoder is None:
-                raise RuntimeError(f"Cannot run {self.name} in replace mode without a transcoder")
-            y_hat, latent = self.transcoder(x, timestep)
+            y_hat, y_out, latent = self._transcoder_forward(x, timestep)
             self.context.record_latent(self.name, self.layer_index, latent, timestep)
-            return y_hat.to(dtype=x.dtype)
+            return y_out.to(dtype=x.dtype)
 
         y = self.original_mlp(x)
         self.context.record(self.name, self.layer_index, x, y, timestep)
 
         if self.context.mode == "probe" and self.transcoder is not None:
             with torch.no_grad():
-                _y_hat, latent = self.transcoder(x, timestep)
+                y_hat, y_intervened, latent = self._transcoder_forward(x, timestep)
                 self.context.record_latent(self.name, self.layer_index, latent, timestep)
+                if self.context.wants_intervention(self.layer_index):
+                    return (y + (y_intervened - y_hat)).to(dtype=x.dtype)
 
         return y
 

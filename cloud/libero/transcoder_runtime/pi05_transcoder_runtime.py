@@ -18,6 +18,13 @@ from typing import Any
 
 import torch
 
+from pi05_mi.atlas_bridge import (
+    atlas_activation_path,
+    flatten_token_rows,
+    pack_sparse_features,
+    save_sparse_features,
+)
+from pi05_mi.atlas_concepts import task_id_from_prompt
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
 
@@ -102,12 +109,19 @@ class TranscoderRecorder:
         self.max_chunks = _int_env("PI05_TRANSCODER_MAX_CHUNKS", 40)
         self.top_k = _int_env("PI05_TRANSCODER_TOP_K", 64)
         self.save_full_latents = _bool_env("PI05_TRANSCODER_SAVE_FULL_LATENTS", False)
+        self.save_atlas_features = _bool_env("PI05_ATLAS_SAVE_FEATURES", True)
+        self.atlas_suite = os.environ.get("PI05_ATLAS_SUITE", "").strip()
+        self.atlas_root = self.root / "atlas_activations"
         if self.save_full_latents:
             self.full_dir.mkdir(parents=True, exist_ok=True)
         self.chunk_index = -1
         self.captured_chunks = 0
         self.active = False
         self.call_index = 0
+        self.current_task = ""
+        self.episode_task_id: int | None = None
+        self.episode_index: int | None = None
+        self._atlas_records: dict[int, list[dict[str, Any]]] = {}
         self._write(
             {
                 "type": "transcoder_capture_start",
@@ -117,11 +131,44 @@ class TranscoderRecorder:
                 "top_k": self.top_k,
                 "max_chunks": self.max_chunks,
                 "save_full_latents": self.save_full_latents,
+                "save_atlas_features": self.save_atlas_features,
+                "atlas_suite": self.atlas_suite,
             }
         )
         atexit.register(self.close)
 
+    def begin_episode(self, *, suite: str = "", task_id: int | None = None, episode: int | None = None) -> None:
+        self.flush_atlas_episode()
+        if suite:
+            self.atlas_suite = suite
+        self.episode_task_id = task_id
+        self.episode_index = episode
+        self._write(
+            {
+                "type": "atlas_episode_start",
+                "time": time.time(),
+                "suite": self.atlas_suite,
+                "task_id": task_id,
+                "episode": episode,
+            }
+        )
+
+    def end_episode(self) -> None:
+        self.flush_atlas_episode()
+        self._write(
+            {
+                "type": "atlas_episode_end",
+                "time": time.time(),
+                "suite": self.atlas_suite,
+                "task_id": self.episode_task_id,
+                "episode": self.episode_index,
+            }
+        )
+        self.episode_task_id = None
+        self.episode_index = None
+
     def close(self) -> None:
+        self.flush_atlas_episode()
         if not self.file.closed:
             self._write({"type": "transcoder_capture_end", "time": time.time()})
             self.file.close()
@@ -138,16 +185,23 @@ class TranscoderRecorder:
             return
         self.captured_chunks += 1
         task = batch.get("task")
+        new_task = ""
+        if isinstance(task, str):
+            new_task = task
+        elif isinstance(task, (list, tuple)) and task and isinstance(task[0], str):
+            new_task = task[0]
+        if self.save_atlas_features and self._atlas_records and new_task and new_task != self.current_task:
+            self.flush_atlas_episode()
+            self.episode_task_id = None
         payload: dict[str, Any] = {
             "type": "chunk_start",
             "chunk": self.chunk_index,
             "time": time.time(),
             "mode": _mode(),
         }
-        if isinstance(task, str):
-            payload["task"] = task
-        elif isinstance(task, (list, tuple)) and task and isinstance(task[0], str):
-            payload["task"] = task[0]
+        if new_task:
+            payload["task"] = new_task
+            self.current_task = new_task
         self._write(payload)
 
     def end_chunk(self, context: Pi05TranscoderContext, actions: torch.Tensor | None = None) -> None:
@@ -212,7 +266,79 @@ class TranscoderRecorder:
                     torch.save(record.full_latent, path)
                     payload["full_latent_path"] = str(path.relative_to(self.root))
                 self._write(payload)
+                if self.save_atlas_features and record.token_top_indices is not None and record.token_top_values is not None:
+                    self._buffer_atlas_record(record)
                 self.call_index += 1
+
+    def _buffer_atlas_record(self, record: Any) -> None:
+        indices, values, timesteps = flatten_token_rows(
+            record.token_top_indices,
+            record.token_top_values,
+            record.timestep,
+        )
+        packed = pack_sparse_features(
+            layer_index=record.layer_index,
+            d_features=record.d_features or int(record.token_top_indices.shape[-1]),
+            k=int(record.token_top_indices.shape[-1]),
+            indices=indices,
+            values=values,
+            timesteps=timesteps,
+        )
+        self._atlas_records.setdefault(int(record.layer_index), []).append(packed)
+
+    def _resolve_task_id(self) -> int:
+        if self.episode_task_id is not None:
+            return int(self.episode_task_id)
+        env_task = os.environ.get("PI05_ATLAS_TASK_ID", "").strip()
+        if env_task.isdigit():
+            return int(env_task)
+        if self.atlas_suite and self.current_task:
+            matched = task_id_from_prompt(self.atlas_suite, self.current_task, space="lerobot")
+            if matched is not None:
+                return matched
+        return 0
+
+    def _resolve_episode(self) -> int:
+        if self.episode_index is not None:
+            return int(self.episode_index)
+        env_episode = os.environ.get("PI05_ATLAS_EPISODE", "").strip()
+        if env_episode.isdigit():
+            return int(env_episode)
+        return 0
+
+    def flush_atlas_episode(self) -> None:
+        if not self._atlas_records:
+            return
+        task_id = self._resolve_task_id()
+        episode = self._resolve_episode()
+        written = []
+        for layer_index, records in self._atlas_records.items():
+            merged = {
+                "dictionary": "transcoder",
+                "layer": records[0]["layer"],
+                "layer_index": layer_index,
+                "d_features": records[0]["d_features"],
+                "k": records[0]["k"],
+                "n_tokens": int(sum(item["n_tokens"] for item in records)),
+                "indices": torch.cat([item["indices"] for item in records], dim=0),
+                "values": torch.cat([item["values"] for item in records], dim=0),
+                "timesteps": torch.cat([item["timesteps"] for item in records], dim=0),
+            }
+            path = atlas_activation_path(self.atlas_root, task_id, episode, layer_index)
+            save_sparse_features(path, merged)
+            written.append(str(path.relative_to(self.root)))
+        self._write(
+            {
+                "type": "atlas_features_flushed",
+                "time": time.time(),
+                "suite": self.atlas_suite,
+                "task_id": task_id,
+                "episode": episode,
+                "layers": sorted(self._atlas_records),
+                "files": written,
+            }
+        )
+        self._atlas_records = {}
 
 
 _RECORDER = TranscoderRecorder()
@@ -241,6 +367,12 @@ def _install_on_policy(policy: Any) -> None:
         capture_latents=_RECORDER.capture_latents,
         latent_top_k=_RECORDER.top_k,
         save_full_latents=_RECORDER.save_full_latents,
+    )
+    context.set_intervention(
+        ablate_features=os.environ.get("PI05_TRANSCODER_ABLATE_FEATURES", ""),
+        ablate_layers=os.environ.get("PI05_TRANSCODER_ABLATE_LAYERS", ""),
+        steer_features=os.environ.get("PI05_TRANSCODER_STEER_FEATURES", ""),
+        steer_strength=float(os.environ.get("PI05_TRANSCODER_STEER_STRENGTH", "0") or 0),
     )
     context, wrapped_names = install_pi05_action_expert_wrappers(
         policy,
@@ -293,6 +425,14 @@ def _patch_make_policy(module: Any, attr: str) -> None:
 
     _patched_make_policy._pi05_transcoder_patched = True
     setattr(module, attr, _patched_make_policy)
+
+
+def atlas_begin_episode(*, suite: str = "", task_id: int | None = None, episode: int | None = None) -> None:
+    _RECORDER.begin_episode(suite=suite, task_id=task_id, episode=episode)
+
+
+def atlas_end_episode() -> None:
+    _RECORDER.end_episode()
 
 
 if _enabled():

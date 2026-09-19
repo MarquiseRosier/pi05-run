@@ -193,12 +193,31 @@ sanity_comparison_report.html
 sanity_comparison_summary.json
 action_chunk_comparison.csv
 layer_l1_comparison.csv
+paired_episode_outcomes.csv
 ```
 
 This report compares closed-loop success, runtime, success step, trace
-completeness, action chunks by rollout chunk index, and aggregate success-rate
-statistics. Treat the success-rate statistics as descriptive unless the run has
-enough paired episodes/tasks for meaningful inference.
+completeness, and action chunks by rollout chunk index.
+
+### Why the closed-loop test is paired
+
+`lerobot-eval` writes per-episode outcomes under `per_task -> metrics ->
+per_episode`, each carrying the `seed` that generated the rollout. The runner
+does not override `--seed`, so `cfg.seed` stays at its default and both arms
+replay the same tasks from the same seeds. Episodes are therefore **matched
+pairs**, and the report keys them on `(task_group, task_id, seed)`.
+
+That makes **McNemar's exact test** on the discordant pairs the correct test,
+and the report uses it as the primary statistic. Fisher's exact on pooled counts
+is still reported, but it throws the pairing away and is markedly less
+sensitive. The report also surfaces the per-episode agreement rate, which
+catches a case both aggregate tests miss entirely: two runs can post identical
+success rates while disagreeing on every single episode.
+
+Absence of a significant difference is never an equivalence proof. Read the
+agreement rate and the action-error metrics alongside the p-value.
+
+### Same-observation action error
 
 For a stricter estimate of the action error added by replacement, run the paired
 same-observation probe:
@@ -217,13 +236,24 @@ It writes:
 
 ```text
 paired_action_metrics.csv
+control_action_metrics.csv
 action_equivalence_summary.json
 ```
 
-These metrics compare original/probe and replace action chunks on identical
-dataset observations with the diffusion RNG restored between modes. This is the
-preferred statistic for quantifying replacement error before simulator feedback
-causes the two closed-loop trajectories to diverge.
+This runs both modes on identical dataset observations and passes the *same*
+flow-matching noise tensor to each pass, so the two trajectories start from the
+same point and any surviving difference is attributable to the MLP substitution
+itself. (`PI05Policy.predict_action_chunk` forwards `noise` through to
+`sample_actions`; relying on RNG-state restoration alone would be fragile.)
+
+Report `executed_rel_l2` as the headline error figure -- it is `||Δ|| / ||original||`
+over the first `n_action_steps` actions, so it is scale-free and does not depend
+on normalized action units.
+
+`--control-batches` repeats the baseline against itself on the leading batches.
+That yields `control_metrics`, the run-to-run **nondeterminism floor**. A
+replacement error is only meaningful to the extent it exceeds that floor, so
+quote the two numbers together.
 
 ## Output Files
 

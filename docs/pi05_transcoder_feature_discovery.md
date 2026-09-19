@@ -174,6 +174,57 @@ Use `PI05_LANGFUSE_MAX_IMAGES`, `PI05_LANGFUSE_MAX_MEDIA_BYTES`,
 `PI05_LANGFUSE_MAX_DIFFUSION_EVENTS`, and `PI05_LANGFUSE_MAX_LAYER_SPANS` to cap
 trace size.
 
+## Replacement Equivalence Metrics
+
+Use the sanity comparison script after running both the original/probe and
+replace sanity notebooks:
+
+```bash
+python scripts/compare_pi05_transcoder_sanity_runs.py \
+  --base-dir outputs/eval/pi05_libero \
+  --base-dir /content/drive/MyDrive/groot-run-shared-programmer908/outputs/eval/pi05_libero \
+  --make-video
+```
+
+It writes:
+
+```text
+sanity_comparison_report.html
+sanity_comparison_summary.json
+action_chunk_comparison.csv
+layer_l1_comparison.csv
+```
+
+This report compares closed-loop success, runtime, success step, trace
+completeness, action chunks by rollout chunk index, and aggregate success-rate
+statistics. Treat the success-rate statistics as descriptive unless the run has
+enough paired episodes/tasks for meaningful inference.
+
+For a stricter estimate of the action error added by replacement, run the paired
+same-observation probe:
+
+```bash
+python scripts/eval_pi05_transcoder_action_equivalence.py \
+  --checkpoint /path/to/step_027233.pt \
+  --episodes 0,1,2,3,4,5,6,7,8,9 \
+  --batch-size 2 \
+  --max-batches 50 \
+  --device cuda \
+  --policy-dtype bfloat16
+```
+
+It writes:
+
+```text
+paired_action_metrics.csv
+action_equivalence_summary.json
+```
+
+These metrics compare original/probe and replace action chunks on identical
+dataset observations with the diffusion RNG restored between modes. This is the
+preferred statistic for quantifying replacement error before simulator feedback
+causes the two closed-loop trajectories to diverge.
+
 ## Output Files
 
 The collector writes:

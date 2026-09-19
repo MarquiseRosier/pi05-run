@@ -38,6 +38,35 @@ def resolve_activations_dir(run: Path | None, activations_dir: Path | None) -> P
     raise SystemExit(f"No atlas_activations under {run}. Re-run probe with PI05_ATLAS_SAVE_FEATURES=1.")
 
 
+def _format_summary_table(all_results: dict[str, Any]) -> str:
+    header = (
+        "layer\tcategory\tconcept\tin\tout\tfeature\tscore\td\tfreq"
+    )
+    lines = [header]
+    for layer_name, layer in all_results.items():
+        for category, concepts in (layer or {}).items():
+            best_name = None
+            best_info: dict[str, Any] | None = None
+            best_top = None
+            for concept_name, info in (concepts or {}).items():
+                tops = (info or {}).get("top_features") or []
+                if not tops:
+                    continue
+                if best_top is None or abs(tops[0]["score"]) > abs(best_top["score"]):
+                    best_name = concept_name
+                    best_info = info
+                    best_top = tops[0]
+            if best_name is None or best_info is None or best_top is None:
+                continue
+            lines.append(
+                f"{layer_name}\t{category}\t{best_name}\t"
+                f"{best_info.get('tasks_in')}\t{best_info.get('tasks_out')}\t"
+                f"{best_top['feature_idx']}\t{best_top['score']:.3f}\t"
+                f"{best_top['cohens_d']:.3f}\t{best_top['frequency']:.3f}"
+            )
+    return "\n".join(lines)
+
+
 def _eval_info_task_ids(info: dict[str, Any]) -> list[Any]:
     if info.get("task_ids"):
         return list(info["task_ids"])
@@ -161,17 +190,18 @@ def main(argv: list[str] | None = None) -> int:
             for name, payload in concepts.items():
                 tops = payload.get("top_features") or []
                 if tops:
-                    ranked.append((abs(tops[0]["score"]), name, tops[0]))
+                    ranked.append((abs(tops[0]["score"]), name, tops[0], payload))
             if ranked:
-                _score, name, top = max(ranked)
+                _score, name, top, win = max(ranked)
                 print(
-                    f"  {category}: {name} feature={top['feature_idx']} "
-                    f"score={top['score']:.3f} d={top['cohens_d']:.3f}"
+                    f"  {category}: {name} in={win.get('tasks_in')} out={win.get('tasks_out')} "
+                    f"feature={top['feature_idx']} score={top['score']:.3f} d={top['cohens_d']:.3f}"
                 )
 
     combined = output_dir / "all_layers.json"
     combined.write_text(json.dumps(all_results, indent=2), encoding="utf-8")
     print(f"saved {combined}")
+    print(_format_summary_table(all_results))
     if not all_results:
         print("No layers scored. Need features from at least two tasks.", file=sys.stderr)
         return 2

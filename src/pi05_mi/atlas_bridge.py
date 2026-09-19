@@ -206,6 +206,8 @@ def compute_concept_scores(
                 )
             concept_results[concept_name] = {
                 "tasks": list(info["tasks"]),
+                "tasks_in": sorted(in_ids),
+                "tasks_out": sorted(out_ids),
                 "n_in_samples": int(in_features.shape[0]),
                 "n_out_samples": int(out_features.shape[0]),
                 "top_features": top_features,

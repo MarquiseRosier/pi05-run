@@ -105,6 +105,8 @@ class SparseFeatureTests(unittest.TestCase):
         cookie = results["object"]["cookie_box"]["top_features"][0]
         self.assertEqual(cookie["feature_idx"], 0)
         self.assertGreater(cookie["score"], 0.0)
+        self.assertEqual(results["object"]["cookie_box"]["tasks_in"], [3])
+        self.assertEqual(results["object"]["cookie_box"]["tasks_out"], [0])
 
 
 if __name__ == "__main__":

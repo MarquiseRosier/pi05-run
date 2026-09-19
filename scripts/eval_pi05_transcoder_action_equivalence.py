@@ -18,7 +18,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -29,6 +28,7 @@ from tqdm.auto import tqdm
 
 from lerobot.datasets.factory import make_dataset
 from lerobot.policies import make_policy
+from lerobot.utils.constants import OBS_LANGUAGE_TOKENS
 
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
@@ -66,6 +66,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument(
+        "--baseline-mode",
+        choices=["train", "probe"],
+        default="train",
+        help=(
+            "Context mode for the baseline pass. Both return the original MLP output; "
+            "'probe' additionally runs the transcoder and discards it, which only costs time."
+        ),
+    )
+    parser.add_argument(
+        "--control-batches",
+        type=int,
+        default=1,
+        help=(
+            "Run the baseline twice on this many leading batches to measure the "
+            "run-to-run nondeterminism floor. 0 disables the control."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -107,6 +125,26 @@ def _tensor_to_numpy(value: torch.Tensor) -> np.ndarray:
     return value.detach().float().cpu().numpy()
 
 
+def _shared_noise(policy: torch.nn.Module, batch: dict[str, Any], device: torch.device) -> torch.Tensor:
+    """Sample the flow-matching x_1 once so both modes integrate from the same point.
+
+    ``PI05Policy.predict_action_chunk`` forwards ``noise`` through to
+    ``sample_actions``, which otherwise draws it from the global RNG. Passing one
+    tensor to both passes makes the pairing exact instead of relying on RNG state
+    being restored identically.
+    """
+    config = policy.model.config
+    shape = (batch[OBS_LANGUAGE_TOKENS].shape[0], config.chunk_size, config.max_action_dim)
+    return torch.normal(mean=0.0, std=1.0, size=shape, dtype=torch.float32, device=device)
+
+
+def _relative_l2(reference: np.ndarray, diff: np.ndarray) -> float | None:
+    denominator = float(np.linalg.norm(reference))
+    if denominator == 0.0:
+        return None
+    return float(np.linalg.norm(diff) / denominator)
+
+
 def _compare_one(
     *,
     original: np.ndarray,
@@ -126,6 +164,7 @@ def _compare_one(
     denom = float(np.linalg.norm(flat_original) * np.linalg.norm(flat_replace))
     executed_steps = min(n_action_steps, steps)
     executed_diff = diff[:executed_steps]
+    executed_original = original[:executed_steps]
     per_dim_rmse = np.sqrt(np.mean(diff**2, axis=0))
     row = {
         "batch_index": batch_index,
@@ -136,6 +175,12 @@ def _compare_one(
         "mae": float(np.mean(np.abs(diff))),
         "max_abs": float(np.max(np.abs(diff))),
         "cosine": None if denom == 0 else float(np.dot(flat_original, flat_replace) / denom),
+        # Scale-free: fraction of the original action vector's magnitude that
+        # replacement moves. This is the quotable "error added" number because it
+        # does not depend on the normalized action units.
+        "rel_l2": _relative_l2(original, diff),
+        "executed_rel_l2": _relative_l2(executed_original, executed_diff),
+        "original_rms": float(np.sqrt(np.mean(original**2))),
         "executed_rmse": float(np.sqrt(np.mean(executed_diff**2))),
         "executed_mae": float(np.mean(np.abs(executed_diff))),
         "executed_max_abs": float(np.max(np.abs(executed_diff))),
@@ -197,16 +242,37 @@ def _mean_ci(values: list[float]) -> dict[str, float | int | None]:
     }
 
 
+METRIC_KEYS = [
+    "rmse",
+    "mae",
+    "max_abs",
+    "cosine",
+    "rel_l2",
+    "executed_rel_l2",
+    "original_rms",
+    "executed_rmse",
+    "executed_mae",
+    "executed_max_abs",
+]
+
+
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {"pairs": len(rows)}
-    for key in ["rmse", "mae", "max_abs", "cosine", "executed_rmse", "executed_mae", "executed_max_abs"]:
+    for key in METRIC_KEYS:
         summary[key] = _mean_ci([float(row[key]) for row in rows if row.get(key) is not None])
-    thresholds = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
-    for threshold in thresholds:
-        values = [float(row["executed_rmse"]) for row in rows if row.get("executed_rmse") is not None]
-        summary[f"executed_rmse_le_{threshold:g}"] = None if not values else sum(v <= threshold for v in values) / len(values)
+    for metric, thresholds in (
+        ("executed_rmse", [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]),
+        ("executed_rel_l2", [0.01, 0.02, 0.05, 0.1, 0.25, 0.5]),
+    ):
+        values = [float(row[metric]) for row in rows if row.get(metric) is not None]
+        for threshold in thresholds:
+            summary[f"{metric}_le_{threshold:g}"] = (
+                None if not values else sum(v <= threshold for v in values) / len(values)
+            )
     dim_keys = sorted({key for row in rows for key in row if key.startswith("dim_") and key.endswith("_rmse")})
-    summary["per_dim_rmse"] = {key: _mean_ci([float(row[key]) for row in rows]) for key in dim_keys}
+    summary["per_dim_rmse"] = {
+        key: _mean_ci([float(row[key]) for row in rows if row.get(key) is not None]) for key in dim_keys
+    }
     return summary
 
 
@@ -272,7 +338,7 @@ def main() -> None:
     print(f"loading transcoders from {args.checkpoint}", flush=True)
     transcoders = _load_transcoders(args.checkpoint, device=device)
     context = Pi05TranscoderContext(
-        mode="probe",
+        mode=args.baseline_mode,
         capture_records=False,
         capture_latents=False,
         store_latent_summaries=False,
@@ -281,12 +347,18 @@ def main() -> None:
         policy,
         context=context,
         transcoders=transcoders,
-        mode="probe",
+        mode=args.baseline_mode,
     )
     print(f"wrapped action-expert MLPs={len(wrapped_names)}", flush=True)
+    missing = [name for name in wrapped_names if name not in transcoders]
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} wrapped MLPs have no transcoder and would fail in replace mode: {missing[:5]}"
+        )
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
+    control_rows: list[dict[str, Any]] = []
     started_at = time.time()
     iterator = tqdm(
         enumerate(dataloader, start=1),
@@ -301,22 +373,28 @@ def main() -> None:
         raw_batch = _prepare_raw_batch(raw_batch, dataset.meta.camera_keys)
         batch = preprocessor(raw_batch)
 
-        rng_state = _capture_rng(device)
-        context.mode = "probe"
-        context.clear_records()
-        with torch.inference_mode():
-            original_actions = policy.predict_action_chunk(batch, num_steps=args.num_inference_steps)
+        # Same observations, same integration start point: any difference that
+        # survives is attributable to the MLP substitution itself.
+        noise = _shared_noise(policy, batch, device)
 
-        _restore_rng(rng_state, device)
-        context.mode = "replace"
-        context.clear_records()
-        with torch.inference_mode():
-            replace_actions = policy.predict_action_chunk(batch, num_steps=args.num_inference_steps)
+        def run(mode: str) -> np.ndarray:
+            rng_state = _capture_rng(device)
+            context.mode = mode
+            context.clear_records()
+            with torch.inference_mode():
+                actions = policy.predict_action_chunk(
+                    batch, num_steps=args.num_inference_steps, noise=noise
+                )
+            _restore_rng(rng_state, device)
+            return _tensor_to_numpy(actions)
 
-        original_np = _tensor_to_numpy(original_actions)
-        replace_np = _tensor_to_numpy(replace_actions)
+        original_np = run(args.baseline_mode)
+        replace_np = run("replace")
+        control_np = run(args.baseline_mode) if batch_index <= args.control_batches else None
+
         batch_size = min(original_np.shape[0], replace_np.shape[0])
         for item_index in range(batch_size):
+            metadata = _metadata_for_batch(raw_batch, item_index)
             rows.append(
                 _compare_one(
                     original=original_np[item_index],
@@ -324,9 +402,20 @@ def main() -> None:
                     batch_index=batch_index,
                     item_index=item_index,
                     n_action_steps=args.n_action_steps,
-                    metadata=_metadata_for_batch(raw_batch, item_index),
+                    metadata=metadata,
                 )
             )
+            if control_np is not None:
+                control_rows.append(
+                    _compare_one(
+                        original=original_np[item_index],
+                        replace=control_np[item_index],
+                        batch_index=batch_index,
+                        item_index=item_index,
+                        n_action_steps=args.n_action_steps,
+                        metadata=metadata,
+                    )
+                )
         iterator.set_postfix(pairs=len(rows))
 
     summary = {
@@ -340,19 +429,35 @@ def main() -> None:
         "seed": args.seed,
         "elapsed_s": time.time() - started_at,
         "wrapped_layers": len(wrapped_names),
+        "baseline_mode": args.baseline_mode,
+        "shared_noise": True,
         "metrics": _aggregate(rows),
+        "control_metrics": _aggregate(control_rows) if control_rows else None,
         "interpretation": (
-            "These are paired same-observation action errors between original/probe and replace modes. "
-            "They estimate replacement error before simulator feedback causes closed-loop divergence."
+            "Paired same-observation action errors between baseline and replace modes, with the "
+            "flow-matching noise shared across both passes. They estimate replacement error before "
+            "simulator feedback causes closed-loop divergence. control_metrics repeats the baseline "
+            "against itself, so it is the nondeterminism floor: replacement error is only meaningful "
+            "to the extent it exceeds that floor."
         ),
     }
 
     _write_csv(args.output_dir / "paired_action_metrics.csv", rows)
+    if control_rows:
+        _write_csv(args.output_dir / "control_action_metrics.csv", control_rows)
     (args.output_dir / "action_equivalence_summary.json").write_text(
         json.dumps(summary, indent=2, default=_json_default),
         encoding="utf-8",
     )
     print(json.dumps(summary["metrics"], indent=2, default=_json_default), flush=True)
+    if summary["control_metrics"]:
+        control_l2 = summary["control_metrics"]["executed_rel_l2"]["mean"]
+        replace_l2 = summary["metrics"]["executed_rel_l2"]["mean"]
+        if control_l2 is not None and replace_l2 is not None:
+            print(
+                f"executed relative L2: replace={replace_l2:.4g} vs determinism floor={control_l2:.4g}",
+                flush=True,
+            )
     print("Saved paired action metrics to", args.output_dir, flush=True)
 
 

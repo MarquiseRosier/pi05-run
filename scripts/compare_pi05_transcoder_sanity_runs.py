@@ -68,6 +68,7 @@ class RunSummary:
     first_success_step: int | None
     max_rollout_steps: int | None
     useful_log_tail: list[str]
+    per_episode: dict[tuple[str, str, int], bool] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -151,6 +152,42 @@ def load_eval_info(run_dir: Path) -> dict[str, Any]:
 def _overall(info: dict[str, Any]) -> dict[str, Any]:
     overall = info.get("overall")
     return overall if isinstance(overall, dict) else {}
+
+
+def _per_episode_successes(info: dict[str, Any]) -> dict[tuple[str, str, int], bool]:
+    """Map each rollout to its success flag, keyed by an identity both runs share.
+
+    ``lerobot-eval`` writes ``per_task -> metrics -> per_episode`` entries carrying
+    ``seed``. Because ``cfg.seed`` is not overridden by the runner, both arms start
+    each rollout from the same seed, so ``(task_group, task_id, seed)`` identifies
+    the same initial condition in both runs. That is what makes a paired test valid.
+    """
+    results: dict[tuple[str, str, int], bool] = {}
+    per_task = info.get("per_task")
+    if not isinstance(per_task, list):
+        return results
+    for task_info in per_task:
+        if not isinstance(task_info, dict):
+            continue
+        task_group = str(task_info.get("task_group", ""))
+        task_id = str(task_info.get("task_id", ""))
+        metrics = task_info.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        episodes = metrics.get("per_episode")
+        if not isinstance(episodes, list):
+            continue
+        for position, episode in enumerate(episodes):
+            if not isinstance(episode, dict):
+                continue
+            success = episode.get("success")
+            if success is None:
+                continue
+            identity = episode.get("seed")
+            if identity is None:
+                identity = episode.get("episode_ix", position)
+            results[(task_group, task_id, int(identity))] = bool(success)
+    return results
 
 
 def _find_videos(run_dir: Path) -> list[Path]:
@@ -295,6 +332,7 @@ def summarize_run(label: str, run_dir: Path) -> RunSummary:
         first_success_step=first_success_step,
         max_rollout_steps=max_rollout_steps,
         useful_log_tail=useful_log_tail,
+        per_episode=_per_episode_successes(info),
     )
 
 
@@ -338,6 +376,69 @@ def fisher_exact_two_sided(a: int, b: int, c: int, d: int) -> float:
     return min(1.0, sum(hypergeom(x) for x in range(min_x, max_x + 1) if hypergeom(x) <= observed + 1e-15))
 
 
+_STATS_NESTED_KEYS = {"interpretation", "paired"}
+
+
+def paired_summary(original: RunSummary, replace: RunSummary) -> dict[str, Any]:
+    """Pair rollouts by (task, seed) and run the paired test the design calls for.
+
+    Both arms evaluate the same tasks from the same seeds, so episodes are matched,
+    not independent. McNemar's exact test on the discordant pairs is the correct
+    test here and is far more powerful than Fisher's exact on pooled counts.
+    """
+    shared = sorted(set(original.per_episode) & set(replace.per_episode))
+    result: dict[str, Any] = {"n_paired": len(shared)}
+    if not shared:
+        result["note"] = (
+            "No per-episode results were matched between the runs, so only the "
+            "unpaired aggregate comparison is available."
+        )
+        return result
+
+    both_success = both_fail = original_only = replace_only = 0
+    for key in shared:
+        orig_ok = original.per_episode[key]
+        repl_ok = replace.per_episode[key]
+        if orig_ok and repl_ok:
+            both_success += 1
+        elif not orig_ok and not repl_ok:
+            both_fail += 1
+        elif orig_ok:
+            original_only += 1
+        else:
+            replace_only += 1
+
+    result.update(
+        {
+            "both_success": both_success,
+            "both_fail": both_fail,
+            "original_only_success": original_only,
+            "replace_only_success": replace_only,
+            "discordant": original_only + replace_only,
+            "agreement_rate": (both_success + both_fail) / len(shared),
+            "mcnemar_exact_p": mcnemar_exact_p(original_only, replace_only),
+            "success_delta_pp": 100.0 * (replace_only - original_only) / len(shared),
+            "unmatched_original": len(set(original.per_episode) - set(replace.per_episode)),
+            "unmatched_replace": len(set(replace.per_episode) - set(original.per_episode)),
+        }
+    )
+
+    per_task: dict[tuple[str, str], dict[str, int]] = {}
+    for key in shared:
+        task_key = (key[0], key[1])
+        row = per_task.setdefault(
+            task_key, {"episodes": 0, "original_successes": 0, "replace_successes": 0, "discordant": 0}
+        )
+        row["episodes"] += 1
+        row["original_successes"] += int(original.per_episode[key])
+        row["replace_successes"] += int(replace.per_episode[key])
+        row["discordant"] += int(original.per_episode[key] != replace.per_episode[key])
+    result["per_task"] = [
+        {"task_group": group, "task_id": task_id, **row} for (group, task_id), row in sorted(per_task.items())
+    ]
+    return result
+
+
 def significance_summary(original: RunSummary, replace: RunSummary) -> dict[str, Any]:
     orig_n = original.n_episodes or 0
     repl_n = replace.n_episodes or 0
@@ -358,20 +459,23 @@ def significance_summary(original: RunSummary, replace: RunSummary) -> dict[str,
     result["original_rate"] = orig_successes / orig_n
     result["replace_rate"] = repl_successes / repl_n
 
-    if orig_n == repl_n:
-        # Without per-episode identity in eval_info, assume aggregate-only paired
-        # data. If the aggregate counts are equal, discordants are unknown but
-        # the observed aggregate difference is zero.
-        if orig_successes == repl_successes:
-            result["paired_note"] = (
-                "Aggregate success counts match. Per-episode discordants are not available, "
-                "so an exact paired test cannot prove equivalence."
-            )
+    paired = paired_summary(original, replace)
+    result["paired"] = paired
+    if paired.get("n_paired"):
+        result["mcnemar_exact_p"] = paired["mcnemar_exact_p"]
+        result["paired_note"] = (
+            f"{paired['n_paired']} rollouts matched by (task, seed); "
+            f"{paired['discordant']} discordant "
+            f"({paired['original_only_success']} original-only, {paired['replace_only_success']} replace-only)."
+        )
+    else:
+        result["paired_note"] = (
+            "Per-episode identities are not available. Report Fisher exact on aggregate counts only."
+        )
+        if orig_n == repl_n and orig_successes == repl_successes:
+            # Equal aggregate counts force b == c, and McNemar's exact test is
+            # 1.0 whenever the discordants are balanced.
             result["mcnemar_exact_p"] = 1.0
-        else:
-            result["paired_note"] = (
-                "Per-episode identities are not available. Report Fisher exact on aggregate counts only."
-            )
 
     result["fisher_exact_p_aggregate"] = fisher_exact_two_sided(
         orig_successes,
@@ -380,17 +484,25 @@ def significance_summary(original: RunSummary, replace: RunSummary) -> dict[str,
         repl_n - repl_successes,
     )
 
+    primary_p = result.get("mcnemar_exact_p") if paired.get("n_paired") else None
+    primary_name = "McNemar exact (paired)" if primary_p is not None else "Fisher exact (aggregate)"
+    if primary_p is None:
+        primary_p = result["fisher_exact_p_aggregate"]
+
     if min(orig_n, repl_n) < 5:
         result["interpretation"] = (
             "Descriptive sanity check only. n is too small for a meaningful statistical significance claim."
         )
-    elif result["fisher_exact_p_aggregate"] < 0.05:
-        result["interpretation"] = "Aggregate success rates differ at p < 0.05."
+    elif primary_p < 0.05:
+        result["interpretation"] = f"Success rates differ at p < 0.05 by {primary_name} (p={primary_p:.4g})."
     else:
         result["interpretation"] = (
-            "No statistically significant aggregate success-rate difference detected. "
-            "This is not an equivalence proof."
+            f"No significant success-rate difference by {primary_name} (p={primary_p:.4g}). "
+            "Absence of a detected difference is not proof of equivalence; read the "
+            "paired agreement rate and the action-error metrics alongside it."
         )
+    result["primary_test"] = primary_name
+    result["primary_p"] = primary_p
     return result
 
 
@@ -654,6 +766,19 @@ def _render_html(
         {"label": "replace", **trace_completeness_summary(replace)},
     ]
 
+    paired = stats.get("paired") or {}
+    paired_parts: list[str] = []
+    if paired.get("n_paired"):
+        paired_parts = [
+            "<h2>Paired Rollouts (matched by task and seed)</h2>",
+            "<p>Both arms replay the same tasks from the same seeds, so these rollouts are matched pairs. "
+            "McNemar's exact test on the discordant pairs is the appropriate test; Fisher's exact on pooled "
+            "counts is reported alongside it but ignores the pairing and is therefore less sensitive.</p>",
+            _html_table([{key: value for key, value in paired.items() if key != "per_task"}]),
+        ]
+        if paired.get("per_task"):
+            paired_parts += ["<h3>Per Task</h3>", _html_table(paired["per_task"])]
+
     html_text = "\n".join(
         [
             "<!doctype html>",
@@ -678,7 +803,8 @@ def _render_html(
             _html_table(run_rows),
             "<h2>Statistical Significance</h2>",
             f"<p>{html.escape(str(stats.get('interpretation', 'n/a')))}</p>",
-            _html_table([{key: value for key, value in stats.items() if key != "interpretation"}]),
+            _html_table([{key: value for key, value in stats.items() if key not in _STATS_NESTED_KEYS}]),
+            *paired_parts,
             "<h2>Trace Completeness</h2>",
             _html_table(trace_rows),
             "<h2>Action Error Summary</h2>",
@@ -744,25 +870,59 @@ def _default_output_dir(base_dirs: list[Path]) -> Path:
     return Path("outputs/eval/pi05_libero/sanity-comparison") / time.strftime("%Y%m%d-%H%M%S", time.gmtime())
 
 
+def _action_distance_text(action_rows: list[dict[str, Any]]) -> str | None:
+    rmses = [row["executed_rmse"] for row in action_rows if row.get("executed_rmse") is not None]
+    cosines = [row["cosine"] for row in action_rows if row.get("cosine") is not None]
+    if not rmses and not cosines:
+        return None
+    parts = []
+    if rmses:
+        parts.append(f"mean executed-window RMSE {float(np.mean(rmses)):.4g}")
+    if cosines:
+        parts.append(f"mean chunk cosine {float(np.mean(cosines)):.4g}")
+    return ", ".join(parts)
+
+
 def _verdict(original: RunSummary, replace: RunSummary, action_rows: list[dict[str, Any]], stats: dict[str, Any]) -> str:
-    original_ok = original.pc_success == 100.0
-    replace_ok = replace.pc_success == 100.0
-    if original_ok and replace_ok:
-        chunk_text = "unknown action distance"
-        if action_rows:
-            mean_rmse = float(np.mean([row.get("executed_rmse") or 0.0 for row in action_rows]))
-            mean_cos = float(np.mean([row.get("cosine") for row in action_rows if row.get("cosine") is not None]))
-            chunk_text = f"mean executed-window RMSE {mean_rmse:.4g}, mean chunk cosine {mean_cos:.4g}"
+    orig_rate = original.pc_success
+    repl_rate = replace.pc_success
+    if orig_rate is None or repl_rate is None:
+        return "Could not read a success rate from eval_info.json for both runs; nothing can be concluded."
+    if orig_rate == 0.0 and repl_rate == 0.0:
         return (
-            "Sanity check passed: original/probe and replace both succeeded. "
-            f"Trace completeness is comparable; {chunk_text}. "
-            f"Statistical note: {stats.get('interpretation', 'n/a')}"
+            "Both runs failed every episode. This says nothing about replacement fidelity - "
+            "fix the baseline before drawing any conclusion."
         )
-    if original_ok and not replace_ok:
-        return "Replacement failed where original/probe succeeded. Treat as a replacement-fidelity problem."
-    if not original_ok and replace_ok:
-        return "Replace succeeded while original/probe did not; rerun because the baseline did not validate the task."
-    return "Both runs failed. This task/run is not useful as a replacement sanity check."
+
+    paired = stats.get("paired") or {}
+    delta = repl_rate - orig_rate
+    sentences = [f"Original/probe {orig_rate:.1f}% vs replace {repl_rate:.1f}% success ({delta:+.1f} pp)."]
+
+    if paired.get("n_paired"):
+        p_value = paired["mcnemar_exact_p"]
+        sentences.append(
+            f"{paired['n_paired']} rollouts paired by (task, seed): "
+            f"{paired['agreement_rate'] * 100:.1f}% per-episode agreement, "
+            f"{paired['discordant']} discordant, McNemar exact p={p_value:.4g}."
+        )
+        if p_value < 0.05:
+            headline = (
+                "Replacement changes closed-loop success at p < 0.05."
+                if delta < 0
+                else "Replace outperforms original/probe at p < 0.05, which usually means a setup mismatch."
+            )
+        else:
+            headline = "No detected closed-loop success difference between original/probe and replace."
+    else:
+        headline = "Unpaired comparison only; per-episode results were not matched between the runs."
+
+    distance = _action_distance_text(action_rows)
+    if distance:
+        sentences.append(f"Rollout action distance: {distance}.")
+    if orig_rate < 20.0:
+        sentences.append("Caution: the baseline itself succeeds rarely, so this comparison has little power.")
+    sentences.append(f"Statistical note: {stats.get('interpretation', 'n/a')}")
+    return f"{headline} " + " ".join(sentences)
 
 
 def main() -> None:
@@ -796,8 +956,23 @@ def main() -> None:
     layer_plot = output_dir / "layer_l1_delta.png"
     success_plot = output_dir / "success_rate_ci.png"
 
+    paired_csv = output_dir / "paired_episode_outcomes.csv"
+    paired_rows = [
+        {
+            "task_group": key[0],
+            "task_id": key[1],
+            "seed": key[2],
+            "original_success": int(original.per_episode[key]),
+            "replace_success": int(replace.per_episode[key]),
+            "discordant": int(original.per_episode[key] != replace.per_episode[key]),
+        }
+        for key in sorted(set(original.per_episode) & set(replace.per_episode))
+    ]
+
     _write_csv(action_csv, action_rows)
     _write_csv(layer_csv, layer_rows)
+    if paired_rows:
+        _write_csv(paired_csv, paired_rows)
     _plot_action_rows(action_plot, action_rows)
     _plot_layer_rows(layer_plot, layer_rows)
     _plot_success(success_plot, original, replace, stats)
@@ -817,6 +992,8 @@ def main() -> None:
         "layer_plot": layer_plot,
         "success_plot": success_plot,
     }
+    if paired_rows:
+        artifacts["paired_csv"] = paired_csv
     if copied_original_video is not None:
         artifacts["original_video"] = copied_original_video
     if copied_replace_video is not None:
@@ -835,6 +1012,7 @@ def main() -> None:
             "replace": trace_completeness_summary(replace),
         },
         "action_summary": action_summary,
+        "paired_episodes": paired_rows,
         "action_comparison": action_rows,
         "layer_comparison": layer_rows,
         "artifacts": {key: str(value) for key, value in artifacts.items()},

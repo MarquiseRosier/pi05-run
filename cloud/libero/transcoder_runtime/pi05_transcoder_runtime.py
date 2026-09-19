@@ -92,6 +92,28 @@ def _load_transcoders(checkpoint_path: Path, *, device: torch.device, dtype: tor
     return transcoders
 
 
+def _batch_task_text(batch: dict[str, Any]) -> str:
+    task = batch.get("task")
+    if task is None:
+        task = batch.get("task_description") or batch.get("language")
+    if hasattr(task, "tolist"):
+        try:
+            task = task.tolist()
+        except Exception:
+            pass
+    if isinstance(task, str):
+        return task.strip()
+    if isinstance(task, (list, tuple)):
+        for item in task:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+            if isinstance(item, (list, tuple)):
+                for nested in item:
+                    if isinstance(nested, str) and nested.strip():
+                        return nested.strip()
+    return ""
+
+
 def _round_list(tensor: torch.Tensor, limit: int | None = None) -> list[Any]:
     values = tensor.detach().cpu()
     if limit is not None:
@@ -187,12 +209,7 @@ class TranscoderRecorder:
         if not self.active:
             return
         self.captured_chunks += 1
-        task = batch.get("task")
-        new_task = ""
-        if isinstance(task, str):
-            new_task = task
-        elif isinstance(task, (list, tuple)) and task and isinstance(task[0], str):
-            new_task = task[0]
+        new_task = _batch_task_text(batch)
         if self.save_atlas_features and self._atlas_records and new_task and new_task != self.current_task:
             self.flush_atlas_episode()
             self.episode_task_id = None
@@ -299,16 +316,12 @@ class TranscoderRecorder:
             matched = task_id_from_prompt(self.atlas_suite, self.current_task, space="lerobot")
             if matched is not None:
                 return matched
-        if self.current_task:
-            if self.current_task not in self._prompt_to_task:
-                configured = self._configured_task_ids()
-                next_index = len(self._prompt_to_task)
-                if configured and next_index < len(configured):
-                    self._prompt_to_task[self.current_task] = configured[next_index]
-                else:
-                    self._prompt_to_task[self.current_task] = next_index
-            return self._prompt_to_task[self.current_task]
         configured = self._configured_task_ids()
+        if self.current_task and configured:
+            if self.current_task not in self._prompt_to_task:
+                next_index = min(len(self._prompt_to_task), len(configured) - 1)
+                self._prompt_to_task[self.current_task] = configured[next_index]
+            return self._prompt_to_task[self.current_task]
         if configured:
             return configured[0]
         env_task = os.environ.get("PI05_ATLAS_TASK_ID", "").strip()

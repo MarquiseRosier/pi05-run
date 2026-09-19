@@ -269,9 +269,17 @@ def task_id_from_prompt(suite: str, prompt: str, *, space: str = "lerobot") -> i
     table = LEROBOT_TASK_PROMPTS if space == "lerobot" else ATLAS_TASK_PROMPTS
     if suite not in table:
         return None
-    for task_id, candidate in table[suite].items():
-        if normalize_prompt(candidate) == wanted:
-            return task_id
+    exact = [task_id for task_id, candidate in table[suite].items() if normalize_prompt(candidate) == wanted]
+    if exact:
+        return exact[0]
+    contained = [
+        (task_id, normalize_prompt(candidate))
+        for task_id, candidate in table[suite].items()
+        if normalize_prompt(candidate) and normalize_prompt(candidate) in wanted
+    ]
+    if contained:
+        contained.sort(key=lambda item: len(item[1]), reverse=True)
+        return contained[0][0]
     return None
 
 

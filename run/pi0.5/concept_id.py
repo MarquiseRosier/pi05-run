@@ -38,6 +38,23 @@ def resolve_activations_dir(run: Path | None, activations_dir: Path | None) -> P
     raise SystemExit(f"No atlas_activations under {run}. Re-run probe with PI05_ATLAS_SAVE_FEATURES=1.")
 
 
+def _eval_info_task_ids(info: dict[str, Any]) -> list[Any]:
+    if info.get("task_ids"):
+        return list(info["task_ids"])
+    per_task = info.get("per_task")
+    if isinstance(per_task, dict):
+        return list(per_task.keys())
+    if isinstance(per_task, list):
+        found: list[Any] = []
+        for item in per_task:
+            if isinstance(item, dict) and item.get("task_id") is not None:
+                found.append(item["task_id"])
+            elif isinstance(item, (int, str)):
+                found.append(item)
+        return found
+    return []
+
+
 def resolve_suite(run: Path | None, suite: str | None) -> str:
     if suite:
         return suite
@@ -108,8 +125,13 @@ def main(argv: list[str] | None = None) -> int:
         info_path = args.run / "eval_info.json"
         if info_path.exists():
             info = json.loads(info_path.read_text(encoding="utf-8"))
-            expected = info.get("task_ids") or list((info.get("per_task") or {}).keys())
-            print(f"eval_info_tasks={expected}")
+            print(f"eval_info_tasks={_eval_info_task_ids(info)}")
+    if any(int(task_id) > 9 for task_id in found_tasks):
+        print(
+            "Ignored task folders outside 0-9. This run labeled tasks incorrectly; "
+            "re-run Eval after updating the repo, then re-run this cell.",
+            file=sys.stderr,
+        )
     if len(found_tasks) < 2:
         print(
             "Only one task folder was exported. Changing TASK_IDS in Controls "
@@ -125,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             layer_name,
             max_tokens_per_task=args.max_tokens_per_task,
         )
+        task_features = {task_id: tensor for task_id, tensor in task_features.items() if 0 <= int(task_id) <= 9}
         print(f"{layer_name}: tasks={sorted(task_features)} tokens={sum(item.shape[0] for item in task_features.values())}")
         if len(task_features) < 2:
             print(f"  skip {layer_name}: need at least 2 tasks for contrastive scoring")

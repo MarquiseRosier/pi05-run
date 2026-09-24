@@ -63,6 +63,7 @@ from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tens
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers  # noqa: E402
 from pi05_mi.scene_perturbation import (  # noqa: E402
     blend_geom_color,
+    find_objects,
     image_delta_stats,
     list_scene_objects,
     resolve_geom_ids,
@@ -507,8 +508,39 @@ def main() -> None:
     if args.checkpoint is None:
         raise SystemExit("--checkpoint is required unless --list-objects")
 
+    def report_target(label: str, pattern: str) -> tuple[str, ...]:
+        """Name the bodies a pattern matched.
+
+        LIBERO bodies carry dozens of geoms, so printing ids is unreadable, and
+        a loose pattern silently matching two bodies would quietly invalidate
+        the target/placebo comparison.
+        """
+        matched = find_objects(mj_model, pattern)
+        if not matched:
+            raise SystemExit(
+                f"--{label} {pattern!r} matched no body. Rerun with --list-objects to see the names."
+            )
+        names = tuple(obj.body_name for obj in matched)
+        detail = ", ".join(f"{obj.body_name}({len(obj.geoms)} geoms)" for obj in matched)
+        print(f"{label}: {pattern!r} -> {detail}", flush=True)
+        if len(matched) > 1:
+            print(
+                f"  WARNING: {label} matches {len(matched)} bodies and will perturb all of them. "
+                "Tighten the pattern if you meant only one.",
+                flush=True,
+            )
+        return names
+
+    print("", flush=True)
+    report_target("target", args.target)
     target_geoms = resolve_geom_ids(mj_model, args.target)
-    print(f"\nperturbing {args.target!r} -> geom ids {target_geoms}", flush=True)
+    if args.placebo_target:
+        placebo_names = report_target("placebo-target", args.placebo_target)
+        if set(placebo_names) & {obj.body_name for obj in find_objects(mj_model, args.target)}:
+            raise SystemExit(
+                "--placebo-target and --target resolve to the same body, so the control "
+                "would be a duplicate of the treatment."
+            )
 
     # --- validity self-check: the re-render path must reproduce the env's own
     # observation, otherwise every measurement below compares the wrong images.

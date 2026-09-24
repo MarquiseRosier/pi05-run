@@ -251,3 +251,11 @@ or object type would be the first extension.
   recolour of the referent moved the action by 54 % relative L2 against 3 % for
   the non-referent, a behavioural H1 result the section now expects because
   every prompt names "the black bowl".
+- Run `20260924-153459`, H3 **falsified** for `L5:tau0.1:F735` under the
+  corrected rule: head selectivity enrichment 0.920 (p 0.565), full circuit
+  1.069, flat across strata, 99.7 % exercised, response enrichment 1.29 / 1.20 /
+  1.26 for target / placebo / prompt swap. The parents are as selective as their
+  layers and no more; load-bearing and content-carrying came apart, measured.
+  Filled into the section. Next: run the same audit on the paper's F9970
+  compact circuit, and a previous-layer retrace of F735 as a check on the
+  frontier's layer-1 collapse.

@@ -660,7 +660,7 @@ MLP input $x_\ell$ & $(1,50,1024)$ & per layer, per denoise step \\
 Sparse code $z_{\ell,\tau}$ & $(1,50,16384)$ & $16\times$ expansion \\
 Reduced code $\tilde{z}_{\ell,\tau}$ & $(16384,)$ & max over batch and token \\
 Codes per pass & $18\times n$ & layers $\times$ denoise steps \\
-Action chunk & \RESULT{recorded} & after unpadding to the action dimension \\
+Action chunk & $(50,7)$ & after unpadding to the action dimension \\
 \hline
 \end{tabular}
 \end{center}
@@ -684,20 +684,20 @@ reproducibility filter in Section~\ref{sec:zscore}.}
 \hline
 Quantity & Value & Note \\
 \hline
-Suite and task & \RESULT{suite, task} & single task, held fixed \\
-Seed & \RESULT{seed} & fixes the initial state and the noise draws \\
-States & \RESULT{n} & separated by \RESULT{k} actions of the unperturbed plan \\
-Noise draws per state & \RESULT{n} & seeded by (seed, state, draw) \\
-Doses & \RESULT{list} & linear blend toward the target colour \\
+Suite and task & \texttt{libero\_spatial}, task 0 & single task, held fixed \\
+Seed & $1000$ & fixes the initial state and the noise draws \\
+States & $2$ & separated by $5$ actions of the unperturbed plan \\
+Noise draws per state & $2$ & seeded by (seed, state, draw) \\
+Doses & $0.5$, $1.0$ & linear blend toward the target colour \\
 Prompts & task, sibling & pixel-identical images \\
-Denoise steps $n$ & \RESULT{n} & $\tau = 1 - \mathrm{step}/n$ \\
-Cells per condition & \RESULT{n} & states $\times$ draws $\times$ doses \\
-Cells per layer & \RESULT{n} & cells per condition $\times$ $n$ \\
-Target object & \RESULT{body} & the task's object of interest \\
-Placebo object & \RESULT{body} & same mesh, different instance \\
-Top-$K$ for ranking & \RESULT{K} & Eq.~\ref{eq:zstd} only; deltas are stored in full \\
+Denoise steps $n$ & $10$ & $\tau = 1 - \mathrm{step}/n$ \\
+Cells per condition & $8$ & states $\times$ draws $\times$ doses \\
+Cells per layer & $80$ & cells per condition $\times$ $n$ \\
+Target object & \texttt{akita\_black\_bowl\_1\_main} & the task's object of interest \\
+Placebo object & \texttt{akita\_black\_bowl\_2\_main} & same mesh, different instance \\
+Top-$K$ for ranking & $25$ & Eq.~\ref{eq:zstd} only; deltas are stored in full \\
 Nomination thresholds & $25\%$, $\ell\ge4$, $2\times$ & consistency, depth, exact selectivity \\
-Null draws $M$ & \RESULT{M} & Eq.~\ref{eq:enrich} \\
+Null draws $M$ & $2000$ & Eq.~\ref{eq:enrich} \\
 \hline
 \end{tabular}
 \end{center}
@@ -705,12 +705,15 @@ Null draws $M$ & \RESULT{M} & Eq.~\ref{eq:enrich} \\
 
 \subsection{Results}
 
-All entries in this subsection are to be filled from a completed run. Each
-table caption names the artefact that fills it. Table~\ref{tab:cf-main} reports
-the headline selectivity and its uncertainty, Table~\ref{tab:cf-dose} the dose
-response, Table~\ref{tab:cf-prompt} the prompt-swap control,
-Table~\ref{tab:cf-layers} the response by layer, and
-Table~\ref{tab:cf-validation} the circuit audit.
+The circuit audit (Tables~\ref{tab:cf-validation} and~\ref{tab:cf-strata})
+and the configuration are filled from probe run \texttt{20260924-153459} with
+discovery artefacts \texttt{counterfactual-20260924-154113}. The remaining
+cells of Tables~\ref{tab:cf-main} to~\ref{tab:cf-layers} are filled from the
+same run's \texttt{decision\_metrics.json} and
+\texttt{layer\_selectivity.csv}; each caption names its keys. Runs are
+bit-reproducible under a fixed seed, so the latent responses in those tables
+are identical across reruns of the same configuration and only the
+perturbation-size columns depend on the camera set measured.
 
 \begin{table}[t]
 \caption{Selectivity under the task prompt. $D$ is the pooled layer response
@@ -825,15 +828,15 @@ quantities down by influence rank.}
 \hline
 Perturbation & Circuit mean & Random mean & Enrichment & $p$ \\
 \hline
-Target object  & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Placebo object & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Prompt swap    & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Target object  & $0.3535$ & $0.2747$ & $1.29$ & $0.0005$ \\
+Placebo object & $0.0353$ & $0.0293$ & $1.20$ & $0.0005$ \\
+Prompt swap    & $0.6853$ & $0.5443$ & $1.26$ & $0.0005$ \\
 \hline
-\multicolumn{5}{l}{Selectivity: circuit \RESULT{val}, matched random \RESULT{val}, $\mathrm{SelEnrich} = \RESULT{val}$ at $p = \RESULT{val}$} \\
-\multicolumn{5}{l}{Specificity, Eq.~\ref{eq:specificity} $= \RESULT{val}$ (against \RESULT{condition})} \\
+\multicolumn{5}{l}{Selectivity: circuit $10.02\times$, matched random $9.37\times$, $\mathrm{SelEnrich} = 1.069$ at $p = 0.004$} \\
+\multicolumn{5}{l}{Specificity, Eq.~\ref{eq:specificity} $= 1.022$ (against the prompt swap)} \\
 \hline
-\multicolumn{5}{l}{Traced target $= \RESULT{key}$ ($z^{\mathrm{std}} = \RESULT{val}$, exact selectivity \RESULT{val}, fired in \RESULT{val} of cells)} \\
-\multicolumn{5}{l}{Parents $= \RESULT{n}$; exercised $= \RESULT{n}$ (\RESULT{fraction}); $M = \RESULT{val}$ draws} \\
+\multicolumn{5}{l}{Traced target $= \mathtt{L5}\!:\!0.1\!:\!\mathtt{F735}$ ($z^{\mathrm{std}} = +4.86$, exact selectivity $58.4\times$, fired in $39\%$ of cells)} \\
+\multicolumn{5}{l}{Parents $= 1681$; exercised $= 1676$ ($99.7\%$); $M = 2000$ draws} \\
 \hline
 \end{tabular}
 \end{center}
@@ -851,14 +854,71 @@ Filled from \texttt{validation.json} under \texttt{strata}.}
 \hline
 Parents included & Target enrichment & Circuit selectivity & $\mathrm{SelEnrich}$ & $p$ & $\mathrm{Spec}$ \\
 \hline
-Top 10 (decides) & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Top 50        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Top 200       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-All           & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 10 (decides) & $1.186$ & $8.78\times$ & $0.920$ & $0.565$ & $1.110$ \\
+Top 50        & $1.278$ & $10.45\times$ & $1.109$ & $0.172$ & $0.977$ \\
+Top 200       & $1.317$ & $9.76\times$ & $1.041$ & $0.248$ & $0.947$ \\
+All ($1676$)  & $1.287$ & $10.02\times$ & $1.069$ & $0.004$ & $1.022$ \\
 \hline
 \end{tabular}
 \end{center}
 \end{table}
+
+\paragraph{Circuit corroboration, H3.}
+The nominated target is itself strongly object-selective on the probe scene:
+$\mathtt{L5}\!:\!0.1\!:\!\mathtt{F735}$ responds $0.344$ to the referent's
+recolour and $0.006$ to the identical non-referent's, a ratio of $58\times$,
+and it fires in $39\%$ of the task prompt's cells. The circuit traced upstream
+of it holds $1681$ parents after pruning, of which $99.7\%$ are exercised by
+the scene. As a set, the parents respond more than matched random features to
+every manipulation alike: $1.29\times$ for the referent recolour,
+$1.20\times$ for the non-referent recolour and $1.26\times$ for the prompt
+swap, each at the Monte-Carlo floor. Their target-over-placebo selectivity is
+$10.02\times$; a random set of features drawn from the same layers and flow
+time gives $9.37\times$, which is the selectivity of layers $0$ to $4$
+themselves (Table~\ref{tab:cf-layers}) weighted by where the parents sit. The
+selectivity enrichment is therefore $1.069$, significant at $p=0.004$ over
+$1676$ nodes and inconsequential. At the head of the influence ranking the top
+$10$ parents are \emph{less} selective than random ($0.920$, $p=0.565$), and
+the profile is flat through the top $50$, top $200$ and full set ($1.109$,
+$1.041$, $1.069$). \textbf{H3 is falsified for this target.} The tracer's
+parents carry no more information about the perturbed object than any active
+feature at their layers, and the influence ranking does not sort by that
+property at any depth, so a tighter graph would not change the reading.
+
+\paragraph{Reading the negative.}
+Three facts fix what it means. It is not about the target: F735 is the most
+object-selective feature the probe found, so the failure lies in the edges,
+not the node. It is not the unexercised case of Section~\ref{sec:threats}:
+$99.7\%$ of the parents are active on this scene, which resolves the
+ambiguity between ``does not carry the property'' and ``not exercised here''
+toward the former for this scene. And it is invisible to a response-only
+test: $1.29\times$ at the Monte-Carlo floor would have read as corroboration
+under a rule that asks only whether the parents respond, which is the kind of
+control the output-side ablations of Section~C are. What the parents share is
+responsiveness. Attribution in the replacement model is activation times
+gradient, and features that are active and high-variance on the tracing
+observations respond more to any change of input. Load-bearing and
+content-carrying came apart here, measured, which is the distinction this
+section exists to make.
+
+Two properties of the trace itself belong on the record. Forty-five of the
+sixty expansions were layer-$1$ nodes: with sources drawn from every earlier
+layer and a frontier ordered by influence, the layer with the most edges
+absorbs the expansion budget, and the result is a broad slice of layers $0$
+to $4$ rather than a layered path. And the target sits at the final flow time
+$\tau=0.1$, where the early action-expert layers process nearly denoised
+action tokens; whether the object selectivity those layers show in aggregate
+($11\times$ at layer $0$) is routed to F735 through edges a first-order
+attribution can see is precisely what this test says it is not.
+
+\paragraph{What follows for Sections~B and~C.}
+The result bears on the paper's case study by analogy, not directly. The
+F9970 circuit was pruned to sixteen nodes and shown to be load-bearing by
+ablation against matched random circuits; whether it is content-carrying has
+not been tested, and the same audit applies to it unchanged, with the bowl
+recolour as the manipulation. A retrace of F735 restricted to previous-layer
+sources would test whether a layered trace fares differently; the flat
+influence profile predicts that it will not.
 
 \subsection{Hypothesis verdicts}
 \label{sec:verdicts}
@@ -911,8 +971,9 @@ otherwise. If $\mathrm{Sel}_{\mathrm{task}}\le1$ there is no selectivity to
 follow the referent and H2 does not apply. (\texttt{h2.verdict}.)
 
 \paragraph{H3.}
-\RESULT{supported and object-specific, supported but not specific, falsified,
-or inconclusive}. \emph{Inconclusive} if fewer than half the parents are
+\textbf{Falsified} on run \texttt{20260924-153459}: head selectivity enrichment
+$0.920$ at $p=0.565$, full circuit $1.069$, exercised fraction $99.7\%$. The
+rule: \emph{inconclusive} if fewer than half the parents are
 exercised by the scene. \emph{Falsified} if the selectivity enrichment of
 Eq.~\ref{eq:sel-enrich} over the top $10$ parents by influence is at most
 $1$ or has $p\ge0.05$, or if the full circuit's selectivity enrichment is at
@@ -991,8 +1052,9 @@ hypothesis, and its mean is close to the matched random mean by construction.
 Table~\ref{tab:cf-strata} is what distinguishes the two readings: if the head
 of the influence ranking is enriched and the tail is not, the finding is real
 and the pruning is too loose; if the profile is flat, the ranking is
-uninformative for this property. The node count is reported with every
-verdict.
+uninformative for this property. In the reported run the profile was flat,
+so the negative is about the attribution, not the pruning. The node count is
+reported with every verdict.
 
 \paragraph{Does the measurement answer the question?}
 $\delta$ is measured on the features the transcoders expose, so any claim is

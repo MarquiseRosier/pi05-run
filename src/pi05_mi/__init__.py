@@ -25,6 +25,20 @@ from .patch_pi05 import (
     install_pi05_action_expert_wrappers,
     list_pi05_action_expert_mlp_targets,
 )
+from .scene_perturbation import (
+    ColorPerturbation,
+    SceneGeom,
+    SceneObject,
+    blend_geom_color,
+    find_objects,
+    image_delta_stats,
+    list_scene_geoms,
+    list_scene_objects,
+    resolve_geom_ids,
+    resolve_mj_model,
+    set_geom_color,
+    shift_geom_hue,
+)
 from .feature_discovery import (
     FeatureDiscoveryCollector,
     FeatureDiscoveryConfig,
@@ -33,6 +47,18 @@ from .feature_discovery import (
 )
 
 __all__ = [
+    "shift_geom_hue",
+    "set_geom_color",
+    "resolve_mj_model",
+    "resolve_geom_ids",
+    "list_scene_objects",
+    "list_scene_geoms",
+    "image_delta_stats",
+    "find_objects",
+    "blend_geom_color",
+    "SceneObject",
+    "SceneGeom",
+    "ColorPerturbation",
     "ActionExpertMLPTarget",
     "ActivationBatch",
     "ActivationBuffer",

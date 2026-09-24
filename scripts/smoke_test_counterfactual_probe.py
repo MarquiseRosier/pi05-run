@@ -566,11 +566,19 @@ def _m(state, noise, prompt, kind, dose, *, D, S_l2, S_px, A):
     }
 
 
-def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None):
-    """Target responds 4x the placebo in D; its footprint is 2x; response is linear in dose."""
+def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None, swap_D=None):
+    """Target responds 4x the placebo in D; its footprint is 2x; response is linear in dose.
+
+    With ``alt_sel`` the run also carries a prompt-swap positive control of
+    latent response ``swap_D`` (default 16, so the target is 1/4 of it at the
+    mean dose) under the task prompt.
+    """
     ms = []
     for state in (0, 1):
         for noise in (0, 1):
+            if alt_sel is not None:
+                ms.append(_m(state, noise, "task", "prompt_swap", 0.0,
+                             D=16.0 if swap_D is None else swap_D, S_l2=0.0, S_px=0.0, A=0.68))
             for prompt in (("task", "alt") if alt_sel is not None else ("task",)):
                 ms.append(_m(state, noise, prompt, "null", 0.0, D=null, S_l2=0.0, S_px=0.0, A=0.0))
                 for dose in (0.5, 1.0):
@@ -617,6 +625,12 @@ def test_decision_metrics_compute_the_paper_quantities_exactly() -> None:
         assert abs(dr["elasticity_mean"] - 1.0) < 1e-9, dr
     assert h1["verdict"] == "supported"
 
+    # Positive control: mean target D over doses is 6 (=8*0.75), so 6/16 of the swap response.
+    pc = h1["positive_control"]
+    assert pc["n"] == 4 and abs(pc["D"] - 16.0) < 1e-9
+    assert abs(pc["target_over_positive"] - 6.0 / 16.0) < 1e-9, pc
+    assert abs(pc["placebo_over_positive"] - 1.5 / 16.0) < 1e-9, pc
+
     h2 = metrics["h2"]
     assert abs(h2["grounding"]["mean"] - 0.68) < 1e-9 and h2["grounding"]["n"] == 4
     assert abs(h2["per_prompt"]["task"]["sel_raw"] - 4.0) < 1e-9
@@ -649,6 +663,10 @@ def test_decision_metrics_verdict_branches() -> None:
     assert P.compute_decision_metrics(_linear_run(alt_sel=2.0), baseline_by_prompt=_baselines(0.68))["h2"]["verdict"].startswith("partial")
     assert P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.001))["h2"]["verdict"].startswith("untestable")
     assert P.compute_decision_metrics(_linear_run())["h2"]["verdict"].startswith("untestable")
+
+    # Without an alternate prompt there is no positive control, and that is reported as such.
+    assert falsified["h1"]["positive_control"]["n"] == 0
+    assert falsified["h1"]["positive_control"]["target_over_positive"] is None
 
     # Printing must not crash on any branch.
     for metrics in (supported, falsified, invalid, weak):

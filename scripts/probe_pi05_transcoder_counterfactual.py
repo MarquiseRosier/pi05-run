@@ -1010,6 +1010,10 @@ def main() -> None:
             if args.noise_samples > 1:
                 print(f"  --- noise draw {noise_index} (seed {cell_seed}) ---", flush=True)
 
+            # Blocks are written after both prompts are measured, so that the
+            # task block can also carry the prompt-swap positive control.
+            pending_blocks: dict[str, tuple[LatentAccumulator, dict[tuple[str, float], dict[tuple[str, int], np.ndarray]]]] = {}
+
             # Every prompt variant sees pixel-identical images and the same noise,
             # so the only thing that changes between variants is the language.
             for prompt_label, prompt_text in prompt_variants:
@@ -1104,12 +1108,60 @@ def main() -> None:
                             }
                         )
 
+                pending_blocks[prompt_label] = (baseline_latents, block_deltas)
+
+            # Positive control. Swapping the prompt is a manipulation known to
+            # change behaviour (its action effect is g, Eq. grounding), and its
+            # latent response is available for free from the two baselines. It
+            # anchors the scale: a recolour response is read as a fraction of
+            # what a behaviour-changing manipulation produces on these layers.
+            task_label = prompt_variants[0][0]
+            if task_label in pending_blocks and "alt" in pending_blocks:
+                task_latents, task_block = pending_blocks[task_label]
+                alt_latents, _alt_block = pending_blocks["alt"]
+                swap_rows = latent_delta_rows(
+                    task_latents, alt_latents, condition="prompt_swap", top_features=args.top_features
+                )
+                for row in swap_rows:
+                    row["state_index"] = state_index
+                    row["noise_index"] = noise_index
+                    row["dose"] = 0.0
+                    row["target"] = "none"
+                    row["prompt"] = task_label
+                latent_rows.extend(swap_rows)
+                swap_summary = summarize_latent_rows(swap_rows)
+                grounding_here = _rel_l2(
+                    baseline_by_prompt[(state_index, noise_index, task_label)],
+                    baseline_by_prompt[(state_index, noise_index, "alt")],
+                )
+                print(
+                    f"    positive control (prompt swap) latent L2 mean={swap_summary.get('l2_delta_mean'):.6g} "
+                    f"action rel_l2={grounding_here:.6g}",
+                    flush=True,
+                )
+                measurements.append(
+                    {
+                        "state_index": state_index,
+                        "noise_index": noise_index,
+                        "prompt": task_label,
+                        "kind": "prompt_swap",
+                        "target": "none",
+                        "dose": 0.0,
+                        "pixel": image_delta_stats(baseline_image, baseline_image),
+                        "latent": swap_summary,
+                        "action_relative_l2": grounding_here,
+                    }
+                )
                 if store is not None:
+                    task_block[("prompt_swap", 0.0)] = full_delta(task_latents, alt_latents)
+
+            if store is not None:
+                for prompt_label, (block_latents, block_deltas) in pending_blocks.items():
                     store.write_block(
                         state=state_index,
                         noise=noise_index,
                         prompt=prompt_label,
-                        baseline_max=baseline_latents.max,
+                        baseline_max=block_latents.max,
                         deltas=block_deltas,
                     )
 
@@ -1449,6 +1501,27 @@ def compute_decision_metrics(
         if any(m["kind"] == kind for m in measurements)
     }
 
+    # Positive control: the prompt swap's latent response, per (state, draw),
+    # as the scale a behaviour-changing manipulation produces on these layers.
+    swaps = [
+        float(m["latent"].get("l2_delta_mean") or 0.0)
+        for m in measurements
+        if m["kind"] == "prompt_swap" and m.get("prompt", "task") == primary
+    ]
+    positive = {
+        "kind": "prompt_swap",
+        "n": len(swaps),
+        "D": float(np.mean(swaps)) if swaps else None,
+        "spread": _spread(swaps),
+        "target_over_positive": None,
+        "placebo_over_positive": None,
+    }
+    if swaps and positive["D"]:
+        if pooled["D_target"] is not None:
+            positive["target_over_positive"] = pooled["D_target"] / positive["D"]
+        if pooled["D_placebo"] is not None:
+            positive["placebo_over_positive"] = pooled["D_placebo"] / positive["D"]
+
     floor_ok = (
         null_floor["max"] is not None
         and pooled["D_placebo"] is not None
@@ -1477,6 +1550,7 @@ def compute_decision_metrics(
         "spread": spread,
         "bootstrap_ci_95": ci,
         "dose_response": doses,
+        "positive_control": positive,
         "decision_rule": (
             "supported if the null floor is at most 5% of the placebo response, the pooled "
             "footprint-adjusted selectivity (S = image-difference norm) exceeds 1, and every "
@@ -1576,6 +1650,13 @@ def _print_decision_metrics(metrics: dict[str, Any]) -> None:
         print(
             f"dose response [{kind}]: {rows}  elasticity={_fmt(dr['elasticity_mean'])} "
             f"monotone={dr['monotone_in_dose']}",
+            flush=True,
+        )
+    pc = h1.get("positive_control", {})
+    if pc.get("n"):
+        print(
+            f"positive control (prompt swap) D={_fmt(pc['D'])} (n={pc['n']}); target is "
+            f"{_fmt(pc['target_over_positive'])} of it, placebo {_fmt(pc['placebo_over_positive'])}",
             flush=True,
         )
     print(f"H1 verdict: {h1['verdict']}", flush=True)

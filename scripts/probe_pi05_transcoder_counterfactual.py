@@ -30,6 +30,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -47,9 +48,14 @@ def _harden_environment() -> None:
     if "inline" in os.environ.get("MPLBACKEND", ""):
         os.environ["MPLBACKEND"] = "Agg"
     os.environ.setdefault("MPLBACKEND", "Agg")
-    # Offscreen rendering needs a headless GL backend; honour an explicit choice.
-    os.environ.setdefault("MUJOCO_GL", "egl")
-    os.environ.setdefault("PYOPENGL_PLATFORM", os.environ["MUJOCO_GL"])
+
+    # Headless offscreen rendering wants EGL, but only Linux has it: importing
+    # mujoco with MUJOCO_GL=egl on macOS raises outright. Default only where the
+    # backend exists, and never override an explicit choice.
+    if sys.platform.startswith("linux"):
+        os.environ.setdefault("MUJOCO_GL", "egl")
+    if os.environ.get("MUJOCO_GL"):
+        os.environ.setdefault("PYOPENGL_PLATFORM", os.environ["MUJOCO_GL"])
 
 
 _harden_environment()
@@ -87,13 +93,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prompt", default=None, help="Override the task language prompt.")
 
     parser.add_argument("--list-objects", action="store_true", help="Print the scene's objects and exit.")
-    parser.add_argument("--target", default=None, help="Regex matching the body name to perturb.")
+    parser.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "Regex matching the body name to perturb. Defaults to the task's first "
+            "obj_of_interest, read from its BDDL."
+        ),
+    )
     parser.add_argument(
         "--placebo-target",
         default=None,
         help=(
             "A second object to perturb in a separate pass. Comparing its response to the "
-            "primary target separates 'features track this object' from 'features track any pixel change'."
+            "primary target separates 'features track this object' from 'features track any pixel change'. "
+            "Defaults to another instance of the same object type when the scene has one."
         ),
     )
     parser.add_argument(
@@ -337,6 +351,87 @@ def build_harness(args: argparse.Namespace, *, load_policy: bool = True) -> Harn
     return harness
 
 
+_INSTANCE_RE = re.compile(r"^(?P<base>.+?)_(?P<index>\d+)(?P<suffix>_.*)?$")
+
+
+def read_objects_of_interest(harness: Harness) -> list[str]:
+    """Names the task's BDDL marks as ``obj_of_interest``.
+
+    LIBERO states the task-relevant objects in the problem definition, so the
+    probe can choose its target from the task itself rather than making the
+    caller look them up.
+    """
+    bddl_path = getattr(harness.inner_env, "_task_bddl_file", None)
+    if not bddl_path or not Path(bddl_path).exists():
+        return []
+    text = Path(bddl_path).read_text(errors="replace")
+    match = re.search(r"\(:obj_of_interest(.*?)\)", text, re.S)
+    if not match:
+        return []
+    return [token for token in match.group(1).split() if token]
+
+
+def auto_select_targets(harness: Harness, mj_model: Any) -> tuple[str | None, str | None, list[str]]:
+    """Pick a target and a matched placebo without the caller naming them.
+
+    Target: the first ``obj_of_interest`` that resolves to a body in the scene.
+
+    Placebo: another instance of the *same object type* when the scene has one.
+    In libero_spatial that is the second identical black bowl, which is the
+    tightest possible control -- same mesh, same colour, same size, differing
+    only in position and task relevance. Falling back to a different object
+    would confound "different object" with "different pixels".
+    """
+    notes: list[str] = []
+    bodies = [obj.body_name for obj in list_scene_objects(mj_model, task_objects_only=True)]
+
+    target_body: str | None = None
+    for name in read_objects_of_interest(harness):
+        matches = find_objects(mj_model, f"^{re.escape(name)}(_|$)")
+        if matches:
+            target_body = matches[0].body_name
+            notes.append(f"target {target_body!r} from the task's obj_of_interest ({name})")
+            break
+
+    if target_body is None:
+        if not bodies:
+            return None, None, ["no task-like bodies found in the scene"]
+        target_body = bodies[0]
+        notes.append(f"no obj_of_interest matched a body; falling back to {target_body!r}")
+
+    placebo_body: str | None = None
+    parsed = _INSTANCE_RE.match(target_body)
+    if parsed:
+        base, index, suffix = parsed.group("base"), parsed.group("index"), parsed.group("suffix") or ""
+        for candidate in bodies:
+            other = _INSTANCE_RE.match(candidate)
+            if (
+                other
+                and other.group("base") == base
+                and other.group("index") != index
+                and (other.group("suffix") or "") == suffix
+            ):
+                placebo_body = candidate
+                notes.append(
+                    f"placebo {placebo_body!r}: another instance of the same object type, "
+                    "so the perturbation is matched and only task relevance differs"
+                )
+                break
+
+    if placebo_body is None:
+        others = [name for name in bodies if name != target_body]
+        if others:
+            placebo_body = others[0]
+            notes.append(f"placebo {placebo_body!r}: no sibling instance, using a different object")
+
+    to_pattern = lambda name: f"^{re.escape(name)}$"  # noqa: E731 - exact, so it cannot match a sibling
+    return (
+        to_pattern(target_body),
+        to_pattern(placebo_body) if placebo_body else None,
+        notes,
+    )
+
+
 def rerender_observation(harness: Harness) -> dict[str, Any]:
     """Re-render the cameras at the *current* sim state without stepping physics.
 
@@ -503,10 +598,21 @@ def main() -> None:
         harness.vec_env.close()
         return
 
-    if args.target is None:
-        raise SystemExit("--target is required (run with --list-objects first to see the object names)")
     if args.checkpoint is None:
         raise SystemExit("--checkpoint is required unless --list-objects")
+
+    if args.target is None:
+        auto_target, auto_placebo, notes = auto_select_targets(harness, mj_model)
+        if auto_target is None:
+            raise SystemExit(
+                "Could not choose a target automatically. Rerun with --list-objects and pass --target."
+            )
+        args.target = auto_target
+        if args.placebo_target is None:
+            args.placebo_target = auto_placebo
+        print("\nauto-selected objects:", flush=True)
+        for note in notes:
+            print(f"  {note}", flush=True)
 
     def report_target(label: str, pattern: str) -> tuple[str, ...]:
         """Name the bodies a pattern matched.

@@ -130,8 +130,12 @@ def test_environment_hardening_rewrites_only_the_inline_backend() -> None:
         os.environ.pop("PYOPENGL_PLATFORM", None)
         P._harden_environment()
         assert os.environ["MPLBACKEND"] == "Agg"
-        assert os.environ["MUJOCO_GL"] == "egl"
-        assert os.environ["PYOPENGL_PLATFORM"] == "egl"
+        # EGL only exists on Linux; defaulting it on macOS makes `import mujoco` raise.
+        if sys.platform.startswith("linux"):
+            assert os.environ["MUJOCO_GL"] == "egl"
+            assert os.environ["PYOPENGL_PLATFORM"] == "egl"
+        else:
+            assert "MUJOCO_GL" not in os.environ, "must not force EGL off Linux"
 
         os.environ["MPLBACKEND"] = "pdf"
         os.environ["MUJOCO_GL"] = "osmesa"
@@ -192,6 +196,114 @@ def test_shape_report_rejects_a_drifting_batch() -> None:
         "otherwise the probe's drift guard cannot fire"
     )
     assert _tensor_shape_map(a) == _tensor_shape_map(dict(a))
+
+
+SPATIAL_TASK0_BDDL = """
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:language Pick the akita black bowl between the plate and the ramekin and place it on the plate)
+  (:objects
+    akita_black_bowl_1 akita_black_bowl_2 - akita_black_bowl
+    cookies_1 - cookies
+    plate_1 - plate
+  )
+  (:obj_of_interest
+    akita_black_bowl_1
+    plate_1
+  )
+)
+"""
+
+# Exactly the body names the real discovery pass reported for libero_spatial task 0.
+REAL_BODY_NAMES = [
+    "akita_black_bowl_1_main",
+    "akita_black_bowl_2_main",
+    "cookies_1_main",
+    "glazed_rim_porcelain_ramekin_1_main",
+    "plate_1_main",
+    "wooden_cabinet_1_cabinet_top",
+    "flat_stove_1_burner",
+]
+
+
+def _scene(body_names):
+    import mujoco
+
+    xml = "<mujoco><worldbody>" + "".join(
+        f'<body name="{b}"><geom name="{b}_g" type="box" size=".05 .05 .05" rgba="0.05 0.05 0.05 1"/></body>'
+        for b in body_names
+    ) + "</worldbody></mujoco>"
+    return mujoco.MjModel.from_xml_string(xml)
+
+
+def _harness_with_bddl(text: str | None):
+    import tempfile
+
+    class _Inner:
+        _task_bddl_file = None
+
+    if text is not None:
+        path = Path(tempfile.mkdtemp()) / "task.bddl"
+        path.write_text(text)
+        _Inner._task_bddl_file = str(path)
+
+    class _Harness:
+        inner_env = _Inner()
+
+    return _Harness()
+
+
+def test_obj_of_interest_is_read_from_the_task_bddl() -> None:
+    names = P.read_objects_of_interest(_harness_with_bddl(SPATIAL_TASK0_BDDL))
+    assert names == ["akita_black_bowl_1", "plate_1"]
+    assert P.read_objects_of_interest(_harness_with_bddl(None)) == []
+
+
+def test_auto_selection_picks_the_task_object_and_its_identical_sibling() -> None:
+    from pi05_mi.scene_perturbation import find_objects
+
+    model = _scene(REAL_BODY_NAMES)
+    target, placebo, _notes = P.auto_select_targets(_harness_with_bddl(SPATIAL_TASK0_BDDL), model)
+
+    assert [o.body_name for o in find_objects(model, target)] == ["akita_black_bowl_1_main"]
+    assert [o.body_name for o in find_objects(model, placebo)] == ["akita_black_bowl_2_main"]
+
+
+def test_auto_selected_patterns_are_exact_so_they_cannot_match_a_sibling() -> None:
+    """A loose pattern would perturb both bowls and destroy the control."""
+    from pi05_mi.scene_perturbation import find_objects
+
+    model = _scene(REAL_BODY_NAMES)
+    target, placebo, _ = P.auto_select_targets(_harness_with_bddl(SPATIAL_TASK0_BDDL), model)
+    assert len(find_objects(model, target)) == 1
+    assert len(find_objects(model, placebo)) == 1
+    assert not set(o.body_name for o in find_objects(model, target)) & set(
+        o.body_name for o in find_objects(model, placebo)
+    )
+
+
+def test_auto_selection_falls_back_when_there_is_no_sibling_instance() -> None:
+    from pi05_mi.scene_perturbation import find_objects
+
+    model = _scene(["akita_black_bowl_1_main", "plate_1_main", "cookies_1_main"])
+    target, placebo, notes = P.auto_select_targets(_harness_with_bddl(SPATIAL_TASK0_BDDL), model)
+    assert [o.body_name for o in find_objects(model, target)] == ["akita_black_bowl_1_main"]
+    assert placebo is not None, "a placebo should still be chosen from a different object"
+    assert [o.body_name for o in find_objects(model, placebo)] != ["akita_black_bowl_1_main"]
+    assert any("no sibling instance" in note for note in notes)
+
+
+def test_auto_selection_falls_back_when_the_bddl_is_unreadable() -> None:
+    model = _scene(REAL_BODY_NAMES)
+    target, _placebo, notes = P.auto_select_targets(_harness_with_bddl(None), model)
+    assert target is not None, "must still choose something rather than crash"
+    assert any("falling back" in note for note in notes)
+
+
+def test_auto_selection_reports_nothing_to_pick_on_an_empty_scene() -> None:
+    model = _scene(["robot0_link", "table"])  # filtered out as non-task bodies
+    target, placebo, notes = P.auto_select_targets(_harness_with_bddl(None), model)
+    assert target is None and placebo is None
+    assert notes
 
 
 def test_save_image_accepts_the_formats_the_probe_produces() -> None:

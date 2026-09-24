@@ -269,33 +269,128 @@ def test_image_delta_stats_handles_uint8_and_float_inputs() -> None:
     assert abs(stats["changed_pixel_fraction"] - 1 / 64) < 1e-12
 
 
-def test_resolve_mj_model_unwraps_nested_simulator_wrappers() -> None:
-    """robosuite/LIBERO nest the model a few layers down; the resolver must find it."""
-    raw = _model()
+def _robosuite_style_wrapper(raw):
+    """Replicate robosuite's binding_utils.MjModel wrapping behaviour.
 
-    class _Inner:
+    This is the shape that matters: a metaclass installs a property for every
+    public attribute of mujoco.MjModel forwarding to the wrapped instance, so
+    the wrapper passes every hasattr check while still being rejected by the C
+    API. A naive fake that only holds ``_model`` does not reproduce that, which
+    is precisely how the real bug slipped through.
+    """
+    import mujoco
+
+    class _Meta(type):
+        def __new__(cls, name, bases, dct):
+            for attr in dir(mujoco.MjModel):
+                if not attr.startswith("_") and attr not in dct:
+                    dct[attr] = property(
+                        lambda self, attr=attr: getattr(self._model, attr),
+                        lambda self, value, attr=attr: setattr(self._model, attr, value),
+                    )
+            return super().__new__(cls, name, bases, dct)
+
+    class _WrappedModel(metaclass=_Meta):
         def __init__(self, model):
             self._model = model
 
+    return _WrappedModel(raw)
+
+
+def _real_robosuite_wrapper(raw):
+    """Build the genuine robosuite wrapper when robosuite is importable."""
+    try:
+        from robosuite.utils.binding_utils import MjModel as RobosuiteMjModel
+    except Exception:
+        return None
+    return RobosuiteMjModel(raw)
+
+
+def test_robosuite_wrapper_passes_hasattr_but_is_not_a_real_model() -> None:
+    """Pin the property that makes duck-typing the wrong test here."""
+    import mujoco
+
+    raw = _model()
+    for wrapper in filter(None, [_robosuite_style_wrapper(raw), _real_robosuite_wrapper(raw)]):
+        assert hasattr(wrapper, "geom_rgba")
+        assert hasattr(wrapper, "geom_matid")
+        assert hasattr(wrapper, "geom_bodyid")
+        assert not isinstance(wrapper, mujoco.MjModel)
+        try:
+            mujoco.mj_id2name(wrapper, mujoco.mjtObj.mjOBJ_GEOM, 0)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("the C API should reject the wrapper")
+
+
+def test_resolve_mj_model_unwraps_the_robosuite_wrapper() -> None:
+    raw = _model()
+    for wrapper in filter(None, [_robosuite_style_wrapper(raw), _real_robosuite_wrapper(raw)]):
+        assert resolve_mj_model(wrapper) is raw, "must unwrap to the genuine model, not stop at the wrapper"
+
+
+def test_resolve_mj_model_unwraps_the_full_libero_chain() -> None:
+    """LIBERO -> robosuite env -> MjSim -> wrapper -> raw model."""
+    raw = _model()
+    wrapper = _robosuite_style_wrapper(raw)
+
     class _Sim:
-        def __init__(self, model):
-            self.model = _Inner(model)
+        def __init__(self): self.model = wrapper
 
-    class _Env:
-        def __init__(self, model):
-            self.sim = _Sim(model)
+    class _RobosuiteEnv:
+        def __init__(self): self.sim = _Sim()
 
-    class _Outer:
-        def __init__(self, model):
-            self.env = _Env(model)
+    class _OffScreenRenderEnv:
+        def __init__(self): self.env = _RobosuiteEnv()
 
-    assert resolve_mj_model(_Outer(raw)) is raw
+    resolved = resolve_mj_model(_OffScreenRenderEnv())
+    assert resolved is raw
+    # The whole point of resolving: the C API must now accept it.
+    import mujoco
+    assert mujoco.mj_id2name(resolved, mujoco.mjtObj.mjOBJ_GEOM, 0) is not None
+
+
+def test_perturbation_works_through_a_robosuite_wrapper() -> None:
+    """End to end through the wrapper, since that is how it is called for real."""
+    raw = _model()
+    wrapper = _robosuite_style_wrapper(raw)
+    objects = list_scene_objects(wrapper, task_objects_only=True)
+    assert "akita_black_bowl_1" in {o.body_name for o in objects}
+
+    perturbation = set_geom_color(wrapper, "black_bowl", (0.95, 0.1, 0.1))
+    gid = perturbation.geom_ids[0]
+    # Writes must land on the shared underlying arrays, visible through both views.
+    assert np.allclose(raw.geom_rgba[gid], wrapper.geom_rgba[gid])
+    assert raw.geom_rgba[gid][0] > 0.9
+    perturbation.revert(wrapper)
+    assert raw.geom_rgba[gid][0] < 0.1
+
+
+def test_resolve_mj_model_reports_what_it_walked() -> None:
     try:
         resolve_mj_model(object())
     except TypeError as exc:
-        assert "geom_rgba" in str(exc)
+        assert "mujoco.MjModel" in str(exc)
+        assert "object" in str(exc), "the error should name the types it inspected"
     else:
         raise AssertionError("expected a TypeError for an unresolvable object")
+
+
+def test_resolve_mj_model_survives_a_property_that_raises() -> None:
+    """Half-built sims expose attributes that throw; that branch is just empty."""
+    raw = _model()
+
+    class _Exploding:
+        @property
+        def sim(self):
+            raise RuntimeError("sim not created yet")
+
+        @property
+        def model(self):
+            return raw
+
+    assert resolve_mj_model(_Exploding()) is raw
 
 
 def test_perturbation_accepts_a_resolved_object_and_explicit_geom_ids() -> None:

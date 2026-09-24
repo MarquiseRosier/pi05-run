@@ -217,7 +217,13 @@ device, SHA-256 of the transcoder checkpoint, and argv. Seeds: env seed and
 per-cell noise seeds (`noise_seed_for`). Config: `config` block with every
 CLI value.
 
-**Was.** Config and seed only; noise unseeded.
+**Gap found 2026-09-24.** Every artefact lived only on the Colab disk:
+`outputs/` is gitignored and the notebook copied nothing back to Drive, so a
+runtime reset would have destroyed the delta store, verdicts and provenance
+the tables cite. Each stage now mirrors its run directory to
+`DRIVE_ROOT/outputs/` when it finishes (`SAVE_RUNS_TO_DRIVE`).
+
+**Was.** Config and seed only; noise unseeded; artefacts ephemeral.
 
 ## 10. Scope honesty
 

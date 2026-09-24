@@ -1029,7 +1029,10 @@ Each probe run also writes \texttt{provenance.json}: the git commit and
 whether the tree was dirty, Python and platform, the versions of the policy,
 simulator and tensor libraries, the accelerator, and a SHA-256 of the
 transcoder checkpoint, so that a reported number can be tied to the exact code
-and weights that produced it. The pipeline and its artefacts are:
+and weights that produced it. Runs are executed on an ephemeral notebook
+machine, so each stage copies its run directory to shared storage as soon as
+it completes; the paths named below are relative to a run directory there.
+The pipeline and its artefacts are:
 
 \begin{enumerate}
 \item \textbf{Probe.} Paired counterfactual at frozen states. Writes the full

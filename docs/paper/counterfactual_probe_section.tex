@@ -328,7 +328,7 @@ steps and are the denominator of the reproducibility filter.}
 \label{tab:cf-config}
 \begin{center}
 \small
-\begin{tabular}{ll}
+\begin{tabular}{p{1.35in}p{3.75in}}
 \hline
 Suite and task & \texttt{libero\_spatial}, task 0: ``pick up the black bowl between the plate and the ramekin and place it on the plate'' \\
 Target, placebo & \texttt{akita\_black\_bowl\_1}, \texttt{akita\_black\_bowl\_2} (same mesh) \\
@@ -377,12 +377,12 @@ Placebo object                & $1.42$  & $0.0049$ & $16.2$ & $0.032$ \\
 \hline
 Ratio, target over placebo    & $7.13$ & $3.03$ & $1.78$ & $17.0$ \\
 \hline
-\multicolumn{5}{l}{Raw $\mathrm{Sel}$ by cell: mean $8.56\pm5.95$, range $2.92$ to $15.7$, 95\% CI $[4.00,\,11.4]$; by cluster: $3.02$ to $14.4$} \\
-\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$: pooled $4.01$; cells mean $6.55\pm5.69$, min $1.23$, max $13.2$; 95\% CI $[1.81,\,8.54]$; by cluster $1.27$ to $12.1$} \\
-\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, $S=|\mathcal{P}|$: pooled $2.36$; cells min $0.61$, max $12.8$; 95\% CI $[0.92,\,6.81]$} \\
-\multicolumn{5}{l}{Robustness: per-layer geometric mean $7.33$ [$5.32$, $11.3$], $18$ of $18$ layers above 1; relative-$\ell_2$ ratio $7.07$; all three agree in direction} \\
-\multicolumn{5}{l}{Positive control: the referent recolour is $0.51$ of the prompt swap's latent response, the placebo $0.07$} \\
-\multicolumn{5}{l}{Dose: target $D$ $9.49\rightarrow10.7$, placebo $1.25\rightarrow1.59$, both monotone; $\eta(\mathrm{target})=0.62$, $\eta(\mathrm{placebo})=1.21$} \\
+\multicolumn{5}{p{5.1in}}{Raw $\mathrm{Sel}$ by cell: mean $8.56\pm5.95$, range $2.92$ to $15.7$, 95\% CI $[4.00,\,11.4]$; by cluster: $3.02$ to $14.4$} \\
+\multicolumn{5}{p{5.1in}}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$: pooled $4.01$; cells mean $6.55\pm5.69$, min $1.23$, max $13.2$; 95\% CI $[1.81,\,8.54]$; by cluster $1.27$ to $12.1$} \\
+\multicolumn{5}{p{5.1in}}{$\mathrm{Sel}_{\mathrm{adj}}$, $S=|\mathcal{P}|$: pooled $2.36$; cells min $0.61$, max $12.8$; 95\% CI $[0.92,\,6.81]$} \\
+\multicolumn{5}{p{5.1in}}{Robustness: per-layer geometric mean $7.33$ [$5.32$, $11.3$], $18$ of $18$ layers above 1; relative-$\ell_2$ ratio $7.07$; all three agree in direction} \\
+\multicolumn{5}{p{5.1in}}{Positive control: the referent recolour is $0.51$ of the prompt swap's latent response, the placebo $0.07$} \\
+\multicolumn{5}{p{5.1in}}{Dose: target $D$ $9.49\rightarrow10.7$, placebo $1.25\rightarrow1.59$, both monotone; $\eta(\mathrm{target})=0.62$, $\eta(\mathrm{placebo})=1.21$} \\
 \hline
 \end{tabular}
 \end{center}
@@ -500,7 +500,7 @@ Prompt & Target $D$ & Placebo $D$ & Selectivity & Anchor \\
 Task, names the referent      & $10.11$ & $1.42$ & $7.13$ & $17.0$ \\
 Sibling, names the placebo    & $10.38$ & $1.75$ & $5.92$ & $9.7$ \\
 \hline
-\multicolumn{5}{l}{Grounding $g=0.729$ (range $0.680$ to $0.797$ over four (state, draw) pairs); referent moved: no} \\
+\multicolumn{5}{p{5.1in}}{Grounding $g=0.729$ (range $0.680$ to $0.797$ over four (state, draw) pairs); referent moved: no} \\
 \hline
 \end{tabular}
 \end{center}
@@ -644,7 +644,7 @@ $0.92$ at $p=0.57$, and the full circuit is $1.07$.
 \label{tab:cf-relation}
 \begin{center}
 \small
-\begin{tabular}{p{1.15in}p{1.9in}p{1.9in}l}
+\begin{tabular}{p{0.9in}p{1.55in}p{1.6in}p{0.7in}}
 \hline
 Section & It establishes & This section adds & Effect \\
 \hline

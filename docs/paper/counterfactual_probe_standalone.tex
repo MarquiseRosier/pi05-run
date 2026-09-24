@@ -1,0 +1,19 @@
+% Standalone wrapper so the drop-in section compiles on its own and can be checked
+% against the ICLR template's measure: \textwidth 5.5in, \textheight 9in, 10pt.
+% The template's own class is not needed to typeset the section, but its text width
+% is what every table must fit. Build:  tectonic -o build counterfactual_probe_standalone.tex
+\documentclass[10pt]{article}
+\usepackage[letterpaper,textwidth=5.5in,textheight=9in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{url}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+\title{Controlled Counterfactual Perturbation (standalone build of the drop-in section)}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\input{counterfactual_probe_section.tex}
+\end{document}

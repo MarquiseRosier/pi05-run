@@ -255,6 +255,16 @@ wrist-camera pixel of the near bowl as a full unit of perturbation; this is why
 the norm was pre-registered as primary. Positive control: the referent recolour
 is 0.51 of the prompt swap's latent response, the placebo 0.07.
 
+## Rendering (2026-09-24)
+
+The section compiles standalone with Tectonic at the ICLR measure (5.5in text
+width): exit 0, 13 pages, zero unresolved references, no overfull box above 2pt
+after four tables were re-specified with `p{}` columns. `scripts/check_tex.py`
+runs the compile and fails on errors, unresolved references or overfull boxes;
+`scripts/smoke_test_tex_build.py` proves it catches an undefined macro, a
+tabular row with too many cells, a dangling reference and an over-wide table.
+Rendered pages were inspected: all seven tables sit inside the measure.
+
 ## Open items
 
 - Fill the `\RESULT{}` placeholders from `decision_metrics.json`,

@@ -81,6 +81,13 @@ Ratio                         & \RESULT{val} & ... \\
 Phase 0. A key with no table cell means the code computes something the paper does not report → ask
 why.
 
+**Compile it, do not regex it.** A source-level check catches brace imbalance and nothing else. Keep
+a standalone wrapper (`docs/paper/<section>_standalone.tex`) whose preamble matches the target
+template's *measure* (ICLR: `\textwidth 5.5in`), compile with `tectonic` via `scripts/check_tex.py`,
+and fail on any TeX error, any unresolved reference in the final pass, or any overfull box above
+2pt. `smoke_test_tex_build.py` proves the check is effective by planting an undefined macro, a bad
+table row, a dangling `\ref` and an over-wide table, and asserting each is caught. Then read the PDF.
+
 ### Standard artefacts (one directory per run)
 
 | Artefact | Contents |

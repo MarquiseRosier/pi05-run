@@ -80,7 +80,7 @@ def load_rows(csv_path: Path) -> list[dict[str, Any]]:
                 row[key] = []
         for key in ("l2_delta", "relative_l2", "dose", "max_abs_delta"):
             row[key] = _float(row.get(key))
-        for key in ("denoise_step", "state_index", "features"):
+        for key in ("denoise_step", "state_index", "noise_index", "features"):
             try:
                 row[key] = int(float(row.get(key)))
             except (TypeError, ValueError):
@@ -176,7 +176,7 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
         magnitudes = [abs(float(value)) for value in deltas]
         if row["condition"] == "target":
             cells_per_layer[row["layer"]].add(
-                (row["state_index"], row["dose"], row.get("prompt"), row["denoise_step"])
+                (row["state_index"], row.get("noise_index"), row["dose"], row.get("prompt"), row["denoise_step"])
             )
             for feature, magnitude in zip(ids, magnitudes):
                 target_hits[(row["layer"], int(feature))].append(magnitude)

@@ -498,7 +498,7 @@ def test_verdict_runs_with_prompt_variants_and_grounding_data() -> None:
             measurements.append(_measurement(state, prompt, "placebo", 1.5, 0.03))
 
     baseline = {
-        (state, prompt): np.full(4, 1.0 if prompt == "task" else 1.5)
+        (state, 0, prompt): np.full(4, 1.0 if prompt == "task" else 1.5)
         for state in (0, 1)
         for prompt in ("task", "alt")
     }
@@ -522,6 +522,38 @@ def test_verdict_runs_with_no_grounding_data_at_all() -> None:
         _measurement(0, "alt", "placebo", 1.0, 0.02),
     ]
     P._print_verdict(measurements)
+
+
+def test_shared_noise_is_reproducible_from_its_seed() -> None:
+    """The same seed must give the same tensor, and different cells different ones.
+
+    Before this, the draw came from the global RNG: no run could be reproduced,
+    and what looked like run-to-run spread was an unrecorded noise-draw effect.
+    """
+    import types
+
+    import torch
+
+    policy = types.SimpleNamespace(model=types.SimpleNamespace(config=types.SimpleNamespace(chunk_size=5, max_action_dim=4)))
+    device = torch.device("cpu")
+    a = P.sample_shared_noise(policy, 1, device, seed=P.noise_seed_for(1000, 0, 0))
+    b = P.sample_shared_noise(policy, 1, device, seed=P.noise_seed_for(1000, 0, 0))
+    c = P.sample_shared_noise(policy, 1, device, seed=P.noise_seed_for(1000, 0, 1))
+    d = P.sample_shared_noise(policy, 1, device, seed=P.noise_seed_for(1000, 1, 0))
+    assert a.shape == (1, 5, 4) and a.dtype == torch.float32
+    assert torch.equal(a, b), "same seed must reproduce the draw exactly"
+    assert not torch.equal(a, c), "a second draw at the same state must differ"
+    assert not torch.equal(a, d), "the same draw index at another state must differ"
+    seeds = {P.noise_seed_for(1000, s, n) for s in range(50) for n in range(100)}
+    assert len(seeds) == 50 * 100, "cell seeds must not collide across states and draws"
+
+
+def test_state_advance_uses_successive_actions_of_the_plan() -> None:
+    chunk = np.arange(12, dtype=np.float32).reshape(6, 2)
+    steps = P.actions_to_step(chunk, 3)
+    assert [s.shape for s in steps] == [(1, 2)] * 3
+    assert np.array_equal(np.concatenate(steps), chunk[:3]), "must walk the chunk, not repeat one action"
+    assert np.array_equal(P.actions_to_step(chunk, 8)[-1][0], chunk[-1]), "past the chunk, hold the last action"
 
 
 def test_nomination_rejects_a_one_off_however_selective() -> None:

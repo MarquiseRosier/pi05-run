@@ -136,6 +136,21 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--states", type=int, default=2, help="How many distinct sim states to measure at.")
     parser.add_argument("--state-stride", type=int, default=5, help="Env steps between measured states.")
+    parser.add_argument(
+        "--noise-samples",
+        type=int,
+        default=1,
+        help=(
+            "Independent flow-matching noise draws per state. Every condition at a state is measured "
+            "under each draw, so draws are exchangeable replicates and give the error bound."
+        ),
+    )
+    parser.add_argument(
+        "--noise-seed",
+        type=int,
+        default=None,
+        help="Seed for the shared noise draws. Defaults to --seed, so a run is reproducible bit for bit.",
+    )
     parser.add_argument("--num-inference-steps", type=int, default=10)
     parser.add_argument("--top-features", type=int, default=25, help="Top changed features to record per layer.")
     parser.add_argument("--device", default="cuda")
@@ -533,15 +548,45 @@ def load_transcoders(checkpoint_path: Path, device: torch.device) -> dict[str, T
     return transcoders
 
 
-def sample_shared_noise(policy: Any, batch_size: int, device: torch.device) -> torch.Tensor:
+def noise_seed_for(noise_seed: int, state_index: int, noise_index: int) -> int:
+    """One seed per (state, draw) so any single cell can be regenerated alone."""
+    return int(noise_seed) + 1009 * int(state_index) + int(noise_index)
+
+
+def sample_shared_noise(
+    policy: Any, batch_size: int, device: torch.device, *, seed: int | None = None
+) -> torch.Tensor:
+    """Draw the flow-matching noise both passes of a pair will share.
+
+    Seeded explicitly: without this the draw comes from the global RNG, the run
+    cannot be reproduced, and any run-to-run spread is really an unrecorded
+    noise-draw effect.
+    """
     config = policy.model.config
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(seed))
     return torch.normal(
         mean=0.0,
         std=1.0,
         size=(batch_size, config.chunk_size, config.max_action_dim),
         dtype=torch.float32,
         device=device,
+        generator=generator,
     )
+
+
+def actions_to_step(chunk: np.ndarray, stride: int) -> list[np.ndarray]:
+    """The first ``stride`` actions of the unperturbed chunk, in order.
+
+    Advancing with the policy's own plan puts the next measurement at a state
+    the policy would actually visit; repeating one action does not.
+    """
+    chunk = np.asarray(chunk, dtype=np.float32)
+    if chunk.ndim != 2 or chunk.shape[0] == 0:
+        raise ValueError(f"Expected an action chunk shaped (steps, dims), got {chunk.shape}")
+    return [chunk[min(i, chunk.shape[0] - 1)][None, ...] for i in range(int(stride))]
 
 
 # ---------------------------------------------------------------- perturbation
@@ -797,6 +842,7 @@ def main() -> None:
             shape_report["tensor_shapes"] = shapes
             shape_report["noise_shape"] = list(noise.shape)
             shape_report["noise_dtype"] = str(noise.dtype).replace("torch.", "")
+            shape_report["num_inference_steps"] = args.num_inference_steps
             print("\nobservation shapes handed to the policy:", flush=True)
             for key in sorted(shapes):
                 print(f"  {key:<44} {shapes[key]['shape']}  {shapes[key]['dtype']}", flush=True)
@@ -828,7 +874,9 @@ def main() -> None:
         snapshot = LatentAccumulator()
         snapshot.mean = dict(accumulator.mean)
         snapshot.max = dict(accumulator.max)
-        return snapshot, actions.detach().float().cpu().numpy()[0]
+        chunk = actions.detach().float().cpu().numpy()[0]
+        shape_report.setdefault("action_chunk_shape", list(chunk.shape))
+        return snapshot, chunk
 
     doses = [float(part) for part in args.dose.split(",") if part.strip()]
     targets = [("target", args.target)]
@@ -857,9 +905,13 @@ def main() -> None:
     elif args.use_alt_prompt:
         print("\nno alt prompt found; selectivity cannot be separated from screen position", flush=True)
 
+    noise_seed = args.seed if args.noise_seed is None else args.noise_seed
+    if args.noise_samples < 1:
+        raise SystemExit("--noise-samples must be at least 1")
     last_baseline_actions = None
-    baseline_by_prompt: dict[tuple[int, str], np.ndarray] = {}
-    baseline_latents_by_prompt: dict[tuple[int, str], LatentAccumulator] = {}
+    # Keyed (state, noise draw, prompt): the unperturbed action and latents.
+    baseline_by_prompt: dict[tuple[int, int, str], np.ndarray] = {}
+    baseline_latents_by_prompt: dict[tuple[int, int, str], LatentAccumulator] = {}
     latent_rows: list[dict[str, Any]] = []
     measurements: list[dict[str, Any]] = []
     image_dir = args.output_dir / "images"
@@ -870,123 +922,144 @@ def main() -> None:
         print(f"\n=== state {state_index} ===", flush=True)
         baseline_obs = rerender_observation(harness)
         baseline_image = first_camera_image(baseline_obs)
-        noise = sample_shared_noise(harness.policy, 1, device)
 
         if args.save_images:
             save_image(image_dir / f"state{state_index}_baseline.png", baseline_image)
 
-        # Every prompt variant sees pixel-identical images and the same noise,
-        # so the only thing that changes between variants is the language.
-        for prompt_label, prompt_text in prompt_variants:
-            harness.prompt = prompt_text
-            if len(prompt_variants) > 1:
-                print(f"  [prompt:{prompt_label}] {prompt_text!r}", flush=True)
-            tag = f"s{state_index}/{prompt_label}"
-
-            baseline_latents, baseline_actions = forward(baseline_obs, noise, label=f"{tag}/baseline")
-            null_latents, null_actions = forward(baseline_obs, noise, label=f"{tag}/null")
-            if prompt_label == prompt_variants[0][0]:
-                last_baseline_actions = baseline_actions
-            # Keep the unperturbed action per prompt: comparing these says whether
-            # the policy responds to the language at all. If it does not, the
-            # prompt-swap control manipulated nothing and proves nothing.
-            baseline_by_prompt[(state_index, prompt_label)] = baseline_actions
-            baseline_latents_by_prompt[(state_index, prompt_label)] = baseline_latents
-
-            null_rows = latent_delta_rows(
-                baseline_latents, null_latents, condition="null", top_features=args.top_features
-            )
-            for row in null_rows:
-                row["state_index"] = state_index
-                row["dose"] = 0.0
-                row["target"] = "none"
-                row["prompt"] = prompt_label
-            latent_rows.extend(null_rows)
-            null_summary = summarize_latent_rows(null_rows)
-            print(
-                f"    null control  latent L2 mean={null_summary.get('l2_delta_mean'):.6g} "
-                f"action rel_l2={_rel_l2(baseline_actions, null_actions):.6g}",
-                flush=True,
-            )
-            measurements.append(
-                {
-                    "state_index": state_index,
-                    "prompt": prompt_label,
-                    "kind": "null",
-                    "target": "none",
-                    "dose": 0.0,
-                    "pixel": image_delta_stats(baseline_image, baseline_image),
-                    "latent": null_summary,
-                    "action_relative_l2": _rel_l2(baseline_actions, null_actions),
-                }
+        # The perturbed renders do not depend on the noise draw or the prompt,
+        # so render each once per state and reuse it across every replicate.
+        perturbed_renders: dict[tuple[str, float], tuple[dict[str, Any], np.ndarray, dict[str, float], str]] = {}
+        for kind, target in targets:
+            for dose in doses:
+                perturbation = apply_perturbation(mj_model, args, target, dose)
+                try:
+                    perturbed_obs = rerender_observation(harness)
+                finally:
+                    perturbation.revert(mj_model)
+                perturbed_image = first_camera_image(perturbed_obs)
+                pixel = image_delta_stats(baseline_image, perturbed_image)
+                if pixel["changed_pixel_fraction"] == 0.0:
+                    raise RuntimeError(
+                        f"Perturbation {perturbation.label!r} changed no pixels. The object is "
+                        "probably occluded or outside this camera's view; pick another target."
+                    )
+                perturbed_renders[(kind, dose)] = (perturbed_obs, perturbed_image, pixel, perturbation.label)
+                if args.save_images:
+                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}.png", perturbed_image)
+                    diff = np.abs(perturbed_image.astype(np.float64) - baseline_image.astype(np.float64))
+                    if diff.max() > 0:
+                        diff = diff / diff.max() * 255.0
+                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_diff.png", diff)
+        # The baseline must be intact after every revert, or the pairs below
+        # would be measured against a contaminated reference.
+        residual = image_delta_stats(baseline_image, first_camera_image(rerender_observation(harness)))
+        if residual["changed_pixel_fraction"] != 0.0:
+            raise RuntimeError(
+                f"Reverting the perturbations left {residual['changed_pixel_count']} pixels changed at "
+                f"state {state_index}; the baseline is not reproducible, aborting."
             )
 
-            for kind, target in targets:
-                for dose in doses:
-                    perturbation = apply_perturbation(mj_model, args, target, dose)
-                    try:
-                        perturbed_obs = rerender_observation(harness)
-                        perturbed_image = first_camera_image(perturbed_obs)
-                        pixel = image_delta_stats(baseline_image, perturbed_image)
-                        if pixel["changed_pixel_fraction"] == 0.0:
-                            raise RuntimeError(
-                                f"Perturbation {perturbation.label!r} changed no pixels. The object is "
-                                "probably occluded or outside this camera's view; pick another target."
-                            )
+        for noise_index in range(args.noise_samples):
+            cell_seed = noise_seed_for(noise_seed, state_index, noise_index)
+            noise = sample_shared_noise(harness.policy, 1, device, seed=cell_seed)
+            if args.noise_samples > 1:
+                print(f"  --- noise draw {noise_index} (seed {cell_seed}) ---", flush=True)
+
+            # Every prompt variant sees pixel-identical images and the same noise,
+            # so the only thing that changes between variants is the language.
+            for prompt_label, prompt_text in prompt_variants:
+                harness.prompt = prompt_text
+                if len(prompt_variants) > 1:
+                    print(f"  [prompt:{prompt_label}] {prompt_text!r}", flush=True)
+                tag = f"s{state_index}/n{noise_index}/{prompt_label}"
+
+                baseline_latents, baseline_actions = forward(baseline_obs, noise, label=f"{tag}/baseline")
+                null_latents, null_actions = forward(baseline_obs, noise, label=f"{tag}/null")
+                if prompt_label == prompt_variants[0][0] and noise_index == 0:
+                    last_baseline_actions = baseline_actions
+                # Keep the unperturbed action per prompt: comparing these says whether
+                # the policy responds to the language at all. If it does not, the
+                # prompt-swap control manipulated nothing and proves nothing.
+                baseline_by_prompt[(state_index, noise_index, prompt_label)] = baseline_actions
+                baseline_latents_by_prompt[(state_index, noise_index, prompt_label)] = baseline_latents
+
+                null_rows = latent_delta_rows(
+                    baseline_latents, null_latents, condition="null", top_features=args.top_features
+                )
+                for row in null_rows:
+                    row["state_index"] = state_index
+                    row["noise_index"] = noise_index
+                    row["dose"] = 0.0
+                    row["target"] = "none"
+                    row["prompt"] = prompt_label
+                latent_rows.extend(null_rows)
+                null_summary = summarize_latent_rows(null_rows)
+                print(
+                    f"    null control  latent L2 mean={null_summary.get('l2_delta_mean'):.6g} "
+                    f"action rel_l2={_rel_l2(baseline_actions, null_actions):.6g}",
+                    flush=True,
+                )
+                measurements.append(
+                    {
+                        "state_index": state_index,
+                        "noise_index": noise_index,
+                        "prompt": prompt_label,
+                        "kind": "null",
+                        "target": "none",
+                        "dose": 0.0,
+                        "pixel": image_delta_stats(baseline_image, baseline_image),
+                        "latent": null_summary,
+                        "action_relative_l2": _rel_l2(baseline_actions, null_actions),
+                    }
+                )
+
+                for kind, target in targets:
+                    for dose in doses:
+                        perturbed_obs, perturbed_image, pixel, perturbation_label = perturbed_renders[(kind, dose)]
                         perturbed_latents, perturbed_actions = forward(
                             perturbed_obs, noise, label=f"{tag}/{kind}/dose{dose:g}"
                         )
-                    finally:
-                        perturbation.revert(mj_model)
-
-                    rows = latent_delta_rows(
-                        baseline_latents, perturbed_latents, condition=kind, top_features=args.top_features
-                    )
-                    for row in rows:
-                        row["state_index"] = state_index
-                        row["dose"] = dose
-                        row["target"] = target
-                        row["prompt"] = prompt_label
-                    latent_rows.extend(rows)
-                    summary = summarize_latent_rows(rows)
-                    action_rel = _rel_l2(baseline_actions, perturbed_actions)
-                    print(
-                        f"    {kind:<8} {target:<28} dose={dose:<5g} "
-                        f"pixels={pixel['changed_pixel_fraction']:.4f} "
-                        f"latentL2={summary.get('l2_delta_mean'):.6g} "
-                        f"action_rel_l2={action_rel:.6g}",
-                        flush=True,
-                    )
-                    measurements.append(
-                        {
-                            "state_index": state_index,
-                            "prompt": prompt_label,
-                            "kind": kind,
-                            "target": target,
-                            "dose": dose,
-                            "perturbation": perturbation.label,
-                            "pixel": pixel,
-                            "latent": summary,
-                            "action_relative_l2": action_rel,
-                        }
-                    )
-                    if args.save_images and prompt_label == prompt_variants[0][0]:
-                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}.png", perturbed_image)
-                        diff = np.abs(
-                            perturbed_image.astype(np.float64) - baseline_image.astype(np.float64)
+                        rows = latent_delta_rows(
+                            baseline_latents, perturbed_latents, condition=kind, top_features=args.top_features
                         )
-                        if diff.max() > 0:
-                            diff = diff / diff.max() * 255.0
-                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_diff.png", diff)
+                        for row in rows:
+                            row["state_index"] = state_index
+                            row["noise_index"] = noise_index
+                            row["dose"] = dose
+                            row["target"] = target
+                            row["prompt"] = prompt_label
+                        latent_rows.extend(rows)
+                        summary = summarize_latent_rows(rows)
+                        action_rel = _rel_l2(baseline_actions, perturbed_actions)
+                        print(
+                            f"    {kind:<8} {target:<28} dose={dose:<5g} "
+                            f"pixels={pixel['changed_pixel_fraction']:.4f} "
+                            f"latentL2={summary.get('l2_delta_mean'):.6g} "
+                            f"action_rel_l2={action_rel:.6g}",
+                            flush=True,
+                        )
+                        measurements.append(
+                            {
+                                "state_index": state_index,
+                                "noise_index": noise_index,
+                                "prompt": prompt_label,
+                                "kind": kind,
+                                "target": target,
+                                "dose": dose,
+                                "perturbation": perturbation_label,
+                                "pixel": pixel,
+                                "latent": summary,
+                                "action_relative_l2": action_rel,
+                            }
+                        )
 
         harness.prompt = prompt_variants[0][1]
 
-        # Advance the (unperturbed) trajectory so the next measurement sits at a
-        # genuinely different state. The perturbation is already reverted here.
-        # Always step with the primary prompt's action: an alternate prompt is a
-        # measurement condition, not something that should steer the rollout.
-        for _ in range(args.state_stride):
-            step_action = np.asarray(last_baseline_actions[0], dtype=np.float32)[None, ...]
+        # Advance the unperturbed trajectory so the next measurement sits at a
+        # genuinely different state, by executing the first few actions of the
+        # policy's own unperturbed plan (task prompt, first noise draw). An
+        # alternate prompt is a measurement condition, not a steering input.
+        for step_action in actions_to_step(last_baseline_actions, args.state_stride):
             harness.vec_env.step(step_action)
 
     payload = {
@@ -1004,14 +1077,18 @@ def main() -> None:
             "doses": doses,
             "states": args.states,
             "state_stride": args.state_stride,
+            "noise_samples": args.noise_samples,
+            "noise_seed": noise_seed,
             "num_inference_steps": args.num_inference_steps,
+            "top_features": args.top_features,
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,
         "prompt_grounding_rel_l2": [
-            _rel_l2(baseline_by_prompt[(i, "task")], baseline_by_prompt[(i, "alt")])
+            _rel_l2(baseline_by_prompt[(i, n, "task")], baseline_by_prompt[(i, n, "alt")])
             for i in range(args.states)
-            if (i, "task") in baseline_by_prompt and (i, "alt") in baseline_by_prompt
+            for n in range(args.noise_samples)
+            if (i, n, "task") in baseline_by_prompt and (i, n, "alt") in baseline_by_prompt
         ],
         "observation_shapes": shape_report,
         "measurements": measurements,
@@ -1035,6 +1112,8 @@ def main() -> None:
         [
             {
                 "state_index": m["state_index"],
+                "noise_index": m.get("noise_index", 0),
+                "prompt": m.get("prompt"),
                 "kind": m["kind"],
                 "target": m["target"],
                 "dose": m["dose"],
@@ -1049,7 +1128,9 @@ def main() -> None:
         ],
     )
 
-    _print_verdict(measurements, baseline_by_prompt=baseline_by_prompt, states=args.states)
+    _print_verdict(
+        measurements, baseline_by_prompt=baseline_by_prompt, states=args.states, noise_samples=args.noise_samples
+    )
     print(f"\nArtifacts in {args.output_dir}", flush=True)
     harness.vec_env.close()
 
@@ -1074,13 +1155,14 @@ def _infer_prompt(harness: Harness, observation: dict[str, Any]) -> str:
 def _print_verdict(
     measurements: list[dict[str, Any]],
     *,
-    baseline_by_prompt: dict[tuple[int, str], np.ndarray] | None = None,
+    baseline_by_prompt: dict[tuple[int, int, str], np.ndarray] | None = None,
     states: int = 0,
+    noise_samples: int = 1,
 ) -> None:
     """Summarise the run.
 
-    ``baseline_by_prompt`` holds the unperturbed action per (state, prompt);
-    it is what decides whether the prompt swap manipulated anything at all.
+    ``baseline_by_prompt`` holds the unperturbed action per (state, noise draw,
+    prompt); it is what decides whether the prompt swap manipulated anything.
     """
     baseline_by_prompt = baseline_by_prompt or {}
     nulls = [m for m in measurements if m["kind"] == "null"]
@@ -1112,10 +1194,11 @@ def _print_verdict(
         # between "features track position" and "the prompt was ignored".
         grounding = []
         for state_index in range(states):
-            a = baseline_by_prompt.get((state_index, "task"))
-            b = baseline_by_prompt.get((state_index, "alt"))
-            if a is not None and b is not None:
-                grounding.append(_rel_l2(a, b))
+            for noise_index in range(noise_samples):
+                a = baseline_by_prompt.get((state_index, noise_index, "task"))
+                b = baseline_by_prompt.get((state_index, noise_index, "alt"))
+                if a is not None and b is not None:
+                    grounding.append(_rel_l2(a, b))
         perturbation_effect = float(
             np.mean([m["action_relative_l2"] for m in measurements if m["kind"] == "target"])
         ) if any(m["kind"] == "target" for m in measurements) else 0.0

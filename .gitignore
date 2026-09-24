@@ -25,3 +25,5 @@ next_steps.md
 hf_token
 huggingface_token
 .cache/
+.loops/
+.DS_Store

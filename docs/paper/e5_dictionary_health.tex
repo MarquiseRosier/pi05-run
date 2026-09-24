@@ -1,0 +1,179 @@
+% E5: How much of the dictionary is used, and how sparse is the code really?
+% Drop-in section. Uses only what the main paper already loads.
+% Occupancy values are filled from discovery run counterfactual-20260924-154113.
+% Token-level L0 values are \RESULT placeholders pending a capture run.
+% Artefact keys for each table are named in a comment above it.
+
+\providecommand{\RESULT}[1]{\textbf{[#1]}}
+
+\section{Dictionary Occupancy and the Sparsity of the Code}
+\label{sec:dictionary}
+
+The transcoders are described as sparse and are given a sixteen-fold expansion,
+$d_{\mathrm{features}} = 16\,d_{\mathrm{model}} = 16384$ per layer, under an
+$\ell_1$ penalty of $10^{-4}$. Neither the sparsity nor the occupancy of that
+dictionary is reported anywhere. This section measures what a discovery run can
+establish about both, and is as much about what such a run \emph{cannot}
+establish, because the natural statistic is an upper bound that is loose by up
+to a factor of fifty and the natural dead-feature count is not identifiable at
+the sample sizes used so far.
+
+\subsection{Hypothesis}
+
+\paragraph{H5.} The dictionary is substantially used: the fraction of features
+that never activate is small, and the number active at once is a small fraction
+of the dictionary.
+
+\emph{Falsified if} a large share of features is genuinely dead, or if the
+active fraction is comparable to an unexpanded basis, either of which would mean
+the expansion is not buying a sparse overcomplete code.
+
+\emph{Decision quantities and the rule.} The never-fired fraction, reported as a
+dead-feature count \emph{only} when the sample size can distinguish dead from
+rare, in the sense of Section~\ref{sec:dict-identifiability}; and the mean
+number of features active per token, which requires a measurement the discovery
+pipeline does not make.
+
+\subsection{Dead is not the same as unobserved}
+\label{sec:dict-identifiability}
+
+Counting features that never fired does not count dead features. It bounds them.
+A feature that fires once in six hundred observations will usually be unseen in
+a hundred, and the rate matters here because the paper's own case-study feature
+$\mathtt{L11}\!:\!\tau\!=\!0.7\!:\!\mathtt{F9970}$ fires at $0.00166$, chosen for
+study precisely because it is rare.
+
+With no firings in $N$ observations, the exact one-sided upper confidence bound
+on a feature's rate solves $(1-p)^N = \alpha$, so
+\begin{equation}
+p_{\max} = 1 - \alpha^{1/N},
+\qquad
+N_{\mathrm{needed}}(p) = \frac{\log \alpha}{\log(1-p)},
+\label{eq:dict-bound}
+\end{equation}
+the familiar rule of three at $\alpha = 0.05$. A run separates dead from rare
+only when $p_{\max}$ falls below the rate worth detecting. At the $160$
+observations available here, $p_{\max} = 1.85\%$, which is eleven times the
+reference rate; a dead-feature claim would need about $1804$ observations, and
+the paper's own $13{,}835$-observation discovery run clears that with room to
+spare. The occupancy below is therefore reported as a bound, and the dead count
+is left to the larger run.
+
+Two properties of the pipeline make even that bound optimistic, and both are
+stated rather than corrected. Discovery observations are consecutive frames from
+episodes, so a feature's firings are correlated across them and the effective
+sample is smaller than the nominal one. And discovery reduces the code by a
+maximum over the fifty action positions, so these are per-observation rates: a
+feature counts as firing if it fired at any token.
+
+\subsection{Results}
+
+% Filled from dictionary_health.csv and dictionary_health.json -> layers, summary.
+\begin{table}[t]
+\caption{Dictionary occupancy by layer, from $160$ observations. Rates are
+per-observation, over a maximum across the fifty action positions. The last
+column is the expected number of features active in an observation, which
+bounds per-token $L_0$ from above.}
+\label{tab:dict-occupancy}
+\begin{center}
+\small
+\setlength{\tabcolsep}{4.5pt}
+\begin{tabular}{crrrrr|crrrrr}
+\hline
+$\ell$ & Never & \% & Med.\ rate & $\mathbb{E}[\mathrm{act}]$ & \% dict &
+$\ell$ & Never & \% & Med.\ rate & $\mathbb{E}[\mathrm{act}]$ & \% dict \\
+\hline
+0 & $12956$ & $79$ & $0.99$ & $2715$ & $17$ & 9  & $84$   & $1$  & $0.57$ & $5258$ & $32$ \\
+1 & $12154$ & $74$ & $0.94$ & $2875$ & $18$ & 10 & $226$  & $1$  & $0.44$ & $3817$ & $23$ \\
+2 & $11461$ & $70$ & $0.96$ & $3483$ & $21$ & 11 & $75$   & $0$  & $0.44$ & $4977$ & $30$ \\
+3 & $8833$  & $54$ & $0.96$ & $4360$ & $27$ & 12 & $249$  & $2$  & $0.42$ & $4733$ & $29$ \\
+4 & $1093$  & $7$  & $0.82$ & $7446$ & $45$ & 13 & $623$  & $4$  & $0.33$ & $4106$ & $25$ \\
+5 & $1150$  & $7$  & $0.69$ & $6132$ & $37$ & 14 & $1006$ & $6$  & $0.28$ & $3754$ & $23$ \\
+6 & $218$   & $1$  & $0.70$ & $7233$ & $44$ & 15 & $877$  & $5$  & $0.26$ & $3977$ & $24$ \\
+7 & $1395$  & $9$  & $0.43$ & $3576$ & $22$ & 16 & $4979$ & $30$ & $0.19$ & $2394$ & $15$ \\
+8 & $131$   & $1$  & $0.58$ & $5762$ & $35$ & 17 & $9301$ & $57$ & $0.15$ & $1770$ & $11$ \\
+\hline
+\multicolumn{12}{l}{Never fired overall: $66{,}811$ of $294{,}912$ ($22.7\%$), per-layer range $0\%$ to $79\%$.} \\
+\multicolumn{12}{l}{An unseen feature fires at most $1.85\%$ at this sample size, so none of these is a dead count.} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\paragraph{The dictionary is bimodal, and the shape is the finding.}
+At the first four layers most of the dictionary is never touched while the
+features that are touched are almost always on: at layer $0$, $79\%$ of features
+never fire and the median rate among the rest is $0.99$. The middle of the stack
+inverts this, with under $2\%$ unused at layers $6$ and $8$ through $12$ and
+median rates falling toward $0.4$. The last two layers return to a sparsely
+occupied dictionary. So the expansion is bought at very different prices along
+the stack, and an aggregate expansion factor describes none of it well. Note
+this profile is the near-mirror of the flow-time result of
+Section~\ref{sec:tau}: the layers with the least-used dictionaries are also the
+layers whose codes barely depend on $\tau$.
+
+\paragraph{The sparsity number the paper needs is not in this measurement.}
+The expected active count runs from $1770$ to $7446$ features, eleven to
+forty-five per cent of the dictionary. Read literally that is not a sparse code.
+But it is an upper bound, and a loose one: a feature counts as active if it fires
+at any of the fifty action positions, so a code with a per-token $L_0$ of $100$
+and no overlap between tokens would present here as $5000$ active. The bound is
+loose by up to the token count. A per-token $L_0$ can be read directly from the
+latents captured during a rollout, which the runtime already records, and until
+it is reported the paper has no sparsity figure at all.
+
+% Filled from the per-token L0 analysis over a rollout capture (transcoder_capture/events.jsonl).
+\begin{table}[t]
+\caption{Per-token sparsity from captured rollout latents. This is the statistic
+the word ``sparse'' refers to; Table~\ref{tab:dict-occupancy} bounds it from
+above by up to the number of action tokens.}
+\label{tab:dict-l0}
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\hline
+Quantity & Median & Mean & 90th pct & Max \\
+\hline
+$L_0$ per token & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+As \% of the $16384$ dictionary & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+\hline
+\multicolumn{5}{l}{Range across layers: \RESULT{lo} to \RESULT{hi}; tokens measured: \RESULT{n}} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{Relation to the rest of the paper}
+
+\paragraph{Architecture and training.} The held-out reconstruction loss of
+$0.046$ establishes that the transcoders reproduce the MLPs; it says nothing
+about the sparsity that is the other half of their objective. These two tables
+are the missing half. The occupancy result also gives the expansion factor an
+empirical footing it currently lacks: a sixteen-fold expansion is generous at
+layer $0$, where four fifths of it goes unused, and tight in the middle of the
+stack, where nearly all of it is live.
+
+\paragraph{Feature discovery.} The interesting score divides a top-$K$ mean by a
+standard deviation, which rewards features that are rare and strong. Occupancy
+explains where such features can be found: at layers $0$ to $3$ the live
+features fire almost always and so score poorly by construction, while the
+sparsely firing features that the ranking favours live in the later layers. The
+paper's own top-ranked examples sit at layers $11$, $12$ and $17$, which is
+consistent with this and worth stating rather than leaving as coincidence.
+
+\paragraph{Circuit construction.} A layer where thousands of features are active
+in every observation is a layer where an attribution frontier has thousands of
+candidate parents. Taken with the flow-time redundancy of Section~\ref{sec:tau},
+this is the second structural reason a backward trace inflates.
+
+\subsection{Limitations and what would settle it}
+
+The occupancy figures come from one $160$-observation run and are bounds, not
+counts; Eq.~\ref{eq:dict-bound} gives the sample size that would convert them.
+The active-count column bounds per-token $L_0$ from above and should not be
+quoted as sparsity. Three measurements would close the section: the same
+occupancy analysis on the $13{,}835$-observation discovery set, where dead
+becomes identifiable; per-token $L_0$ from a rollout capture; and a small sweep
+of the $\ell_1$ coefficient to place the operating point on a
+reconstruction-against-sparsity frontier rather than asserting it. Only the last
+needs new training.

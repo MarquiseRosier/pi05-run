@@ -181,6 +181,59 @@ class FeatureTopK:
         }
 
 
+class TokenSparsity:
+    """Per-token L0 of a sparse code, accumulated without keeping the tokens.
+
+    L0 is the number of features active at one action token. The feature
+    statistics elsewhere in this module collapse the code by a maximum over
+    tokens, which answers "did this feature fire anywhere in the chunk" and
+    therefore bounds L0 from above by up to the token count. This records the
+    quantity the word "sparse" actually refers to.
+
+    A histogram over the 0..d_features range gives exact quantiles at any sample
+    size for the cost of one integer array per (layer, flow time).
+    """
+
+    def __init__(self, d_features: int):
+        self.d_features = int(d_features)
+        self.histogram = torch.zeros(self.d_features + 1, dtype=torch.int64)
+        self.tokens = 0
+        self.total = 0
+
+    def update(self, l0_values: Tensor) -> None:
+        flat = l0_values.detach().reshape(-1).to(dtype=torch.int64).clamp_(0, self.d_features)
+        self.histogram += torch.bincount(flat.cpu(), minlength=self.d_features + 1)
+        self.tokens += int(flat.numel())
+        self.total += int(flat.sum())
+
+    def quantile(self, q: float) -> float:
+        """Smallest L0 whose cumulative share reaches ``q``.
+
+        The search runs in floating point: casting a fractional target to the
+        histogram's integer dtype would truncate it and return the quantile
+        below the one asked for.
+        """
+        if self.tokens == 0:
+            return float("nan")
+        cumulative = torch.cumsum(self.histogram, dim=0).to(torch.float64)
+        target = torch.tensor(q * self.tokens, dtype=torch.float64)
+        index = int(torch.searchsorted(cumulative, target))
+        return float(min(index, self.d_features))
+
+    def state_dict(self) -> dict[str, Any]:
+        nonzero = torch.nonzero(self.histogram, as_tuple=False).reshape(-1)
+        return {
+            "tokens": self.tokens,
+            "d_features": self.d_features,
+            "mean": (self.total / self.tokens) if self.tokens else float("nan"),
+            "median": self.quantile(0.5),
+            "p90": self.quantile(0.9),
+            "min": float(nonzero[0]) if nonzero.numel() else float("nan"),
+            "max": float(nonzero[-1]) if nonzero.numel() else float("nan"),
+            "histogram": self.histogram,
+        }
+
+
 class FeatureDiscoveryCollector:
     """Collapse latent activations over action position while keeping flow time."""
 
@@ -202,6 +255,7 @@ class FeatureDiscoveryCollector:
         self.camera_keys = list(camera_keys)
         self.topk: dict[str, dict[str, FeatureTopK]] = {name: {} for name in layer_names}
         self.stats: dict[str, dict[str, RunningFeatureStats]] = {name: {} for name in layer_names}
+        self.token_sparsity: dict[str, dict[str, TokenSparsity]] = {name: {} for name in layer_names}
         self.timestep_values: dict[str, dict[str, float]] = {name: {} for name in layer_names}
         self.current_observation_ids: Tensor | None = None
         self.pending: dict[str, dict[str, Tensor]] = {}
@@ -256,6 +310,9 @@ class FeatureDiscoveryCollector:
         if name not in self.topk:
             return
         z = latent.detach().float()
+        # Per-token L0, taken before the max over action positions discards the
+        # token axis. Rank-2 latents have no token axis and are skipped.
+        token_l0 = (z > 0).sum(dim=-1) if z.ndim == 3 else None
         if z.ndim == 3:
             values, positions = z.max(dim=1)
         elif z.ndim == 2:
@@ -284,6 +341,12 @@ class FeatureDiscoveryCollector:
             selected_scores = values.detach().cpu()[row_indices]
             selected_positions = positions.detach().to(device="cpu", dtype=torch.int16)[row_indices]
             selected_observations = self.current_observation_ids[row_indices]
+            if token_l0 is not None:
+                store = self.token_sparsity[name].get(timestep_key)
+                if store is None:
+                    store = TokenSparsity(self.d_features)
+                    self.token_sparsity[name][timestep_key] = store
+                store.update(token_l0[row_indices])
             selected_timesteps = torch.full_like(selected_scores, timestep_value, dtype=torch.float32)
             pending_key = f"{name}|{timestep_key}"
 
@@ -355,8 +418,21 @@ class FeatureDiscoveryCollector:
                 for name, stores in self.stats.items()
             },
         }
+        sparsity_payload = {
+            "format_version": 1,
+            "layer_names": self.layer_names,
+            "layer_indices": self.layer_indices,
+            "timestep_values": self.timestep_values,
+            "d_features": self.d_features,
+            "observation_count": self.observation_count,
+            "token_sparsity": {
+                name: {timestep: store.state_dict() for timestep, store in sorted(stores.items())}
+                for name, stores in self.token_sparsity.items()
+            },
+        }
         torch.save(topk_payload, output_dir / "feature_topk.pt")
         torch.save(stats_payload, output_dir / "feature_stats.pt")
+        torch.save(sparsity_payload, output_dir / "token_sparsity.pt")
         config = {
             "top_k": self.config.top_k,
             "firing_threshold": self.config.firing_threshold,

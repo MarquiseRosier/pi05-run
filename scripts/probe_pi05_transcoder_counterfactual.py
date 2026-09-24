@@ -267,6 +267,9 @@ def summarize_latent_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     l2 = np.array([row["l2_delta"] for row in rows], dtype=np.float64)
     rel = np.array([row["relative_l2"] for row in rows if row["relative_l2"] is not None], dtype=np.float64)
     changed = np.array([row["changed_features"] for row in rows], dtype=np.float64)
+    per_layer: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        per_layer[row["layer"]].append(float(row["l2_delta"]))
     return {
         "entries": len(rows),
         "l2_delta_mean": float(l2.mean()),
@@ -274,6 +277,9 @@ def summarize_latent_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "relative_l2_mean": float(rel.mean()) if rel.size else None,
         "relative_l2_max": float(rel.max()) if rel.size else None,
         "changed_features_mean": float(changed.mean()),
+        # Per-layer D_l, so a scale-free summary across layers can be formed
+        # downstream: the pooled L2 is dominated by the largest-magnitude layers.
+        "per_layer_l2": {layer: float(np.mean(values)) for layer, values in per_layer.items()},
     }
 
 
@@ -1277,7 +1283,10 @@ def main() -> None:
     (args.output_dir / "decision_metrics.json").write_text(
         json.dumps(decision, indent=2, default=_json_default), encoding="utf-8"
     )
-    write_csv(args.output_dir / "h1_cells.csv", decision["h1"]["cells"])
+    write_csv(
+        args.output_dir / "h1_cells.csv",
+        [{k: v for k, v in cell.items() if not k.startswith("per_layer_")} for cell in decision["h1"]["cells"]],
+    )
     print(f"\nArtifacts in {args.output_dir}", flush=True)
     harness.vec_env.close()
 
@@ -1410,6 +1419,10 @@ def h1_cells(measurements: list[dict[str, Any]], *, prompt: str) -> list[dict[st
             "S_l2_placebo": float(p_["pixel"].get("l2_delta") or 0.0),
             "A_target": float(t["action_relative_l2"]),
             "A_placebo": float(p_["action_relative_l2"]),
+            "D_rel_target": float(t["latent"].get("relative_l2_mean") or 0.0),
+            "D_rel_placebo": float(p_["latent"].get("relative_l2_mean") or 0.0),
+            "per_layer_target": dict(t["latent"].get("per_layer_l2") or {}),
+            "per_layer_placebo": dict(p_["latent"].get("per_layer_l2") or {}),
         }
         cell["sel_raw"] = cell["D_target"] / cell["D_placebo"] if cell["D_placebo"] > 0 else None
         for name in ("px", "l2"):
@@ -1514,6 +1527,56 @@ def compute_decision_metrics(
         key: _spread([c[key] for c in cells])
         for key in ("sel_raw", "sel_adj_px", "sel_adj_l2", "action_sel", "D_target", "D_placebo")
     }
+
+    # Clusters. Doses within a (state, draw) share a render and a noise draw,
+    # so cells are not independent; the cluster is the unit that is. Within a
+    # cluster the ratio is taken over dose-pooled means.
+    clusters: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
+    for c in cells:
+        clusters[(c["state_index"], c["noise_index"])].append(c)
+    cluster_values: dict[str, list[float]] = {"sel_raw": [], "sel_adj_l2": [], "sel_adj_px": []}
+    for members in clusters.values():
+        raw = _ratio_of_means([c["D_target"] for c in members], [c["D_placebo"] for c in members])
+        if raw is None:
+            continue
+        cluster_values["sel_raw"].append(raw)
+        for name in ("l2", "px"):
+            s_ratio = _ratio_of_means(
+                [c[f"S_{name}_target"] for c in members], [c[f"S_{name}_placebo"] for c in members]
+            )
+            if s_ratio:
+                cluster_values[f"sel_adj_{name}"].append(raw / s_ratio)
+    cluster_spread = {
+        "unit": "(state, noise draw); doses pooled within",
+        "n": len(clusters),
+        **{key: _spread(values) for key, values in cluster_values.items()},
+    }
+
+    # Robustness across summaries. The pooled D is an L2 over 16384 features
+    # averaged over layers, so the largest-magnitude layers dominate it. Two
+    # scale-free alternatives: the relative L2 (delta norm over baseline norm,
+    # per layer and step) and the geometric mean of per-layer selectivities.
+    sel_rel = _ratio_of_means([c["D_rel_target"] for c in cells], [c["D_rel_placebo"] for c in cells])
+    layer_names = sorted(set.intersection(*[set(c["per_layer_target"]) & set(c["per_layer_placebo"]) for c in cells])) if cells else []
+    layer_ratios: dict[str, float] = {}
+    for layer in layer_names:
+        ratio = _ratio_of_means([c["per_layer_target"][layer] for c in cells], [c["per_layer_placebo"][layer] for c in cells])
+        if ratio is not None and ratio > 0:
+            layer_ratios[layer] = ratio
+    log_ratios = np.log(np.asarray(list(layer_ratios.values()), dtype=np.float64)) if layer_ratios else np.asarray([])
+    robustness = {
+        "sel_rel": sel_rel,
+        "sel_layer_geomean": float(np.exp(log_ratios.mean())) if log_ratios.size else None,
+        "sel_layer_min": float(min(layer_ratios.values())) if layer_ratios else None,
+        "sel_layer_max": float(max(layer_ratios.values())) if layer_ratios else None,
+        "layers_above_one": int(sum(1 for r in layer_ratios.values() if r > 1.0)),
+        "layers": len(layer_ratios),
+        "per_layer_selectivity": layer_ratios,
+    }
+    directions = [v for v in (pooled.get("sel_adj_l2"), sel_rel, robustness["sel_layer_geomean"]) if v is not None]
+    robustness["agree_in_direction"] = (
+        bool(directions) and (all(v > 1.0 for v in directions) or all(v < 1.0 for v in directions))
+    )
     ci = {
         "sel_raw": _bootstrap_ratio_ci(cells, "D_target", "D_placebo", adjust=None),
         "sel_adj_px": _bootstrap_ratio_ci(cells, "D_target", "D_placebo", adjust=("S_px_target", "S_px_placebo")),
@@ -1573,8 +1636,16 @@ def compute_decision_metrics(
         "pooled": pooled,
         "spread": spread,
         "bootstrap_ci_95": ci,
+        "cluster_spread": cluster_spread,
+        "robustness": robustness,
         "dose_response": doses,
         "positive_control": positive,
+        "thresholds": {
+            "null_floor_fraction_of_placebo": NEAR_ZERO_FLOOR_FRACTION,
+            "selectivity_boundary": 1.0,
+            "primary_normaliser": "S_l2",
+            "bootstrap_draws": 2000,
+        },
         "decision_rule": (
             "supported if the null floor is at most 5% of the placebo response, the pooled "
             "footprint-adjusted selectivity (S = image-difference norm) exceeds 1, and every "
@@ -1623,6 +1694,7 @@ def compute_decision_metrics(
         h2_verdict = "partial: selectivity weakens but does not invert"
     h2 = {
         "grounding_threshold": grounding_threshold,
+        "thresholds": {"grounding_rel_l2": grounding_threshold, "selectivity_boundary": 1.0},
         "grounding": grounding,
         "grounding_values": grounding_values,
         "perturbation_action_effect": pooled.get("A_target"),
@@ -1674,6 +1746,23 @@ def _print_decision_metrics(metrics: dict[str, Any]) -> None:
         print(
             f"dose response [{kind}]: {rows}  elasticity={_fmt(dr['elasticity_mean'])} "
             f"monotone={dr['monotone_in_dose']}",
+            flush=True,
+        )
+    cs = h1.get("cluster_spread", {})
+    if cs.get("n"):
+        sp = cs["sel_adj_l2"]
+        print(
+            f"clusters {cs['unit']}: n={cs['n']}  Sel adj ||dI|| mean={_fmt(sp['mean'])} sd={_fmt(sp['sd'])} "
+            f"min={_fmt(sp['min'])} max={_fmt(sp['max'])}",
+            flush=True,
+        )
+    rb = h1.get("robustness", {})
+    if rb:
+        print(
+            f"robustness: Sel rel={_fmt(rb['sel_rel'])}  per-layer geomean={_fmt(rb['sel_layer_geomean'])} "
+            f"[min {_fmt(rb['sel_layer_min'])}, max {_fmt(rb['sel_layer_max'])}], "
+            f"{rb['layers_above_one']}/{rb['layers']} layers above 1; "
+            f"direction agrees across summaries: {rb['agree_in_direction']}",
             flush=True,
         )
     pc = h1.get("positive_control", {})

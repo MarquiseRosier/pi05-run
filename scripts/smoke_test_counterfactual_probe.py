@@ -557,11 +557,14 @@ def test_state_advance_uses_successive_actions_of_the_plan() -> None:
 
 
 def _m(state, noise, prompt, kind, dose, *, D, S_l2, S_px, A):
+    # Two layers of very different scale, both carrying the same ratio, and a
+    # relative L2 of D/10: every scale-free summary must reproduce the D ratio.
     return {
         "state_index": state, "noise_index": noise, "prompt": prompt, "kind": kind, "target": kind,
         "dose": dose,
         "pixel": {"changed_pixel_fraction": S_px, "l2_delta": S_l2},
-        "latent": {"l2_delta_mean": D},
+        "latent": {"l2_delta_mean": D, "relative_l2_mean": D / 10.0,
+                   "per_layer_l2": {"layers.2.mlp": D * 0.01, "layers.17.mlp": D * 1.99}},
         "action_relative_l2": A,
     }
 
@@ -625,6 +628,16 @@ def test_decision_metrics_compute_the_paper_quantities_exactly() -> None:
         assert abs(dr["elasticity_mean"] - 1.0) < 1e-9, dr
     assert h1["verdict"] == "supported"
 
+    # Cluster-level spread: 4 (state, draw) clusters, identical by construction.
+    cs = h1["cluster_spread"]
+    assert cs["n"] == 4 and abs(cs["sel_adj_l2"]["mean"] - 2.0) < 1e-9 and cs["sel_adj_l2"]["sd"] == 0.0
+    # Scale-free summaries agree with the D ratio, so the direction is robust.
+    rb = h1["robustness"]
+    assert abs(rb["sel_rel"] - 4.0) < 1e-9 and abs(rb["sel_layer_geomean"] - 4.0) < 1e-9, rb
+    assert rb["layers"] == 2 and rb["layers_above_one"] == 2 and rb["agree_in_direction"] is True
+    assert h1["thresholds"]["null_floor_fraction_of_placebo"] == 0.05
+    assert metrics["h2"]["thresholds"]["grounding_rel_l2"] == 0.01
+
     # Positive control: mean target D over doses is 6 (=8*0.75), so 6/16 of the swap response.
     pc = h1["positive_control"]
     assert pc["n"] == 4 and abs(pc["D"] - 16.0) < 1e-9
@@ -642,9 +655,11 @@ def test_decision_metrics_verdict_branches() -> None:
     supported = P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.68))
     assert supported["h1"]["verdict"] == "supported"
 
-    # Placebo responds as much as the target: adjusted selectivity 0.5 -> falsified.
+    # Placebo responds as much as the target: adjusted selectivity 0.5 -> falsified,
+    # and the scale-free summaries sit at 1, so the direction does not agree.
     falsified = P.compute_decision_metrics(_linear_run(placebo_D=8.0))
     assert falsified["h1"]["verdict"] == "falsified", falsified["h1"]["pooled"]
+    assert falsified["h1"]["robustness"]["agree_in_direction"] is False
 
     # A null floor that is not near zero invalidates the paired comparison.
     invalid = P.compute_decision_metrics(_linear_run(null=1.0))

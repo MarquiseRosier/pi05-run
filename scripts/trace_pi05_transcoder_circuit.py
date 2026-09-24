@@ -32,6 +32,7 @@ from pi05_mi.circuit_tracing import (
     write_trace_outputs,
 )
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
+from pi05_mi.pi05_weights import assert_weights_loaded
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
 from train_pi05_transcoders import (
     DEFAULT_POLICY_PATH,
@@ -748,6 +749,7 @@ def main() -> None:
     preprocessor = _make_preprocessor(cfg, dataset, args.policy_path)
     print("loading frozen Pi0.5 policy weights", flush=True)
     policy = make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.rename_map)
+    assert_weights_loaded(policy, source=str(args.policy_path))
     _freeze(policy)
 
     print(f"loading transcoders from {args.checkpoint}", flush=True)

@@ -68,6 +68,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from pi05_mi.counterfactual_store import DeltaStore, sort_layer_names  # noqa: E402
 from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tensor  # noqa: E402
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers  # noqa: E402
+from pi05_mi.pi05_weights import assert_weights_loaded, install_load_recorder  # noqa: E402
 from pi05_mi.scene_perturbation import (  # noqa: E402
     blend_geom_color,
     find_objects,
@@ -376,7 +377,12 @@ def build_harness(args: argparse.Namespace, *, load_policy: bool = True) -> Harn
     policy_cfg.gradient_checkpointing = False
     policy_cfg.n_action_steps = 10
 
+    # LeRobot swallows a failed state-dict load and hands back random weights;
+    # record what load_state_dict reported and refuse to measure on anything
+    # but a complete load.
+    install_load_recorder()
     policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg, rename_map={})
+    assert_weights_loaded(policy, source=str(args.policy_path))
     policy.eval()
     for parameter in policy.parameters():
         parameter.requires_grad_(False)

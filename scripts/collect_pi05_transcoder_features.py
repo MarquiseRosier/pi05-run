@@ -16,6 +16,7 @@ from tqdm.auto import tqdm
 from lerobot.datasets.factory import make_dataset
 from lerobot.policies import make_policy
 
+from pi05_mi.pi05_weights import assert_weights_loaded
 from pi05_mi.feature_discovery import FeatureDiscoveryCollector, FeatureDiscoveryConfig
 from pi05_mi.langfuse_tracing import make_langfuse_tracer
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
@@ -202,6 +203,7 @@ def main() -> None:
     preprocessor = _make_preprocessor(cfg, dataset, args.policy_path)
     print("loading frozen Pi0.5 policy weights", flush=True)
     policy = make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.rename_map)
+    assert_weights_loaded(policy, source=str(args.policy_path))
     _freeze_policy(policy)
 
     print(f"loading transcoders from {args.checkpoint}", flush=True)

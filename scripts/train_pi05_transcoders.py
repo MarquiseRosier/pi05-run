@@ -29,6 +29,7 @@ from lerobot.utils.collate import lerobot_collate_fn
 from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 from lerobot.utils.utils import cycle
 
+from pi05_mi.pi05_weights import assert_weights_loaded
 from pi05_mi.buffers import MultiLayerActivationBuffer
 from pi05_mi.patch_pi05 import install_pi05_action_expert_wrappers, list_pi05_action_expert_mlp_targets
 from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
@@ -71,6 +72,11 @@ def patch_pi05_checkpoint_key_compat() -> None:
     weights.
     """
     from lerobot.policies.pi05 import modeling_pi05
+
+    from pi05_mi.pi05_weights import install_load_recorder
+
+    # Whatever the key layout, refuse to proceed on weights that did not load.
+    install_load_recorder(modeling_pi05.PI05Policy)
 
     original = modeling_pi05.PI05Policy._fix_pytorch_state_dict_keys
     if getattr(original, "_pi05_mi_vision_compat", False):
@@ -928,6 +934,7 @@ def main() -> None:
 
     print("loading frozen Pi0.5 policy weights", flush=True)
     policy = make_policy(cfg.policy, ds_meta=dataset.meta, rename_map=cfg.rename_map)
+    assert_weights_loaded(policy, source=str(args.policy_path))
     print("freezing Pi0.5 policy", flush=True)
     _freeze_policy(policy)
 

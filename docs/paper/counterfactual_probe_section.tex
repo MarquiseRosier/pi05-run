@@ -156,8 +156,9 @@ to the other object inverts the selectivity. \emph{Falsified if} selectivity is
 unchanged or strengthens for the original object. A selectivity that weakens
 without inverting is recorded as \emph{partial}: language modulates the
 response but does not determine it. All three readings presuppose that the
-policy demonstrably reacts to the prompt at all (Section~\ref{sec:grounding});
-otherwise H2 is \emph{untestable} on this scene.
+swap demonstrably moved the referent (Section~\ref{sec:grounding}): the policy
+must react to the prompt at all, and its behaviour must re-anchor on the other
+object. Otherwise H2 is \emph{untestable} on this scene.
 
 \paragraph{H3, circuit corroboration.}
 The \emph{parents} of a circuit traced upstream of a target are enriched for
@@ -313,8 +314,12 @@ S(c)\in\Bigl\{\,|\mathcal{P}(c)|,\;\lVert \Delta I(c)\rVert_2 \,\Bigr\},
 \label{eq:sel-px}
 \end{equation}
 where $\mathcal{P}(c)$ is the set of changed pixels and $\Delta I(c)$ the
-image-space difference, each pooled over the same cells as $D$. Both choices
-of $S$ are reported. The pixel count ignores how far each pixel moved and does
+image-space difference, each computed over \emph{every} camera the policy
+sees (counts summed, norms combined in quadrature) and pooled over the same
+cells as $D$. Measuring on one camera would be wrong here: the agentview
+camera and the objects are static, so a bowl's footprint there is identical at
+every state, while the wrist camera's view of the same bowl changes with the
+arm and can carry most of the perturbation. Both choices of $S$ are reported. The pixel count ignores how far each pixel moved and does
 not change with dose; the image norm captures magnitude and does change with
 dose. The image norm is therefore the \emph{primary} normaliser for the H1
 decision, and the pixel count is reported alongside.
@@ -440,6 +445,27 @@ If the mean $g$ is below $0.01$ the swap manipulated nothing and H2 is
 untestable on this scene. We report $g$ alongside the action effect of the
 perturbation itself for scale.
 
+\paragraph{Manipulation check: did the referent move?}
+$g$ shows that the policy processed the new words. It does not show that the
+policy now targets the other bowl. Because the prompt names ``the black
+bowl'', recolouring the bowl the policy is going for changes the action far
+more than recolouring the other one, so the action's own sensitivity reveals
+the behavioural referent. Write $A(c)$ for the relative action change under
+recolour of object $c$, and the \emph{behavioural anchor}
+\begin{equation}
+\mathrm{anchor}(\mathrm{prompt}) = \frac{A(\mathrm{target})}{A(\mathrm{placebo})}
+\label{eq:anchor}
+\end{equation}
+under each prompt. Under the task prompt the anchor should exceed $1$. Under
+the sibling prompt the referent has moved only if the anchor falls
+\emph{below} $1$; if it stays above $1$ the swap moved words but not the
+referent, and H2 is untestable on this scene with this prompt, whatever $g$
+says. This check uses the action, not the latents, so it is independent of
+the quantity H2 is decided on. It matters here because the sibling phrase is
+chosen by the region the placebo occupies, and a phrase such as ``next to the
+ramekin'' can be true of a bowl that sits between the plate and the ramekin
+as well.
+
 \subsubsection{Nominating a trace target}
 \label{sec:zscore}
 
@@ -540,8 +566,10 @@ the probe's data. No quantity is both selected on and tested with.
 
 Every quantity above is a tensor, and the reductions are where errors hide.
 Table~\ref{tab:cf-shapes} fixes the shapes end to end for one forward pass.
-Rows marked as recorded are read from the run's
-\texttt{observation\_shapes.json}, which the shape guard also checks against.
+Values are read from the run's \texttt{observation\_shapes.json}, which the
+shape guard also checks against; the language tokens also carry the
+discretised proprioceptive state, so they differ between states and are
+identical within a cell.
 
 \begin{table}[t]
 \caption{Shapes for a single forward pass, with $B=1$. The recorded artefact
@@ -554,9 +582,9 @@ step, stored in full; the unreduced $z$ would be $T$ times larger.}
 \hline
 Quantity & Shape & Note \\
 \hline
-Camera images & \RESULT{recorded} $\times 2$ & agentview and wrist, after the policy's resize \\
+Camera images & $(1,3,360,360)\times 2$ & agentview and wrist, as handed to the policy \\
 Language tokens & $(1,200)$ & padded to the tokenizer maximum; same for both prompts \\
-Proprioceptive state & \RESULT{recorded} & padded to the policy's state width \\
+Proprioceptive state & $(1,8)$ & padded inside the model to its state width \\
 Flow noise $\epsilon$ & $(1,50,32)$ & sampled once per cell, shared by both passes \\
 MLP input $x_\ell$ & $(1,50,1024)$ & per layer, per denoise step \\
 Sparse code $z_{\ell,\tau}$ & $(1,50,16384)$ & $16\times$ expansion \\
@@ -673,17 +701,18 @@ Placebo & \RESULT{d} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 only the language differs; $D$ as in Table~\ref{tab:cf-main}. Prompt grounding
 $g$ is Eq.~\ref{eq:grounding}, mean over cells. Filled from
 \texttt{decision\_metrics.json} under \texttt{h2}: \texttt{per\_prompt},
-\texttt{grounding}, \texttt{perturbation\_action\_effect}.}
+\texttt{grounding}, \texttt{perturbation\_action\_effect},
+\texttt{referent\_check}.}
 \label{tab:cf-prompt}
 \begin{center}
-\begin{tabular}{lccc}
+\begin{tabular}{lcccc}
 \hline
-Prompt & Target $D$ & Placebo $D$ & Selectivity \\
+Prompt & Target $D$ & Placebo $D$ & Selectivity & Anchor, Eq.~\ref{eq:anchor} \\
 \hline
-Task, names target     & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Sibling, names placebo & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Task, names target     & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Sibling, names placebo & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
-\multicolumn{4}{l}{$g = \RESULT{val}$ (min \RESULT{val}, max \RESULT{val}, threshold $0.01$); perturbation action effect $\RESULT{val}$} \\
+\multicolumn{5}{l}{$g = \RESULT{val}$ (min \RESULT{val}, max \RESULT{val}, threshold $0.01$); perturbation action effect $\RESULT{val}$; referent moved: \RESULT{yes or no}} \\
 \hline
 \end{tabular}
 \end{center}
@@ -769,7 +798,9 @@ and per-layer summaries agree in direction
 
 \paragraph{H2.}
 \RESULT{supported, partial, falsified or untestable}. \emph{Untestable} if there
-is no sibling prompt or mean $g<0.01$. Otherwise, with
+is no sibling prompt, if mean $g<0.01$, or if the behavioural anchor of
+Eq.~\ref{eq:anchor} stays at or above $1$ under the sibling prompt (the
+referent did not move; \texttt{h2.referent\_check}). Otherwise, with
 $\mathrm{Sel}_{\mathrm{task}}>1$: \emph{supported} if
 $\mathrm{Sel}_{\mathrm{alt}}<1$; \emph{falsified} if
 $\mathrm{Sel}_{\mathrm{alt}}\ge\mathrm{Sel}_{\mathrm{task}}$; \emph{partial}
@@ -805,16 +836,24 @@ carry the property'' and ``it carries it on the dataset but not on this
 scene''. A positive H3 result does not suffer that ambiguity. The exercised
 fraction is what a reader should look at first.
 
-\paragraph{Does $g$ show what the prompt swap did?}
-$g$ shows that the policy processed the new prompt: the unperturbed action
-changed. It does not show that the policy resolved the new prompt's referent to
-the placebo bowl. If the sibling phrase is ambiguous in this scene, or the
-policy attends to the phrase without re-grounding it, the swap can move the
-action without moving the referent, and a non-inverting H2 would then say less
-about position than it appears to. The positive control's latent response is
-the other half of the same evidence: a swap that changed the action and the
-latents but not the selectivity is what H2 falsification looks like, and a
-reader should hold both readings open.
+\paragraph{Does the prompt swap move the referent?}
+Not necessarily, which is why Eq.~\ref{eq:anchor} gates H2. The sibling
+phrase is chosen by the region the placebo occupies, and a spatial phrase can
+be true of both bowls at once. When the anchor stays above $1$ under the
+sibling prompt, the run says so and H2 is recorded as untestable rather than
+partial. Whether the policy \emph{would} re-ground under an unambiguous
+phrase is a separate question this design does not answer; an override prompt
+is available for a follow-up. A reading of the untestable case that is still
+informative: the policy's behaviour, and its features, stayed with the bowl
+the task prompt named even when told otherwise in ambiguous words.
+
+\paragraph{Why do the states differ so much?}
+The response can be several times larger at a later state, with the agentview
+footprint unchanged. The arm has moved, so the wrist camera's view of the
+bowl has changed and the policy is closer to acting on it. This is why $S$ is
+measured over every camera and why the spread is reported over (state, draw)
+clusters and not only over cells; with two states the cluster spread is
+essentially the difference between them.
 
 \paragraph{Is the null for H3 fair?}
 Matching on layer, flow time and exercise makes the null ``a random active
@@ -834,12 +873,17 @@ Only relative to the null floor, which the design forces to be measured rather
 than assumed, and relative to the placebo. Both are reported in every table.
 
 \paragraph{Is colour the right variable?}
-Colour is convenient because it leaves geometry and physics untouched, but it
-is not necessarily task-relevant. In a suite whose tasks are disambiguated
-spatially, colour carries no task information, so a null \emph{behavioural}
-effect is expected and is not evidence against feature-level selectivity.
-Claims about behaviour require a task in which the perturbed property is
-load-bearing.
+Colour is convenient because it leaves geometry and physics untouched, and in
+this suite it is also load-bearing: every prompt names ``the black bowl'', so
+recolouring a bowl removes it from the set the noun phrase denotes. A
+behavioural effect is therefore expected when the \emph{referent} is
+recoloured and not when the non-referent is, and the action column of
+Table~\ref{tab:cf-main} is a behavioural test of H1 in its own right. Two
+bowls of the same colour mean the prompt's spatial phrase, not colour, picks
+the referent; the recolour perturbs the noun, not the spatial relation. In a
+task whose prompt did not name a colour, the same recolour would be expected to
+move behaviour little, and feature-level selectivity would then be the only
+claim available.
 
 \paragraph{Scope.}
 One task, one seed, a small number of states, draws and doses. The design
@@ -889,6 +933,7 @@ plausible number: a policy whose pretrained weights did not fully load; a stale
 render cache or an invisible target, via the liveness control; a baseline that
 is not restored exactly after a recolour is reverted; a perturbation that
 changes no pixels; drifting tensor shapes between conditions, via the shape
-guard; and a nomination stage that finds no feature meeting all three filters,
+guard; a nomination stage that finds no feature meeting all three filters,
 which reports the rejections by criterion instead of tracing the best available
-candidate.
+candidate; and, for H2, a prompt swap that did not move the behavioural
+referent, which yields \emph{untestable} rather than a graded verdict.

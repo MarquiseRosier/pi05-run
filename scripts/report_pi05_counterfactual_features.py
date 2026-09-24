@@ -408,19 +408,23 @@ def main() -> None:
                 row["placebo_exact_mean_abs_delta"] = p_exact
                 row["placebo_exact_zero"] = p_exact == 0.0
                 row["selectivity_exact"] = (t_exact / p_exact) if p_exact > 0 else None
+    # Display in the order nomination uses. Raw selectivity puts shallow
+    # features that fired in two cells against a tiny placebo floor at the top,
+    # which is exactly the ranking the filters exist to override.
+    shown = sorted(features, key=lambda row: -row["target_z"])[: args.top]
     print(
-        f"\ncandidate features (>= {args.min_cells} cells, ranked by selectivity) "
-        f"- {len(features)} found, showing {min(args.top, len(features))}"
+        f"\ncandidate features (>= {args.min_cells} cells, shown by layer-standardised z; "
+        f"{len(features)} found, showing {len(shown)})"
     )
-    print(f"  {'layer':>5} {'feature':>8} {'target':>10} {'placebo':>10} {'sel':>8} {'cells':>9}  note")
-    for row in features[: args.top]:
+    print(f"  {'layer':>5} {'feature':>8} {'z':>6} {'target':>10} {'placebo':>10} {'sel':>8} {'cells':>9}  note")
+    for row in shown:
         sel = f"{row['selectivity']:.2f}x"
         if row["selectivity_is_lower_bound"]:
             sel = ">=" + sel
         note = "" if row["placebo_measured"] else "placebo below top-K"
         cells = f"{row['target_cells']}/{row['layer_cells']}"
         print(
-            f"  {row['layer_index']:>5} {row['feature']:>8} {row['target_mean_abs_delta']:>10.4f} "
+            f"  {row['layer_index']:>5} {row['feature']:>8} {row['target_z']:>+6.2f} {row['target_mean_abs_delta']:>10.4f} "
             f"{row['placebo_response']:>10.4f} {sel:>8} {cells:>9}  {note}"
         )
 

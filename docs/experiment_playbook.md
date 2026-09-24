@@ -36,7 +36,11 @@ in this order:
    - **matched placebo** — matched on what, differing in what, and the honest name for the difference
      (e.g. "non-referent", not "irrelevant");
    - **positive control** — a manipulation *known* to matter, fixing the scale of the outcome;
-   - **dose response** — the doses, the normaliser, the linearity statistic (elasticity).
+   - **dose response** — the doses, the normaliser, the linearity statistic (elasticity);
+   - **manipulation check** for every *gated* manipulation (a prompt swap, a mode switch): a
+     quantity independent of the decision quantity that shows the manipulation did what it claims,
+     not merely that it was processed. "The action changed" is processing; "the action re-anchored
+     on the other object" is the manipulation. Without it the gate passes on words.
 5. **Replication unit.** What a *cell* is; what cells share (render, noise draw, pose); the *cluster*
    that is independent; which spreads and intervals are reported and at which level; n for each.
 6. **Outcome measure and alternatives.** The primary summary and why; at least two scale-free
@@ -151,7 +155,7 @@ stage`. Rules:
 |---|---|---|
 | 1 | Falsifiable hypotheses; rules and thresholds fixed and justified before data | every threshold is a numeric field in the artefact **and** has a written data-independent reason |
 | 2 | Isolated manipulation, verified at run time | identity / revert / restore / shape checks exist and abort; diff images written |
-| 3 | Complete control set | null floor with a bound, matched placebo with an honest name, **positive control**, dose response with elasticity |
+| 3 | Complete control set | null floor with a bound, matched placebo with an honest name, **positive control**, dose response with elasticity, a **manipulation check** on every gated manipulation |
 | 4 | Correct replication unit, honest uncertainty | cell and cluster defined; dependence stated; spread at both levels; n next to every interval; the decision rule does not assume independence |
 | 5 | Construct validity, robustness across summaries | primary summary justified; ≥ 2 scale-free alternatives; `agree_in_direction` flag |
 | 6 | No circularity | the thing selected on data A is excluded from the test on data A; downstream selectors never read the test data |
@@ -185,3 +189,8 @@ A `partial` on 1, 3, 4, 5 or 9 is a Phase 0 defect. A `gap` on 6 or 7 invalidate
 - **Thresholds only in prose** — unfalsifiable in practice, because prose can be re-read.
 - **Uncertainty over non-independent cells** without saying so.
 - **No positive control** — a latent delta of 8.3 with nothing to scale it against.
+- **A gate that checks processing, not the manipulation** — prompt grounding g = 0.73 passed while
+  the action stayed 10× anchored on the original bowl; the sibling phrase was true of both bowls.
+  The verdict read "partial" when it was "untestable".
+- **A normaliser on part of the input** — perturbation size measured on one of two cameras; the
+  static camera's footprint never changed between states while the response tripled.

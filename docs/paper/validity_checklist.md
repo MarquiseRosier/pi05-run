@@ -10,7 +10,7 @@ remains open. "Status" is after the changes of 2026-09-24.
 |---|-------------|--------|
 | 1 | Falsifiable hypotheses with decision rules and thresholds fixed and justified before data | met |
 | 2 | Isolated manipulation, verified rather than assumed | met |
-| 3 | Complete control set: null floor, matched placebo, positive control, dose response | met |
+| 3 | Complete control set: null floor, matched placebo, positive control, dose response, manipulation check | met |
 | 4 | Correct replication unit with honest uncertainty | met, small n disclosed |
 | 5 | Construct validity of the outcome and robustness across summaries | met |
 | 6 | No circularity between selection and test | met |
@@ -60,6 +60,13 @@ referent status; H2 addresses referent status, position is a stated
 confound. The LaTeX now calls the placebo the non-referent instance, not an
 irrelevant object, because the policy must discriminate against it.
 
+**Found on the first full run (2026-09-24).** Perturbation size was measured on
+the agentview camera only; the bowl's footprint there was identical at both
+states while the response tripled at the second, consistent with the wrist
+camera carrying the perturbation. `image_delta_stats_all` now aggregates every
+camera (counts summed, norms in quadrature) for S, the liveness check and the
+restore check, and saves every camera's frames.
+
 ## 3. Complete control set
 
 **Requirement.** A null that measures the floor, a placebo matched on
@@ -78,7 +85,19 @@ identical pixels, reported as `h1.positive_control` with target and placebo
 as fractions of it. Dose response: `dose_response`, elasticity η with S the
 image-difference norm, monotonicity per condition.
 
-**Was.** No positive control.
+**Found on the first full run.** The prompt-swap gate g = 0.73 passed, but the
+action under the sibling prompt stayed 10× more sensitive to the target bowl's
+colour than the placebo's: the swap moved words, not the referent ("next to
+the ramekin" is true of a bowl between the plate and the ramekin). A
+**manipulation check** now gates H2 on the behavioural anchor
+A(target)/A(placebo) falling below 1 under the sibling prompt
+(`h2.referent_check`); otherwise H2 is `untestable`, not `partial`. The check
+uses the action, so it is independent of the latent quantity H2 is decided on.
+`scripts/recompute_counterfactual_decisions.py` re-reads a finished run's
+verdicts under the corrected rule.
+
+**Was.** No positive control; a gate that checked processing, not the
+manipulation.
 
 ## 4. Replication unit and uncertainty
 
@@ -193,3 +212,11 @@ or object type would be the first extension.
 - Read H1, H2 and H3 off the recorded verdicts; do not re-derive them.
 - If `h1.robustness.agree_in_direction` is false, report the disagreement
   rather than choosing the summary that agrees.
+- If `h2.referent_check.referent_moved` is false, H2 is untestable on this
+  scene; a follow-up may pass `--alt-prompt` with a phrase true of only the
+  placebo bowl, and must say so.
+- The first full run's H1 is `supported` (adjusted selectivity 6.0, every cell
+  above 1, null floor 0); its H2 is `untestable` under the corrected gate; the
+  recolour of the referent moved the action by 54 % relative L2 against 3 % for
+  the non-referent, a behavioural H1 result the section now expects because
+  every prompt names "the black bowl".

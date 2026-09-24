@@ -653,18 +653,70 @@ def save_image(path: Path, array: np.ndarray) -> None:
         Image.fromarray(arr).save(path)
 
 
-def first_camera_image(observation: dict[str, Any]) -> np.ndarray:
-    """Return one camera frame as (H, W, C), without the batch axis.
-
-    Observations carry a leading batch dim for the policy; the image metrics
-    want a plain frame, and leaving the extra axis on made "changed pixels"
-    count channel values instead of pixels.
-    """
-    pixels = observation["pixels"]
-    image = np.asarray(next(iter(pixels.values())))
+def _squeeze_frame(image: Any) -> np.ndarray:
+    image = np.asarray(image)
     while image.ndim > 3 and image.shape[0] == 1:
         image = image[0]
     return image
+
+
+def first_camera_image(observation: dict[str, Any]) -> np.ndarray:
+    """Return one camera frame as (H, W, C), without the batch axis."""
+    return _squeeze_frame(next(iter(observation["pixels"].values())))
+
+
+def camera_images(observation: dict[str, Any]) -> dict[str, np.ndarray]:
+    """Every camera frame the policy sees, as (H, W, C) without the batch axis.
+
+    The perturbation size must be measured on the whole visual input. With a
+    fixed agentview camera the recoloured bowl's footprint there never changes
+    between states, while the wrist camera can go from a sliver to most of
+    the frame as the arm approaches; a footprint read off one camera would
+    then miss most of the perturbation exactly where the response is largest.
+    """
+    return {name: _squeeze_frame(frame) for name, frame in observation["pixels"].items()}
+
+
+def image_delta_stats_all(
+    baseline: dict[str, np.ndarray], perturbed: dict[str, np.ndarray]
+) -> dict[str, Any]:
+    """Perturbation size aggregated over every camera, with per-camera detail.
+
+    Counts are summed and norms combined in quadrature, so the aggregate is
+    what the same statistics would give on the concatenated frames.
+    """
+    if set(baseline) != set(perturbed):
+        raise ValueError(f"Camera sets differ: {sorted(baseline)} vs {sorted(perturbed)}")
+    per_camera: dict[str, dict[str, float]] = {}
+    changed = 0
+    total = 0
+    sq_l2 = 0.0
+    sq_base = 0.0
+    max_abs = 0.0
+    weighted_mean = 0.0
+    for name in sorted(baseline):
+        stats = image_delta_stats(baseline[name], perturbed[name])
+        per_camera[name] = stats
+        frame = _squeeze_frame(baseline[name])
+        pixels = int(frame.shape[0] * frame.shape[1]) if frame.ndim >= 2 else int(frame.size)
+        changed += int(stats["changed_pixel_count"])
+        total += pixels
+        sq_l2 += float(stats["l2_delta"]) ** 2
+        if stats["relative_l2"] > 0:
+            sq_base += (float(stats["l2_delta"]) / float(stats["relative_l2"])) ** 2
+        max_abs = max(max_abs, float(stats["max_abs_delta"]))
+        weighted_mean += float(stats["mean_abs_delta"]) * pixels
+    l2 = float(np.sqrt(sq_l2))
+    return {
+        "mean_abs_delta": weighted_mean / total if total else 0.0,
+        "max_abs_delta": max_abs,
+        "changed_pixel_fraction": changed / total if total else 0.0,
+        "changed_pixel_count": changed,
+        "l2_delta": l2,
+        "relative_l2": l2 / float(np.sqrt(sq_base)) if sq_base > 0 else 0.0,
+        "cameras": len(per_camera),
+        "per_camera": per_camera,
+    }
 
 
 def _json_default(value: Any) -> Any:
@@ -796,11 +848,12 @@ def main() -> None:
     # --- validity self-check: the re-render path must reproduce the env's own
     # observation, otherwise every measurement below compares the wrong images.
     rerendered = rerender_observation(harness)
-    env_image = first_camera_image(env_observation)
-    rerender_image = first_camera_image(rerendered)
-    check = image_delta_stats(env_image, rerender_image)
+    env_images = camera_images(env_observation)
+    rerender_images = camera_images(rerendered)
+    check = image_delta_stats_all(env_images, rerender_images)
     print(
-        f"re-render self-check: changed_pixel_fraction={check['changed_pixel_fraction']:.6f} "
+        f"re-render self-check ({check['cameras']} cameras): "
+        f"changed_pixel_fraction={check['changed_pixel_fraction']:.6f} "
         f"max_abs_delta={check['max_abs_delta']:.6f}",
         flush=True,
     )
@@ -816,14 +869,16 @@ def main() -> None:
     # confirming the pixels actually move, then reverting.
     liveness = set_geom_color(mj_model, args.target, (1.0, 0.0, 1.0), label="liveness-probe")
     try:
-        live_image = first_camera_image(rerender_observation(harness))
-        live = image_delta_stats(rerender_image, live_image)
+        live = image_delta_stats_all(rerender_images, camera_images(rerender_observation(harness)))
     finally:
         liveness.revert(mj_model)
-    restored = image_delta_stats(rerender_image, first_camera_image(rerender_observation(harness)))
+    restored = image_delta_stats_all(rerender_images, camera_images(rerender_observation(harness)))
+    per_cam = ", ".join(
+        f"{name}={stats['changed_pixel_fraction'] * 100:.3f}%" for name, stats in live["per_camera"].items()
+    )
     print(
         f"re-render liveness: perturbing the target moved "
-        f"{live['changed_pixel_fraction'] * 100:.3f}% of pixels; "
+        f"{live['changed_pixel_fraction'] * 100:.3f}% of pixels over all cameras ({per_cam}); "
         f"revert residual {restored['changed_pixel_fraction'] * 100:.3f}%",
         flush=True,
     )
@@ -995,10 +1050,12 @@ def main() -> None:
     for state_index in range(args.states):
         print(f"\n=== state {state_index} ===", flush=True)
         baseline_obs = rerender_observation(harness)
+        baseline_images = camera_images(baseline_obs)
         baseline_image = first_camera_image(baseline_obs)
 
         if args.save_images:
-            save_image(image_dir / f"state{state_index}_baseline.png", baseline_image)
+            for cam_name, frame in baseline_images.items():
+                save_image(image_dir / f"state{state_index}_baseline_{cam_name}.png", frame)
 
         # The perturbed renders do not depend on the noise draw or the prompt,
         # so render each once per state and reuse it across every replicate.
@@ -1010,23 +1067,25 @@ def main() -> None:
                     perturbed_obs = rerender_observation(harness)
                 finally:
                     perturbation.revert(mj_model)
+                perturbed_images = camera_images(perturbed_obs)
                 perturbed_image = first_camera_image(perturbed_obs)
-                pixel = image_delta_stats(baseline_image, perturbed_image)
+                pixel = image_delta_stats_all(baseline_images, perturbed_images)
                 if pixel["changed_pixel_fraction"] == 0.0:
                     raise RuntimeError(
-                        f"Perturbation {perturbation.label!r} changed no pixels. The object is "
-                        "probably occluded or outside this camera's view; pick another target."
+                        f"Perturbation {perturbation.label!r} changed no pixels on any camera. The object "
+                        "is probably occluded or outside every camera's view; pick another target."
                     )
                 perturbed_renders[(kind, dose)] = (perturbed_obs, perturbed_image, pixel, perturbation.label)
                 if args.save_images:
-                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}.png", perturbed_image)
-                    diff = np.abs(perturbed_image.astype(np.float64) - baseline_image.astype(np.float64))
-                    if diff.max() > 0:
-                        diff = diff / diff.max() * 255.0
-                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_diff.png", diff)
+                    for cam_name, frame in perturbed_images.items():
+                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_{cam_name}.png", frame)
+                        diff = np.abs(frame.astype(np.float64) - baseline_images[cam_name].astype(np.float64))
+                        if diff.max() > 0:
+                            diff = diff / diff.max() * 255.0
+                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_{cam_name}_diff.png", diff)
         # The baseline must be intact after every revert, or the pairs below
         # would be measured against a contaminated reference.
-        residual = image_delta_stats(baseline_image, first_camera_image(rerender_observation(harness)))
+        residual = image_delta_stats_all(baseline_images, camera_images(rerender_observation(harness)))
         if residual["changed_pixel_fraction"] != 0.0:
             raise RuntimeError(
                 f"Reverting the perturbations left {residual['changed_pixel_count']} pixels changed at "
@@ -1089,7 +1148,7 @@ def main() -> None:
                         "kind": "null",
                         "target": "none",
                         "dose": 0.0,
-                        "pixel": image_delta_stats(baseline_image, baseline_image),
+                        "pixel": image_delta_stats_all(baseline_images, baseline_images),
                         "latent": null_summary,
                         "action_relative_l2": _rel_l2(baseline_actions, null_actions),
                     }
@@ -1115,9 +1174,10 @@ def main() -> None:
                         latent_rows.extend(rows)
                         summary = summarize_latent_rows(rows)
                         action_rel = _rel_l2(baseline_actions, perturbed_actions)
+                        cams = "/".join(f"{c['changed_pixel_fraction']:.4f}" for c in pixel["per_camera"].values())
                         print(
                             f"    {kind:<8} {target:<28} dose={dose:<5g} "
-                            f"pixels={pixel['changed_pixel_fraction']:.4f} "
+                            f"pixels={pixel['changed_pixel_fraction']:.4f} (per camera {cams}) "
                             f"latentL2={summary.get('l2_delta_mean'):.6g} "
                             f"action_rel_l2={action_rel:.6g}",
                             flush=True,
@@ -1176,7 +1236,7 @@ def main() -> None:
                         "kind": "prompt_swap",
                         "target": "none",
                         "dose": 0.0,
-                        "pixel": image_delta_stats(baseline_image, baseline_image),
+                        "pixel": image_delta_stats_all(baseline_images, baseline_images),
                         "latent": swap_summary,
                         "action_relative_l2": grounding_here,
                     }
@@ -1483,6 +1543,7 @@ def compute_decision_metrics(
     measurements: list[dict[str, Any]],
     *,
     baseline_by_prompt: dict[tuple[int, int, str], np.ndarray] | None = None,
+    grounding_values: list[float] | None = None,
     grounding_threshold: float = GROUNDING_THRESHOLD,
 ) -> dict[str, Any]:
     """Every number the pre-registered decision rules are stated in.
@@ -1656,13 +1717,15 @@ def compute_decision_metrics(
     }
 
     # ---- H2
-    grounding_values = []
-    for (state_index, noise_index, label), action in baseline_by_prompt.items():
-        if label != "task":
-            continue
-        alt = baseline_by_prompt.get((state_index, noise_index, "alt"))
-        if alt is not None:
-            grounding_values.append(_rel_l2(action, alt))
+    if grounding_values is None:
+        grounding_values = []
+        for (state_index, noise_index, label), action in baseline_by_prompt.items():
+            if label != "task":
+                continue
+            alt = baseline_by_prompt.get((state_index, noise_index, "alt"))
+            if alt is not None:
+                grounding_values.append(_rel_l2(action, alt))
+    grounding_values = [float(v) for v in grounding_values]
     grounding = _spread(grounding_values)
     per_prompt = {}
     for prompt in prompts:
@@ -1678,10 +1741,40 @@ def compute_decision_metrics(
         }
     sel_task = per_prompt.get("task", {}).get("sel_raw")
     sel_alt = per_prompt.get("alt", {}).get("sel_raw")
+
+    # Manipulation check. g says the prompt was processed, not that its
+    # referent was resolved to the other object. The action's own sensitivity
+    # says which bowl the policy is going for: recolouring the bowl it targets
+    # (making it no longer "the black bowl") moves the action far more than
+    # recolouring the other one. If under the alternate prompt the action is
+    # still anchored on the original target, the swap moved words, not the
+    # referent, and H2 has nothing to test.
+    anchors = {}
+    for prompt, row in per_prompt.items():
+        a_t, a_p = row.get("A_target"), row.get("A_placebo")
+        anchors[prompt] = (a_t / a_p) if (a_t is not None and a_p) else None
+    anchor_task, anchor_alt = anchors.get("task"), anchors.get("alt")
+    referent_moved = anchor_alt is not None and anchor_alt < 1.0
+    referent_check = {
+        "behavioural_anchor_task": anchor_task,
+        "behavioural_anchor_alt": anchor_alt,
+        "anchor_ratio_alt_over_task": (anchor_alt / anchor_task) if (anchor_alt is not None and anchor_task) else None,
+        "referent_moved": bool(referent_moved),
+        "rule": (
+            "the action's sensitivity to the target's colour over the placebo's must fall below 1 "
+            "under the alternate prompt; otherwise the swap did not move the behavioural referent"
+        ),
+    }
+
     if "alt" not in prompts:
         h2_verdict = "untestable: no alternate prompt"
     elif grounding["n"] == 0 or grounding["mean"] is None or grounding["mean"] < grounding_threshold:
         h2_verdict = "untestable: prompt grounding below threshold"
+    elif not referent_moved:
+        h2_verdict = (
+            "untestable: the prompt swap did not move the behavioural referent "
+            f"(action still {_fmt(anchor_alt, '.1f')}x more sensitive to the target object)"
+        )
     elif sel_task is None or sel_alt is None:
         h2_verdict = "not measured"
     elif sel_task <= 1.0:
@@ -1699,8 +1792,10 @@ def compute_decision_metrics(
         "grounding_values": grounding_values,
         "perturbation_action_effect": pooled.get("A_target"),
         "per_prompt": per_prompt,
+        "referent_check": referent_check,
         "decision_rule": (
-            "untestable if g < threshold; supported if selectivity under the sibling prompt falls "
+            "untestable if g < threshold or the behavioural referent did not move (action anchor "
+            "under the sibling prompt >= 1); supported if selectivity under the sibling prompt falls "
             "below 1 while the task prompt's exceeds 1; falsified if it is unchanged or stronger; "
             "partial if it weakens without inverting"
         ),
@@ -1785,9 +1880,16 @@ def _print_decision_metrics(metrics: dict[str, Any]) -> None:
     for prompt, row in h2["per_prompt"].items():
         print(
             f"  {prompt:>5}: D_target={_fmt(row['D_target'])} D_placebo={_fmt(row['D_placebo'])} "
-            f"Sel={_fmt(row['sel_raw'])} (cells {row['n_cells']})",
+            f"Sel={_fmt(row['sel_raw'])}  action anchor A_target/A_placebo={_fmt(h2['referent_check'].get(f'behavioural_anchor_{prompt}'))} "
+            f"(cells {row['n_cells']})",
             flush=True,
         )
+    rc = h2["referent_check"]
+    print(
+        f"referent check: anchor task={_fmt(rc['behavioural_anchor_task'])} alt={_fmt(rc['behavioural_anchor_alt'])} "
+        f"-> referent moved: {rc['referent_moved']}",
+        flush=True,
+    )
     print(f"H2 verdict: {h2['verdict']}", flush=True)
 
 

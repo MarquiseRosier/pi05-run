@@ -548,6 +548,54 @@ def test_shared_noise_is_reproducible_from_its_seed() -> None:
     assert len(seeds) == 50 * 100, "cell seeds must not collide across states and draws"
 
 
+def test_footprint_is_measured_over_every_camera() -> None:
+    """A recolour visible only in the wrist camera must still count.
+
+    The agentview footprint of a static object never changes between states,
+    while the wrist camera can carry most of the perturbation as the arm
+    approaches. A footprint read off one camera would miss it.
+    """
+    h = w = 20
+    base = {"agentview": np.zeros((h, w, 3), np.uint8), "wrist": np.zeros((h, w, 3), np.uint8)}
+    pert = {k: v.copy() for k, v in base.items()}
+    pert["wrist"][:10, :, :] = 200  # half the wrist frame changes, agentview untouched
+    stats = P.image_delta_stats_all(base, pert)
+    assert stats["cameras"] == 2
+    assert stats["per_camera"]["agentview"]["changed_pixel_fraction"] == 0.0
+    assert abs(stats["per_camera"]["wrist"]["changed_pixel_fraction"] - 0.5) < 1e-12
+    assert abs(stats["changed_pixel_fraction"] - 0.25) < 1e-12, "half of one of two equal frames"
+    assert stats["changed_pixel_count"] == 10 * w
+    # L2 combines in quadrature: the aggregate equals the single changed camera's norm here.
+    assert abs(stats["l2_delta"] - stats["per_camera"]["wrist"]["l2_delta"]) < 1e-9
+    # Batched frames (1, H, W, C) are handled the same way.
+    batched = {k: v[None] for k, v in base.items()}
+    obs = {"pixels": batched}
+    frames = P.camera_images(obs)
+    assert set(frames) == {"agentview", "wrist"} and frames["wrist"].shape == (h, w, 3)
+    identical = P.image_delta_stats_all(frames, frames)
+    assert identical["changed_pixel_fraction"] == 0.0 and identical["l2_delta"] == 0.0
+
+
+def test_recompute_script_rereads_verdicts_from_a_saved_summary() -> None:
+    import subprocess
+    import tempfile
+
+    run = Path(tempfile.mkdtemp())
+    summary = {
+        "measurements": _linear_run(alt_sel=2.0, alt_referent_moved=False),
+        "prompt_grounding_rel_l2": [0.73, 0.68, 0.79, 0.70],
+    }
+    (run / "counterfactual_summary.json").write_text(json.dumps(summary))
+    script = Path(__file__).resolve().parent / "recompute_counterfactual_decisions.py"
+    out = subprocess.run([sys.executable, str(script), str(run)], capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    decision = json.loads((run / "decision_metrics.json").read_text())
+    assert decision["h1"]["verdict"] == "supported"
+    assert decision["h2"]["verdict"].startswith("untestable") and "referent" in decision["h2"]["verdict"]
+    assert decision["recomputed_from"].endswith("counterfactual_summary.json")
+    assert (run / "h1_cells.csv").exists()
+
+
 def test_state_advance_uses_successive_actions_of_the_plan() -> None:
     chunk = np.arange(12, dtype=np.float32).reshape(6, 2)
     steps = P.actions_to_step(chunk, 3)
@@ -569,12 +617,15 @@ def _m(state, noise, prompt, kind, dose, *, D, S_l2, S_px, A):
     }
 
 
-def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None, swap_D=None):
+def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None, swap_D=None, alt_referent_moved=True):
     """Target responds 4x the placebo in D; its footprint is 2x; response is linear in dose.
 
     With ``alt_sel`` the run also carries a prompt-swap positive control of
     latent response ``swap_D`` (default 16, so the target is 1/4 of it at the
-    mean dose) under the task prompt.
+    mean dose) under the task prompt. By default the alternate prompt moves the
+    behavioural referent: under it the action is 8x more sensitive to the
+    placebo's colour than the target's. ``alt_referent_moved=False`` keeps the
+    action anchored on the target, as a swap that only moved words would.
     """
     ms = []
     for state in (0, 1):
@@ -587,10 +638,13 @@ def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None, swap_D=None):
                 for dose in (0.5, 1.0):
                     d_t = 8.0 * dose
                     d_p = (placebo_D if placebo_D is not None else 2.0) * dose
+                    a_t, a_p = 0.4 * dose, 0.05 * dose
                     if prompt == "alt":
                         d_p = d_t / alt_sel
-                    ms.append(_m(state, noise, prompt, "target", dose, D=d_t, S_l2=20.0 * dose, S_px=0.02, A=0.4 * dose))
-                    ms.append(_m(state, noise, prompt, "placebo", dose, D=d_p, S_l2=10.0 * dose, S_px=0.01, A=0.05 * dose))
+                        if alt_referent_moved:
+                            a_t, a_p = a_p, a_t
+                    ms.append(_m(state, noise, prompt, "target", dose, D=d_t, S_l2=20.0 * dose, S_px=0.02, A=a_t))
+                    ms.append(_m(state, noise, prompt, "placebo", dose, D=d_p, S_l2=10.0 * dose, S_px=0.01, A=a_p))
     return ms
 
 
@@ -648,6 +702,9 @@ def test_decision_metrics_compute_the_paper_quantities_exactly() -> None:
     assert abs(h2["grounding"]["mean"] - 0.68) < 1e-9 and h2["grounding"]["n"] == 4
     assert abs(h2["per_prompt"]["task"]["sel_raw"] - 4.0) < 1e-9
     assert abs(h2["per_prompt"]["alt"]["sel_raw"] - 0.5) < 1e-9
+    rc = h2["referent_check"]
+    assert abs(rc["behavioural_anchor_task"] - 8.0) < 1e-9 and abs(rc["behavioural_anchor_alt"] - 0.125) < 1e-9
+    assert rc["referent_moved"] is True
     assert h2["verdict"].startswith("supported")
 
 
@@ -678,6 +735,21 @@ def test_decision_metrics_verdict_branches() -> None:
     assert P.compute_decision_metrics(_linear_run(alt_sel=2.0), baseline_by_prompt=_baselines(0.68))["h2"]["verdict"].startswith("partial")
     assert P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.001))["h2"]["verdict"].startswith("untestable")
     assert P.compute_decision_metrics(_linear_run())["h2"]["verdict"].startswith("untestable")
+
+    # The manipulation check: a swap that changed the action (g large) but left it
+    # anchored on the target object moved words, not the referent. The old code
+    # read this exact pattern as "partial"; it is untestable.
+    unmoved = P.compute_decision_metrics(
+        _linear_run(alt_sel=2.0, alt_referent_moved=False), baseline_by_prompt=_baselines(0.73)
+    )
+    assert unmoved["h2"]["referent_check"]["referent_moved"] is False
+    assert abs(unmoved["h2"]["referent_check"]["behavioural_anchor_alt"] - 8.0) < 1e-9
+    assert unmoved["h2"]["verdict"].startswith("untestable"), unmoved["h2"]["verdict"]
+    assert "referent" in unmoved["h2"]["verdict"]
+
+    # Grounding values may be supplied directly (recomputation from a saved summary).
+    direct = P.compute_decision_metrics(_linear_run(alt_sel=0.5), grounding_values=[0.7, 0.75])
+    assert direct["h2"]["grounding"]["n"] == 2 and direct["h2"]["verdict"].startswith("supported")
 
     # Without an alternate prompt there is no positive control, and that is reported as such.
     assert falsified["h1"]["positive_control"]["n"] == 0

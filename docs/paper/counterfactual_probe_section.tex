@@ -414,13 +414,42 @@ Layer & Target & Placebo & Sel. & Layer & Target & Placebo & Sel. \\
 \end{center}
 \end{table}
 
+% Filled from decision_metrics.json -> h1.cells (D, S, Sel) and measurements.csv (A).
+\begin{table}[t]
+\caption{Every cell of the run under the task prompt. $D$ is the layer
+response of Eq.~\ref{eq:layer-response} pooled over layers and flow times;
+$S$ the image-difference norm over both cameras; $\mathrm{Sel}_{\mathrm{adj}}$
+divides the $D$ ratio by the $S$ ratio; $A$ the relative change in the
+predicted action chunk. State 1 is five plan actions after state 0.}
+\label{tab:cf-cells}
+\begin{center}
+\footnotesize
+\begin{tabular}{cccccccccc}
+\hline
+State & Draw & Dose & $D_{\mathrm{target}}$ & $D_{\mathrm{placebo}}$ & $S_{\mathrm{t}}/S_{\mathrm{p}}$ & $\mathrm{Sel}$ & $\mathrm{Sel}_{\mathrm{adj}}$ & $A_{\mathrm{target}}$ & $A_{\mathrm{placebo}}$ \\
+\hline
+0 & 0 & 0.5 & $4.67$  & $1.55$ & $2.37$ & $3.02$  & $1.27$  & $0.129$ & $0.030$ \\
+0 & 0 & 1.0 & $6.65$  & $1.95$ & $2.37$ & $3.41$  & $1.44$  & $0.228$ & $0.046$ \\
+0 & 1 & 0.5 & $4.65$  & $1.59$ & $2.37$ & $2.92$  & $1.23$  & $0.119$ & $0.031$ \\
+0 & 1 & 1.0 & $6.15$  & $1.99$ & $2.37$ & $3.10$  & $1.31$  & $0.205$ & $0.049$ \\
+1 & 0 & 0.5 & $14.30$ & $0.91$ & $1.19$ & $15.71$ & $13.22$ & $0.888$ & $0.021$ \\
+1 & 0 & 1.0 & $15.10$ & $1.13$ & $1.19$ & $13.38$ & $11.25$ & $0.906$ & $0.024$ \\
+1 & 1 & 0.5 & $14.33$ & $0.94$ & $1.19$ & $15.20$ & $12.79$ & $0.906$ & $0.025$ \\
+1 & 1 & 1.0 & $15.05$ & $1.28$ & $1.19$ & $11.75$ & $9.88$  & $0.924$ & $0.027$ \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
 The null floor is exactly zero in every cell: the forward pass is
 bit-deterministic on this hardware, so every recorded difference is signal.
 Recolouring the referent bowl moves the pooled layer response by $10.1$ and the
 identical non-referent by $1.42$, a raw selectivity of $7.1$
 (Table~\ref{tab:cf-main}). The ratio exceeds one in every one of the eight
-cells, with a minimum of $2.9$, and it is heterogeneous across states: near $3$
-at the initial state and near $14$ five plan actions later.
+cells (Table~\ref{tab:cf-cells}), with a minimum of $2.9$, and it is
+heterogeneous across states: near $3$ at the initial state and near $14$ five
+plan actions later. The two noise draws at a state agree closely, so the
+heterogeneity is the state, not the sampling.
 
 The footprint adjustment explains the heterogeneity and is what makes the
 result safe. Over both cameras the referent's recolour moves $1.78\times$ as
@@ -444,8 +473,9 @@ to $17$); the geometric mean over layers is $7.3$, so the conclusion does not
 rest on the largest-magnitude layers.
 
 The action follows the features. Recolouring the referent changes the predicted
-action chunk by $54\%$ in relative $\ell_2$, and by $91\%$ at the later state;
-recolouring the non-referent changes it by $3\%$. This is the behavioural form
+action chunk by $54\%$ in relative $\ell_2$ pooled, by $12$ to $23\%$ at the
+initial state and $89$ to $92\%$ at the later one; recolouring the non-referent
+changes it by $2$ to $5\%$ in every cell (Table~\ref{tab:cf-cells}). This is the behavioural form
 of H1 and it is expected: the prompt names ``the black bowl'', so a red bowl
 is no longer what the noun denotes, and a policy anchored on the referent
 must re-plan. The response is sublinear in dose for the target, with elasticity

@@ -194,3 +194,12 @@ A `partial` on 1, 3, 4, 5 or 9 is a Phase 0 defect. A `gap` on 6 or 7 invalidate
   The verdict read "partial" when it was "untestable".
 - **A normaliser on part of the input** — perturbation size measured on one of two cameras; the
   static camera's footprint never changed between states while the response tripled.
+- **A statistic that cannot distinguish the hypothesis from its nearest rival** — "the traced
+  parents respond more than random" was 1.26x and significant, and equally 1.26x for an unrelated
+  language manipulation. The rival hypothesis, "these are just responsive features", predicts the
+  same observation. Ask of every decision statistic: what else would produce this number, and is
+  that measured? Here the fix was a ratio of ratios plus a second manipulation as a specificity
+  control.
+- **A saturated p-value read as strong evidence** — with 1721 nodes every p hit its floor of
+  1/(M+1) regardless of effect size. Past a few hundred units, significance stops discriminating
+  and only the effect size carries the verdict; say so next to the number.

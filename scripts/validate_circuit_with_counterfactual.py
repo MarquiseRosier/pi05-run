@@ -31,9 +31,26 @@ move under the perturbation in some cell. Parents that are not exercised are
 reported separately; the fraction that is exercised bounds what the test can
 say.
 
+What the test is on matters. Asking whether the parents *respond* more than
+random cannot separate a set that carries the perturbed property from a set of
+generically responsive features: attribution favours features that are active
+and high-variance, and those respond more to any manipulation. So the primary
+statistic is *selectivity*, the circuit's target-over-placebo response ratio
+against the same ratio on matched random sets, and it is accompanied by a
+specificity check against every other manipulation the probe measured (a
+prompt swap, say). A set enriched as much for a language change as for a
+recolour is not carrying the recolour.
+
+Results are also reported as a function of how much of the circuit is
+included, ordered by traced influence. A tracer whose ranking means something
+shows strong enrichment among its top parents that decays down the list; a
+flat profile says the ranking carries no information about the property, and a
+large flat circuit is a pruning setting, not a finding.
+
 With the probe's full delta store every parent has an exact response at its own
 flow time. Without it the script falls back to the top-K CSV, where a node the
-probe never recorded has an unknown response and coverage must be read first.
+probe never recorded has an unknown response and coverage must be read first,
+and where no paired selectivity statistic is available.
 """
 
 from __future__ import annotations
@@ -118,16 +135,91 @@ def _mean(values: list[float]) -> float:
 
 
 def h3_verdict(
-    *, enrichment: float | None, p_value: float | None, exercised_fraction: float | None,
-    alpha: float, min_exercised: float,
+    *,
+    selectivity_enrichment: float | None,
+    selectivity_p: float | None,
+    specificity: float | None,
+    response_enrichment: float | None,
+    response_p: float | None,
+    exercised_fraction: float | None,
+    alpha: float,
+    min_exercised: float,
 ) -> str:
-    if enrichment is None or p_value is None or exercised_fraction is None or math.isnan(enrichment):
+    """Decide H3 on selectivity, not on bare response.
+
+    Bare response enrichment cannot tell a property-carrying circuit from a
+    generically responsive one, and at large node counts its p-value saturates
+    at 1/(M+1) whatever the effect size. Selectivity divides that common
+    responsiveness out, and the specificity check rejects a set that is
+    enriched as much for a manipulation of a different kind.
+    """
+    if exercised_fraction is None:
         return "not measured"
     if exercised_fraction < min_exercised:
-        return f"inconclusive: only {exercised_fraction:.0%} of parents are exercised by this scene"
-    if enrichment > 1.0 and p_value < alpha:
+        return f"inconclusive: only {exercised_fraction:.1%} of parents are exercised by this scene"
+
+    if selectivity_enrichment is not None and not math.isnan(selectivity_enrichment):
+        if not (selectivity_enrichment > 1.0 and selectivity_p is not None and selectivity_p < alpha):
+            return "falsified: the circuit is no more selective than a matched random set"
+        if specificity is not None and not math.isnan(specificity) and specificity <= 1.0:
+            return (
+                "falsified: enriched no more for the perturbed property than for a manipulation of a "
+                "different kind, so the set is enriched for responsiveness rather than for this property"
+            )
         return "supported"
+
+    if response_enrichment is None or response_p is None or math.isnan(response_enrichment):
+        return "not measured"
+    if response_enrichment > 1.0 and response_p < alpha:
+        return "supported (response enrichment only: no placebo condition for the selectivity test)"
     return "falsified"
+
+
+def selectivity_stats(
+    circuit_target: float, circuit_placebo: float, control_target: np.ndarray, control_placebo: np.ndarray
+) -> dict[str, Any] | None:
+    """Circuit target/placebo ratio against the same ratio on each random draw.
+
+    The random draws are paired across conditions (the same features are drawn
+    for target and placebo), so a per-draw ratio is well defined.
+    """
+    if circuit_placebo <= 0 or control_target.size == 0:
+        return None
+    usable = control_placebo > 0
+    if not usable.any():
+        return None
+    random_sel = control_target[usable] / control_placebo[usable]
+    circuit_sel = circuit_target / circuit_placebo
+    random_mean = float(random_sel.mean())
+    return {
+        "circuit": float(circuit_sel),
+        "random_mean": random_mean,
+        "enrichment": float(circuit_sel / random_mean) if random_mean > 0 else float("nan"),
+        "monte_carlo_p": monte_carlo_p(circuit_sel, random_sel),
+        "draws": int(usable.sum()),
+    }
+
+
+def specificity_stats(conditions: dict[str, dict[str, Any]]) -> tuple[float | None, dict[str, float]]:
+    """Target enrichment against enrichment on manipulations of a different kind.
+
+    The placebo is excluded: it is the matched control for the *same*
+    manipulation and is already the denominator of the selectivity statistic.
+    What is wanted here is a different kind of intervention entirely, such as
+    a prompt swap.
+    """
+    target = conditions.get("target", {}).get("ratio")
+    others = {
+        name: stats["ratio"]
+        for name, stats in conditions.items()
+        if name not in ("target", "placebo", "null")
+        and stats.get("ratio") is not None
+        and not math.isnan(stats["ratio"])
+        and stats["ratio"] > 0
+    }
+    if target is None or math.isnan(target) or not others:
+        return None, others
+    return float(target / max(others.values())), others
 
 
 # ---------------------------------------------------------------- full-delta path
@@ -205,9 +297,10 @@ def validate_with_store(
         report["nodes"] = [_public(e) for e in entries]
         return report
 
-    # Matched null: per parent, a random exercised feature at the same (layer, step).
+    # Matched null: per parent, a random exercised feature at the same (layer,
+    # step). The same draws serve every condition, so per-draw ratios pair.
     rng = np.random.default_rng(seed)
-    pools = {}
+    pools: dict[tuple[int, int], np.ndarray] = {}
     for e in exercised_entries:
         key = (e["_position"], e["step"])
         if key not in pools:
@@ -217,24 +310,86 @@ def validate_with_store(
         pool = pools[(e["_position"], e["step"])]
         picks[:, column] = pool[rng.integers(0, pool.size, size=draws)]
 
+    # Order by traced influence, so enrichment can be read as a function of how
+    # much of the circuit is included.
+    order = sorted(
+        range(len(exercised_entries)), key=lambda i: -(exercised_entries[i].get("influence") or 0.0)
+    )
+    ordered = [exercised_entries[i] for i in order]
+    picks = picks[:, order]
+    n_parents = len(ordered)
+    sizes = [k for k in (10, 50, 200) if k < n_parents] + [n_parents]
+    report["influence_ranked"] = sum(1 for e in ordered if e.get("influence"))
+
+    circuit_cumsum = {
+        condition: np.cumsum([float(e[f"response_{condition}"]) for e in ordered])
+        for condition in responses
+    }
+    control_at: dict[str, dict[int, np.ndarray]] = {c: {} for c in responses}
     for condition, array in responses.items():
-        circuit_values = [e[f"response_{condition}"] for e in exercised_entries]
-        circuit_mean = _mean(circuit_values)
-        control = np.empty(draws, dtype=np.float64)
-        for column, e in enumerate(exercised_entries):
-            control_col = array[e["_position"], e["step"], picks[:, column]]
-            control = control + control_col if column else control_col.astype(np.float64)
-        control = control / len(exercised_entries)
-        control_mean = float(control.mean())
-        report["conditions"][condition] = {
-            "circuit_mean": circuit_mean,
-            "random_mean": control_mean,
-            "ratio": (circuit_mean / control_mean) if control_mean > 0 else float("nan"),
-            "monte_carlo_p": monte_carlo_p(circuit_mean, control),
-            "draws": int(draws),
-            "scored_nodes": len(circuit_values),
-        }
-    report["nodes"] = [_public(e) for e in entries]
+        running = np.zeros(draws, dtype=np.float64)
+        for column, e in enumerate(ordered):
+            running = running + array[e["_position"], e["step"], picks[:, column]]
+            if column + 1 in sizes:
+                control_at[condition][column + 1] = running.copy()
+
+    strata = []
+    for k in sizes:
+        conditions: dict[str, dict[str, Any]] = {}
+        control_means: dict[str, np.ndarray] = {}
+        for condition in responses:
+            circuit_mean = float(circuit_cumsum[condition][k - 1] / k)
+            control = control_at[condition][k] / k
+            control_means[condition] = control
+            random_mean = float(control.mean())
+            conditions[condition] = {
+                "circuit_mean": circuit_mean,
+                "random_mean": random_mean,
+                "ratio": (circuit_mean / random_mean) if random_mean > 0 else float("nan"),
+                "monte_carlo_p": monte_carlo_p(circuit_mean, control),
+                "draws": int(draws),
+                "scored_nodes": int(k),
+            }
+        selectivity = None
+        if "target" in conditions and "placebo" in conditions:
+            selectivity = selectivity_stats(
+                conditions["target"]["circuit_mean"],
+                conditions["placebo"]["circuit_mean"],
+                control_means["target"],
+                control_means["placebo"],
+            )
+        specificity, others = specificity_stats(conditions)
+        strata.append(
+            {
+                "nodes": int(k),
+                "is_full_circuit": k == n_parents,
+                "conditions": conditions,
+                "selectivity": selectivity,
+                "specificity": specificity,
+                "specificity_against": others,
+            }
+        )
+
+    full = strata[-1]
+    report["strata"] = strata
+    report["conditions"] = full["conditions"]
+    report["selectivity"] = full["selectivity"]
+    report["specificity"] = full["specificity"]
+    report["specificity_against"] = full["specificity_against"]
+
+    # A flat enrichment profile means the influence ranking carries no
+    # information about the property, and a large flat circuit is a pruning
+    # setting rather than a finding.
+    top = strata[0]
+    if len(strata) > 1 and top["selectivity"] and full["selectivity"]:
+        report["selectivity_enrichment_top_vs_full"] = (
+            top["selectivity"]["enrichment"] / full["selectivity"]["enrichment"]
+            if full["selectivity"]["enrichment"]
+            else None
+        )
+    report["nodes"] = [_public(e) for e in ordered] + [
+        _public(e) for e in entries if not e["exercised"]
+    ]
     return report
 
 
@@ -332,7 +487,6 @@ def validate_with_csv(
     responses = load_probe_responses(run_dir)
     if "target" not in responses:
         raise SystemExit(f"Probe run has no 'target' condition; found {sorted(responses)}")
-    rng = random.Random(seed)
     measured, unmeasured = score_nodes(parents, responses["target"])
     report: dict[str, Any] = {
         "mode": "top-k-csv",
@@ -347,24 +501,67 @@ def validate_with_csv(
     }
     if not measured:
         return report
-    layer_counts: dict[int, int] = defaultdict(int)
-    for entry in measured:
-        layer_counts[entry["layer"]] += 1
+
+    # Draw once and evaluate every condition on the same features, so that a
+    # per-draw selectivity ratio is defined here too and both paths can be
+    # decided by the same rule. The pool is the features the probe recorded
+    # under every condition, per layer.
+    rng = np.random.default_rng(seed)
+    common = set(responses["target"])
+    for condition in responses:
+        common &= set(responses[condition])
+    by_layer: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for key in sorted(common):
+        by_layer[key[0]].append(key)
+
+    columns = [entry["layer"] for entry in measured if by_layer.get(entry["layer"])]
+    pool_index: dict[int, np.ndarray] = {}
+    for column, layer in enumerate(columns):
+        pool_index[column] = rng.integers(0, len(by_layer[layer]), size=draws)
+
+    control_means: dict[str, np.ndarray] = {}
     for condition in sorted(responses):
         scored, _ = score_nodes(parents, responses[condition])
         values = [entry["response"] for entry in scored]
         circuit_mean = _mean(values)
-        control = random_control(responses[condition], layer_counts, draws=draws, rng=rng)
-        control_mean = _mean(control)
+        if columns:
+            control = np.zeros(draws, dtype=np.float64)
+            for column, layer in enumerate(columns):
+                pool = np.asarray([responses[condition][key] for key in by_layer[layer]], dtype=np.float64)
+                control = control + pool[pool_index[column]]
+            control = control / len(columns)
+        else:
+            control = np.asarray(
+                random_control(responses[condition], _layer_counts(measured), draws=draws, rng=random.Random(seed)),
+                dtype=np.float64,
+            )
+        control_means[condition] = control
+        control_mean = float(control.mean()) if control.size else float("nan")
         report["conditions"][condition] = {
             "circuit_mean": circuit_mean,
             "random_mean": control_mean,
             "ratio": circuit_mean / control_mean if control_mean else float("nan"),
             "monte_carlo_p": monte_carlo_p(circuit_mean, control),
-            "draws": len(control),
+            "draws": int(control.size),
             "scored_nodes": len(values),
         }
+
+    if "placebo" in report["conditions"]:
+        report["selectivity"] = selectivity_stats(
+            report["conditions"]["target"]["circuit_mean"],
+            report["conditions"]["placebo"]["circuit_mean"],
+            control_means["target"],
+            control_means["placebo"],
+        )
+    report["specificity"], report["specificity_against"] = specificity_stats(report["conditions"])
     return report
+
+
+def _layer_counts(measured: list[dict[str, Any]]) -> dict[int, int]:
+    counts: dict[int, int] = defaultdict(int)
+    for entry in measured:
+        counts[entry["layer"]] += 1
+    return counts
 
 
 # ---------------------------------------------------------------- main
@@ -392,7 +589,7 @@ def main() -> None:
         )
         print(f"mode: full delta store ({report['cells_per_condition']} cells per condition, prompt={report['prompt']})")
         print(f"exercised parents: {report['exercised_parents']}/{report['parent_nodes']} "
-              f"({'n/a' if report['exercised_fraction'] is None else f'{report['exercised_fraction']:.0%}'})")
+              f"({'n/a' if report['exercised_fraction'] is None else f'{report['exercised_fraction']:.1%}'})")
         if report["unlocatable_parents"]:
             print(f"  {report['unlocatable_parents']} parents sit in layers the probe did not instrument")
         if report["tau_mismatch_nodes"]:
@@ -435,52 +632,129 @@ def main() -> None:
             print(f"{condition:<10} {stats['circuit_mean']:>13.5g} {stats['random_mean']:>12.5g} "
                   f"{stats['ratio']:>8.2f} {('n/a' if p_value is None else f'{p_value:.4f}'):>8} {stats['scored_nodes']:>6}")
 
+        strata = report.get("strata") or []
+        if strata:
+            print(f"\n{'influence stratum':<18} {'nodes':>7} {'target enr':>11} {'selectivity':>12} "
+                  f"{'sel enrich':>11} {'sel p':>8} {'specificity':>12}")
+            for stratum in strata:
+                sel = stratum.get("selectivity") or {}
+                label = "all (full circuit)" if stratum["is_full_circuit"] else f"top {stratum['nodes']}"
+                spec = stratum.get("specificity")
+                sel_p = sel.get("monte_carlo_p")
+                sel_p_text = "n/a" if sel_p is None else f"{sel_p:.4f}"
+                spec_text = "n/a" if spec is None else f"{spec:.3f}"
+                target_ratio = stratum["conditions"].get("target", {}).get("ratio", float("nan"))
+                print(
+                    f"{label:<18} {stratum['nodes']:>7} {target_ratio:>11.3f} "
+                    f"{sel.get('circuit', float('nan')):>12.3f} "
+                    f"{sel.get('enrichment', float('nan')):>11.3f} "
+                    f"{sel_p_text:>8} {spec_text:>12}"
+                )
+            print("  selectivity = the circuit's target/placebo response ratio; sel enrich = that ratio "
+                  "over a matched random set's;")
+            print("  specificity = target enrichment over enrichment on a manipulation of a different "
+                  "kind. Both must exceed 1.")
+
         target_stats = report["conditions"].get("target", {})
         placebo_stats = report["conditions"].get("placebo", {})
         ratio = target_stats.get("ratio")
         p_value = target_stats.get("monte_carlo_p")
+        selectivity = report.get("selectivity") or {}
         decision = h3_verdict(
-            enrichment=ratio, p_value=p_value, exercised_fraction=report.get("exercised_fraction"),
-            alpha=args.alpha, min_exercised=args.min_exercised_fraction,
+            selectivity_enrichment=selectivity.get("enrichment"),
+            selectivity_p=selectivity.get("monte_carlo_p"),
+            specificity=report.get("specificity"),
+            response_enrichment=ratio,
+            response_p=p_value,
+            exercised_fraction=report.get("exercised_fraction"),
+            alpha=args.alpha,
+            min_exercised=args.min_exercised_fraction,
         )
         report["h3_verdict"] = decision
         # `is not None`, not truthiness: a ratio of exactly 0.0 is the strongest
         # possible negative result and must not be silently skipped.
-        if ratio is not None and not math.isnan(ratio):
-            if decision == "supported":
-                verdict.append(
-                    f"The traced parents respond {ratio:.2f}x more than matched random features "
-                    f"to the controlled perturbation (Monte-Carlo p={p_value:.4f}). The trace is "
-                    "corroborated on a cause we set, not one we inferred from activations."
-                )
-            elif decision.startswith("inconclusive"):
-                verdict.append(
-                    f"Enrichment is {ratio:.2f}x (p={'n/a' if p_value is None else f'{p_value:.4f}'}), but "
-                    f"{decision}. The scene does not exercise enough of the circuit to decide."
-                )
-            else:
+        sel_enrich = selectivity.get("enrichment")
+        sel_p = selectivity.get("monte_carlo_p")
+        specificity = report.get("specificity")
+        if decision.startswith("supported") and sel_enrich is not None and not math.isnan(sel_enrich):
+            verdict.append(
+                f"The traced parents are {sel_enrich:.3f}x more selective for the perturbed object than "
+                f"matched random features (Monte-Carlo p={sel_p:.4f}), and more enriched for this "
+                "property than for a manipulation of a different kind. The trace is corroborated on a "
+                "cause we set, not one we inferred from activations."
+            )
+        elif decision.startswith("supported"):
+            verdict.append(
+                f"The traced parents respond {ratio:.2f}x more than matched random features to the "
+                f"controlled perturbation (Monte-Carlo p={p_value:.4f}), which corroborates the trace. "
+                "This run has no placebo condition, so the stronger selectivity test could not be run "
+                "and the result cannot separate this property from generic responsiveness."
+            )
+        elif decision.startswith("inconclusive"):
+            verdict.append(f"{decision}. The scene does not exercise enough of the circuit to decide.")
+        elif decision.startswith("not measured"):
+            verdict.append("Nothing measurable: no selectivity statistic and no response enrichment.")
+        else:
+            if sel_enrich is None or math.isnan(sel_enrich):
                 verdict.append(
                     f"The traced parents respond {ratio:.2f}x random (p="
                     f"{'n/a' if p_value is None else f'{p_value:.4f}'}). That is not enrichment, so "
                     "these edges are not carrying the perturbed property, whatever else they carry."
                 )
+            if sel_enrich is not None and not math.isnan(sel_enrich):
+                verdict.append(
+                    f"The traced parents respond {ratio:.2f}x more than random, but they are only "
+                    f"{sel_enrich:.3f}x more SELECTIVE than random "
+                    f"({selectivity.get('circuit', float('nan')):.2f}x against "
+                    f"{selectivity.get('random_mean', float('nan')):.2f}x). Response enrichment alone "
+                    "does not separate a circuit that carries this property from a set of generically "
+                    "responsive features."
+                )
+            if specificity is not None and not math.isnan(specificity) and specificity <= 1.0:
+                against = ", ".join(
+                    f"{name} {value:.2f}x" for name, value in (report.get("specificity_against") or {}).items()
+                )
+                verdict.append(
+                    f"  Decisive: the set is enriched {ratio:.2f}x for the recolour and {against} for a "
+                    "manipulation of a different kind. Equal enrichment across unrelated interventions "
+                    "means these features are responsive in general, not tuned to the perturbed property."
+                )
+            if p_value is not None and p_value <= 1.5 / (target_stats.get("draws") or 1):
+                verdict.append(
+                    f"  Note the p-value is at its floor of 1/(M+1); with {target_stats.get('scored_nodes')} "
+                    "nodes the test detects arbitrarily small differences, so read the effect size."
+                )
         placebo_mean = placebo_stats.get("circuit_mean")
         target_mean = target_stats.get("circuit_mean")
         if placebo_mean and target_mean is not None and not math.isnan(target_mean):
-            selectivity = target_mean / placebo_mean
-            report["circuit_selectivity_target_over_placebo"] = selectivity
+            circuit_sel = target_mean / placebo_mean
+            report["circuit_selectivity_target_over_placebo"] = circuit_sel
             verdict.append(
                 f"On the traced parents themselves, perturbing the task object moves them "
-                f"{selectivity:.2f}x more than perturbing the pixel-matched control object."
-            )
-            if selectivity < 1.5:
-                verdict.append(
-                    "  That is weak: the circuit reacts almost as much to the control object, so it "
-                    "looks tuned to generic change rather than to this object."
+                f"{circuit_sel:.2f}x more than perturbing the pixel-matched control object"
+                + (
+                    f"; a matched random set of features gives {selectivity['random_mean']:.2f}x, "
+                    "which is what that number has to be read against."
+                    if selectivity.get("random_mean")
+                    else ", but no matched random selectivity is available to read that against."
                 )
+            )
         elif placebo_mean == 0.0 and target_mean:
             report["circuit_selectivity_target_over_placebo"] = None
             verdict.append("The traced parents did not move at all under the placebo perturbation.")
+
+        ratio_top_full = report.get("selectivity_enrichment_top_vs_full")
+        if ratio_top_full is not None and ratio_top_full > 1.25 and len(strata) > 1:
+            verdict.append(
+                f"  The top {strata[0]['nodes']} parents by influence are {ratio_top_full:.2f}x more "
+                "enriched than the circuit as a whole, so the attribution ranking does carry signal and "
+                "the graph is simply pruned too loosely. Tighten --node-cumulative-threshold and retrace."
+            )
+        elif ratio_top_full is not None and len(strata) > 1:
+            verdict.append(
+                "  Enrichment is flat across the influence ranking, so the ranking carries no "
+                "information about this property; a smaller circuit would not help."
+            )
 
     print("\n--- verdict ---")
     for line in verdict:

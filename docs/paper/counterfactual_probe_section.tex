@@ -161,12 +161,14 @@ must react to the prompt at all, and its behaviour must re-anchor on the other
 object. Otherwise H2 is \emph{untestable} on this scene.
 
 \paragraph{H3, circuit corroboration.}
-The \emph{parents} of a circuit traced upstream of a target are enriched for
-response to the controlled perturbation, relative to random features matched in
+The \emph{parents} of a circuit traced upstream of a target are more
+\emph{selective} for the perturbed object than random features matched in
 layer and flow time and drawn from those the scene exercises. \emph{Falsified
-if} the enrichment ratio is near $1$, which would indicate the traced edges do
-not carry the perturbed property. The target node itself is excluded from the
-test, because it was nominated for responding.
+if} the selectivity enrichment of Eq.~\ref{eq:sel-enrich} is near $1$, or if
+the parents are enriched as much for a manipulation of a different kind as for
+the recolour, either of which would indicate the traced edges do not carry the
+perturbed property. The target node itself is excluded from the test, because
+it was nominated for responding.
 
 \medskip
 \noindent
@@ -535,26 +537,80 @@ parents are excluded from the mean and their count reported; the
 \emph{exercised fraction} bounds what the test can say.
 
 \paragraph{Matched null.}
-Write $\bar{\Delta}_{\mathcal{C}}$ for the mean response over exercised
-parents. A random draw over all $16384$ features would be mostly unexercised
-zeros and would make any active set look enriched. The null is therefore
-matched: for each exercised parent, a random feature is drawn from the
-exercised features at the \emph{same} layer and flow time, and the draw's mean
-response $\bar{\Delta}^{(m)}$ is computed. With $M$ such draws,
+Write $\bar{\Delta}_{\mathcal{C}}(c)$ for the mean response over exercised
+parents under condition $c$. A random draw over all $16384$ features would be
+mostly unexercised zeros and would make any active set look enriched. The null
+is therefore matched: for each exercised parent, a random feature is drawn
+from the exercised features at the \emph{same} layer and flow time, and the
+draw's mean response $\bar{\Delta}^{(m)}(c)$ is computed. The \emph{same}
+drawn features are evaluated under every condition, so per-draw ratios are
+defined. With $M$ such draws,
 \begin{equation}
-\mathrm{Enrich}(\mathcal{C}) = \frac{\bar{\Delta}_{\mathcal{C}}}
-{\frac{1}{M}\sum_{m}\bar{\Delta}^{(m)}},
+\mathrm{Enrich}(\mathcal{C},c) = \frac{\bar{\Delta}_{\mathcal{C}}(c)}
+{\frac{1}{M}\sum_{m}\bar{\Delta}^{(m)}(c)},
 \qquad
-p = \frac{1+\left|\{\,m:\bar{\Delta}^{(m)}\ge\bar{\Delta}_{\mathcal{C}}\,\}\right|}{M+1}.
+p = \frac{1+\left|\{\,m:\bar{\Delta}^{(m)}(c)\ge\bar{\Delta}_{\mathcal{C}}(c)\,\}\right|}{M+1}.
 \label{eq:enrich}
 \end{equation}
 The $+1$ in numerator and denominator makes the estimate conservative and keeps
 $p>0$ at finite $M$. Because circuit nodes are connected and therefore
 correlated, the effective sample size is below $|\mathcal{C}|$; the test is one
 of whether the set as a whole is unusual, not of independent evidence per node.
-The same parents are scored under the placebo perturbation with the same null
-pool, giving the circuit's own target-over-placebo selectivity: H1 restricted
-to the traced nodes.
+
+\paragraph{Why response enrichment cannot decide H3.}
+$\mathrm{Enrich}(\mathcal{C},\mathrm{target})>1$ says the parents respond more
+than random features. It does not say they carry the perturbed property.
+Attribution favours features that are active and high-variance, and such
+features respond more to \emph{any} manipulation, so a generically responsive
+set clears this bar while carrying nothing in particular. Two additions fix
+this.
+
+First, the statistic is a ratio of ratios. Let $\mathrm{Sel}_{\mathcal{C}} =
+\bar{\Delta}_{\mathcal{C}}(\mathrm{target})/\bar{\Delta}_{\mathcal{C}}(\mathrm{placebo})$
+be the circuit's own selectivity and $\mathrm{Sel}^{(m)}$ the same ratio on
+draw $m$. Then
+\begin{equation}
+\mathrm{SelEnrich}(\mathcal{C}) = \frac{\mathrm{Sel}_{\mathcal{C}}}
+{\frac{1}{M}\sum_{m}\mathrm{Sel}^{(m)}},
+\qquad
+p = \frac{1+\left|\{\,m:\mathrm{Sel}^{(m)}\ge\mathrm{Sel}_{\mathcal{C}}\,\}\right|}{M+1},
+\label{eq:sel-enrich}
+\end{equation}
+which divides out the responsiveness the circuit shares with the random sets.
+Reporting $\mathrm{Sel}_{\mathcal{C}}$ alone is not enough: a matched random
+set at these layers is itself highly selective, because selectivity is a
+property of the layer as much as of the feature.
+
+Second, a specificity check. The probe measures a manipulation of a different
+kind, the prompt swap, on the same cells. With $\mathcal{M}$ the set of such
+manipulations,
+\begin{equation}
+\mathrm{Spec}(\mathcal{C}) = \frac{\mathrm{Enrich}(\mathcal{C},\mathrm{target})}
+{\max_{c\in\mathcal{M}}\mathrm{Enrich}(\mathcal{C},c)} .
+\label{eq:specificity}
+\end{equation}
+The placebo is excluded from $\mathcal{M}$: it is the matched control for the
+same manipulation and already the denominator of Eq.~\ref{eq:sel-enrich}. A
+set equally enriched for a recolour and for a language change is enriched for
+responsiveness, and $\mathrm{Spec}\le 1$ falsifies H3 whatever
+Eq.~\ref{eq:sel-enrich} says.
+
+\paragraph{Read the effect size, not the $p$-value.}
+At large $|\mathcal{C}|$ the mean over the circuit and the mean over a draw
+both concentrate, so any systematic difference drives $p$ to its floor
+$1/(M+1)$. A $p$ at that floor therefore carries no information about
+magnitude. The reported verdict requires $p<\alpha$, but the quantity to read
+is $\mathrm{SelEnrich}$.
+
+\paragraph{Enrichment as a function of circuit size.}
+Parents are ordered by their traced influence and Eqs.~\ref{eq:enrich} to
+\ref{eq:specificity} are evaluated over the top $10$, $50$, $200$ and all of
+them. A tracer whose ranking is informative shows enrichment that is strong at
+the head and decays; a flat profile says the ranking carries no information
+about the property, and no amount of pruning would help. The contrast between
+the head and the full set separates ``this circuit is wrong'' from ``this
+graph was pruned too loosely'', which are different defects with different
+fixes.
 
 \paragraph{Selection and test use different evidence.}
 The nominee is chosen from the probe's data and is excluded from the test. The
@@ -740,11 +796,13 @@ $\vdots$ & & & \\
 
 \begin{table}[t]
 \caption{Circuit corroboration, Section~\ref{sec:validation-method}, parents
-only. Random mean is over $M$ matched draws; $p$ is the Monte-Carlo tail of
-Eq.~\ref{eq:enrich}. Filled from \texttt{validation.json}:
-\texttt{conditions}, \texttt{exercised\_fraction},
-\texttt{circuit\_selectivity\_target\_over\_placebo}; the nominee from
-\texttt{nominated\_targets.json}.}
+only, at the full circuit. Random mean is over $M$ matched draws; $p$ is the
+Monte-Carlo tail of Eq.~\ref{eq:enrich}. The verdict rests on the last two
+rows, not on the enrichment column. Filled from \texttt{validation.json}:
+\texttt{conditions}, \texttt{selectivity}, \texttt{specificity},
+\texttt{exercised\_fraction}; the nominee from
+\texttt{nominated\_targets.json}. Table~\ref{tab:cf-strata} breaks the same
+quantities down by influence rank.}
 \label{tab:cf-validation}
 \begin{center}
 \small
@@ -754,9 +812,33 @@ Perturbation & Circuit mean & Random mean & Enrichment & $p$ \\
 \hline
 Target object  & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 Placebo object & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Prompt swap    & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+\hline
+\multicolumn{5}{l}{Selectivity: circuit \RESULT{val}, matched random \RESULT{val}, $\mathrm{SelEnrich} = \RESULT{val}$ at $p = \RESULT{val}$} \\
+\multicolumn{5}{l}{Specificity, Eq.~\ref{eq:specificity} $= \RESULT{val}$ (against \RESULT{condition})} \\
 \hline
 \multicolumn{5}{l}{Traced target $= \RESULT{key}$ ($z^{\mathrm{std}} = \RESULT{val}$, exact selectivity \RESULT{val}, fired in \RESULT{val} of cells)} \\
-\multicolumn{5}{l}{Parents $= \RESULT{n}$; exercised $= \RESULT{n}$ (\RESULT{fraction}); $M = \RESULT{val}$; circuit selectivity $= \RESULT{val}$} \\
+\multicolumn{5}{l}{Parents $= \RESULT{n}$; exercised $= \RESULT{n}$ (\RESULT{fraction}); $M = \RESULT{val}$ draws} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[t]
+\caption{Enrichment by influence rank. A ranking that carries information
+about the perturbed property shows a strong head that decays; a flat profile
+says it does not. Filled from \texttt{validation.json} under \texttt{strata}.}
+\label{tab:cf-strata}
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\hline
+Parents included & Target enrichment & Circuit selectivity & $\mathrm{SelEnrich}$ & $\mathrm{Spec}$ \\
+\hline
+Top 10        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 50        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 200       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+All           & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
 \end{tabular}
 \end{center}
@@ -783,7 +865,11 @@ The depth bound $\ell\ge4$ leaves at least four layers of parents to trace.
 The exact-selectivity bound of $2\times$ is the smallest integer ratio that
 makes ``responds more to the referent'' unambiguous. The exercised-fraction
 bound of one half requires that the scene speak for the majority of the
-circuit. $\alpha=0.05$ is conventional.
+circuit. The selectivity and specificity bounds are both $1$, the value at
+which a circuit is indistinguishable from a matched random set and at which an
+intervention is no more informative than an unrelated one; neither is a tuned
+quantity. $\alpha=0.05$ is conventional, and at large circuit sizes it is the
+effect size rather than $p$ that carries the verdict.
 
 \paragraph{H1.}
 \RESULT{supported, weak, falsified or invalid}. \emph{Invalid} if the largest
@@ -809,8 +895,10 @@ follow the referent and H2 does not apply. (\texttt{h2.verdict}.)
 
 \paragraph{H3.}
 \RESULT{supported, falsified or inconclusive}. \emph{Inconclusive} if fewer
-than half the parents are exercised by the scene. Otherwise \emph{supported} if
-enrichment exceeds $1$ at $p<0.05$; \emph{falsified} otherwise.
+than half the parents are exercised by the scene. Otherwise \emph{supported}
+only if the selectivity enrichment of Eq.~\ref{eq:sel-enrich} exceeds $1$ at
+$p<0.05$ \emph{and} the specificity of Eq.~\ref{eq:specificity} exceeds $1$;
+\emph{falsified} if either fails. Response enrichment alone never decides.
 (\texttt{validation.json}, \texttt{h3\_verdict}.)
 
 \subsection{Threats to validity}
@@ -859,9 +947,21 @@ essentially the difference between them.
 Matching on layer, flow time and exercise makes the null ``a random active
 feature here''. It is stricter than an unmatched draw and less strict than a
 null matched on baseline activation magnitude. A circuit whose parents are
-simply the most active features at their layer could be enriched under this
-null without carrying the property; the placebo row and the circuit's own
-selectivity are the check against that reading.
+simply the most active features at their layer could be enriched under the
+response test without carrying the property, which is precisely why the
+verdict rests on Eqs.~\ref{eq:sel-enrich} and~\ref{eq:specificity} instead.
+
+\paragraph{Is the traced graph a circuit?}
+Not necessarily. The tracer expands a bounded number of nodes but records
+every edge above its attribution floor, then prunes by cumulative influence,
+so a permissive threshold yields thousands of nodes spanning most of the early
+layers. A set that large is a slice of the network rather than a circuit
+hypothesis, and its mean is close to the matched random mean by construction.
+Table~\ref{tab:cf-strata} is what distinguishes the two readings: if the head
+of the influence ranking is enriched and the tail is not, the finding is real
+and the pruning is too loose; if the profile is flat, the ranking is
+uninformative for this property. The node count is reported with every
+verdict.
 
 \paragraph{Does the measurement answer the question?}
 $\delta$ is measured on the features the transcoders expose, so any claim is

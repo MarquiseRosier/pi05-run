@@ -13,6 +13,7 @@ remains open. "Status" is after the changes of 2026-09-24.
 | 3 | Complete control set: null floor, matched placebo, positive control, dose response, manipulation check | met |
 | 4 | Correct replication unit with honest uncertainty | met, small n disclosed |
 | 5 | Construct validity of the outcome and robustness across summaries | met |
+| 5b | The decision statistic distinguishes the hypothesis from its nearest rival | met after the H3 correction |
 | 6 | No circularity between selection and test | met |
 | 7 | Instrument checks that abort rather than warn | met |
 | 8 | Every outcome, including a null, has a stated meaning | met |
@@ -149,7 +150,20 @@ observations and replacement-model gradients and never reads probe output
 `collect_pi05_transcoder_features.py`). Locked by
 `test_store_target_node_is_excluded_from_the_evidence`.
 
-**Was.** Target node scored inside the circuit mean.
+**Found on the first traced run (2026-09-24).** Excluding the target was not
+enough. The test asked whether the parents *respond* more than random, and they
+did, by 1.26x. They were also enriched 1.26x for the prompt swap, a language
+manipulation unrelated to bowl colour, and 1.20x for the placebo. A set
+enriched for everything is enriched for responsiveness, which attribution
+selects for directly. H3 now rests on selectivity enrichment (the circuit's
+target/placebo ratio against matched random sets' same ratio; 1.06x on that
+run) and on a specificity check against manipulations of a different kind
+(0.999 on that run). Both must exceed 1. Enrichment is also reported by
+influence rank, which separates "this circuit is wrong" from "this graph was
+pruned too loosely".
+
+**Was.** Target node scored inside the circuit mean; verdict on the wrong
+statistic.
 
 ## 7. Instrument checks that abort
 

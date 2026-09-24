@@ -306,6 +306,78 @@ def test_auto_selection_reports_nothing_to_pick_on_an_empty_scene() -> None:
     assert notes
 
 
+class _CachingRobosuiteEnv:
+    """Reproduce robosuite's observable caching.
+
+    ``_get_observations()`` returns cached observable values and only refreshes
+    them when ``force_update=True`` or a step occurs. A re-render that omits
+    the flag hands back a stale frame, which is exactly how a perturbation came
+    to look like a no-op while every identity check still passed.
+    """
+
+    def __init__(self):
+        self.colour = 10
+        self._cache = self._render()
+        self.forced_updates = 0
+
+    def _render(self):
+        return np.full((8, 8, 3), self.colour, dtype=np.uint8)
+
+    def _get_observations(self, force_update=False):
+        if force_update:
+            self.forced_updates += 1
+            self._cache = self._render()
+        return {"agentview_image": self._cache}
+
+
+class _FakeLiberoEnv:
+    def __init__(self):
+        self.robosuite = _CachingRobosuiteEnv()
+
+        class _Outer:
+            env = self.robosuite
+
+        self._env = _Outer()
+
+    def _format_raw_obs(self, raw):
+        return {"pixels": {"image": raw["agentview_image"]}}
+
+
+class _FakeHarness:
+    def __init__(self):
+        self.inner_env = _FakeLiberoEnv()
+
+
+def test_rerender_forces_an_update_instead_of_serving_a_cached_frame() -> None:
+    harness = _FakeHarness()
+    sim = harness.inner_env.robosuite
+
+    before = P.first_camera_image(P.rerender_observation(harness))
+    assert sim.forced_updates == 1, "rerender must request a forced update"
+
+    # Change the scene the way a perturbation would.
+    sim.colour = 200
+    after = P.first_camera_image(P.rerender_observation(harness))
+    assert sim.forced_updates == 2
+
+    stats = P.image_delta_stats(before, after)
+    assert stats["changed_pixel_fraction"] == 1.0, (
+        "a scene change must reach the re-rendered frame; if this is 0 the "
+        "re-render is serving robosuite's cache"
+    )
+
+
+def test_cached_rerender_would_hide_a_perturbation() -> None:
+    """Pin the failure mode, so the guard above is demonstrably load-bearing."""
+    sim = _CachingRobosuiteEnv()
+    cached_before = sim._get_observations()["agentview_image"].copy()
+    sim.colour = 200
+    cached_after = sim._get_observations()["agentview_image"]
+    assert P.image_delta_stats(cached_before, cached_after)["changed_pixel_fraction"] == 0.0
+    forced = sim._get_observations(force_update=True)["agentview_image"]
+    assert P.image_delta_stats(cached_before, forced)["changed_pixel_fraction"] == 1.0
+
+
 def test_save_image_accepts_the_formats_the_probe_produces() -> None:
     import tempfile
 

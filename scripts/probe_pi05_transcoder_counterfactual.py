@@ -439,7 +439,12 @@ def rerender_observation(harness: Harness) -> dict[str, Any]:
     mutation made a moment ago while leaving qpos/qvel untouched.
     """
     inner = harness.inner_env
-    raw = inner._env.env._get_observations()
+    # force_update is essential. robosuite caches observable values and only
+    # refreshes them inside step(); without it every "re-render" hands back the
+    # same frame, so a perturbation silently appears to change nothing. Its own
+    # docstring names this case: grabbing observations after setting simulation
+    # state directly, without stepping.
+    raw = inner._env.env._get_observations(force_update=True)
     formatted = inner._format_raw_obs(raw)
     return _add_batch_axis(formatted)
 
@@ -663,6 +668,35 @@ def main() -> None:
         raise RuntimeError(
             "The re-render path does not reproduce the environment's own observation "
             f"({check}). Measurements would compare mismatched images; aborting."
+        )
+
+    # --- liveness control. The identity check above cannot tell a correct
+    # re-render from a stale cached frame: both give a zero delta. Prove the
+    # path is live by perturbing the target to a maximally visible colour and
+    # confirming the pixels actually move, then reverting.
+    liveness = set_geom_color(mj_model, args.target, (1.0, 0.0, 1.0), label="liveness-probe")
+    try:
+        live_image = first_camera_image(rerender_observation(harness))
+        live = image_delta_stats(rerender_image, live_image)
+    finally:
+        liveness.revert(mj_model)
+    restored = image_delta_stats(rerender_image, first_camera_image(rerender_observation(harness)))
+    print(
+        f"re-render liveness: perturbing the target moved "
+        f"{live['changed_pixel_fraction'] * 100:.3f}% of pixels; "
+        f"revert residual {restored['changed_pixel_fraction'] * 100:.3f}%",
+        flush=True,
+    )
+    if live["changed_pixel_fraction"] == 0.0:
+        raise RuntimeError(
+            "Recolouring the target changed no pixels even at full saturation. Either the "
+            "re-render is serving a cached frame, or the object is not visible to this "
+            "camera. Measurements would all read zero; aborting."
+        )
+    if restored["changed_pixel_fraction"] != 0.0:
+        raise RuntimeError(
+            f"Reverting the liveness probe left {restored['changed_pixel_count']} pixels changed. "
+            "The baseline is not reproducible, so paired deltas would be contaminated; aborting."
         )
 
     print(f"loading transcoders from {args.checkpoint}", flush=True)

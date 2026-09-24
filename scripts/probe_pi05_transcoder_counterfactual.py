@@ -1131,6 +1131,16 @@ def main() -> None:
     _print_verdict(
         measurements, baseline_by_prompt=baseline_by_prompt, states=args.states, noise_samples=args.noise_samples
     )
+    decision = compute_decision_metrics(measurements, baseline_by_prompt=baseline_by_prompt)
+    _print_decision_metrics(decision)
+    payload["decision_metrics"] = decision
+    (args.output_dir / "counterfactual_summary.json").write_text(
+        json.dumps(payload, indent=2, default=_json_default), encoding="utf-8"
+    )
+    (args.output_dir / "decision_metrics.json").write_text(
+        json.dumps(decision, indent=2, default=_json_default), encoding="utf-8"
+    )
+    write_csv(args.output_dir / "h1_cells.csv", decision["h1"]["cells"])
     print(f"\nArtifacts in {args.output_dir}", flush=True)
     harness.vec_env.close()
 
@@ -1150,6 +1160,380 @@ def _infer_prompt(harness: Harness, observation: dict[str, Any]) -> str:
             return candidate
     language = getattr(getattr(harness.inner_env, "_env", None), "language_instruction", None)
     return str(language) if language else ""
+
+
+# ---------------------------------------------------------------- decision metrics
+#
+# Everything below computes the quantities the write-up's decision rules are
+# stated in, so that the verdict is read off numbers the run itself emits
+# rather than derived by hand from the CSV afterwards.
+#
+#   D(c)      layer response, Eq. layer-response: ||delta||_2 over features,
+#             averaged over layers and denoise steps, i.e. `l2_delta_mean`.
+#   S(c)      perturbation size in image space, two choices: changed-pixel
+#             fraction |P| and image-difference norm ||dI||_2.
+#   Sel       D(target) / D(placebo)
+#   Sel_adj   Sel / (S(target) / S(placebo)), the footprint adjustment.
+#   g         prompt grounding, Eq. grounding.
+
+GROUNDING_THRESHOLD = 0.01  # relative action change below which a prompt swap is treated as inert
+NEAR_ZERO_FLOOR_FRACTION = 0.05  # null floor must be below this fraction of the placebo response
+
+
+def _spread(values: list[float]) -> dict[str, Any]:
+    arr = np.asarray([v for v in values if v is not None and np.isfinite(v)], dtype=np.float64)
+    if arr.size == 0:
+        return {"n": 0, "mean": None, "sd": None, "min": None, "max": None}
+    return {
+        "n": int(arr.size),
+        "mean": float(arr.mean()),
+        "sd": float(arr.std(ddof=1)) if arr.size > 1 else 0.0,
+        "min": float(arr.min()),
+        "max": float(arr.max()),
+    }
+
+
+def _ratio_of_means(numerators: list[float], denominators: list[float]) -> float | None:
+    if not numerators or not denominators:
+        return None
+    den = float(np.mean(denominators))
+    return float(np.mean(numerators)) / den if den > 0 else None
+
+
+def _bootstrap_ratio_ci(
+    cells: list[dict[str, Any]], numerator: str, denominator: str, *, adjust: tuple[str, str] | None,
+    draws: int = 2000, seed: int = 0,
+) -> dict[str, Any]:
+    """Percentile CI for a pooled ratio, resampling cells with replacement.
+
+    Cells are the replication unit (state x noise draw x dose). With few cells
+    the interval is wide and coarse; that is the honest state of the evidence,
+    and n is reported next to it.
+    """
+    if len(cells) < 2:
+        return {"n_cells": len(cells), "draws": 0, "low": None, "high": None}
+    rng = np.random.default_rng(seed)
+    num = np.asarray([c[numerator] for c in cells], dtype=np.float64)
+    den = np.asarray([c[denominator] for c in cells], dtype=np.float64)
+    if adjust is not None:
+        s_num = np.asarray([c[adjust[0]] for c in cells], dtype=np.float64)
+        s_den = np.asarray([c[adjust[1]] for c in cells], dtype=np.float64)
+    samples = []
+    n = len(cells)
+    for _ in range(draws):
+        idx = rng.integers(0, n, size=n)
+        d = den[idx].mean()
+        if d <= 0:
+            continue
+        value = num[idx].mean() / d
+        if adjust is not None:
+            sd = s_den[idx].mean()
+            sn = s_num[idx].mean()
+            if sd <= 0 or sn <= 0:
+                continue
+            value = value / (sn / sd)
+        samples.append(value)
+    if not samples:
+        return {"n_cells": n, "draws": 0, "low": None, "high": None}
+    arr = np.asarray(samples)
+    return {
+        "n_cells": n,
+        "draws": int(arr.size),
+        "low": float(np.percentile(arr, 2.5)),
+        "high": float(np.percentile(arr, 97.5)),
+    }
+
+
+def _cell_key(m: dict[str, Any]) -> tuple[int, int, float]:
+    return (int(m["state_index"]), int(m.get("noise_index", 0)), float(m["dose"]))
+
+
+def h1_cells(measurements: list[dict[str, Any]], *, prompt: str) -> list[dict[str, Any]]:
+    """One row per (state, noise draw, dose) with both target and placebo measured."""
+    by_key: dict[tuple[int, int, float], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for m in measurements:
+        if m.get("prompt", "task") != prompt or m["kind"] not in ("target", "placebo"):
+            continue
+        by_key[_cell_key(m)][m["kind"]] = m
+    cells = []
+    for key in sorted(by_key):
+        pair = by_key[key]
+        if "target" not in pair or "placebo" not in pair:
+            continue
+        t, p_ = pair["target"], pair["placebo"]
+        cell = {
+            "state_index": key[0],
+            "noise_index": key[1],
+            "dose": key[2],
+            "D_target": float(t["latent"].get("l2_delta_mean") or 0.0),
+            "D_placebo": float(p_["latent"].get("l2_delta_mean") or 0.0),
+            "S_px_target": float(t["pixel"]["changed_pixel_fraction"]),
+            "S_px_placebo": float(p_["pixel"]["changed_pixel_fraction"]),
+            "S_l2_target": float(t["pixel"].get("l2_delta") or 0.0),
+            "S_l2_placebo": float(p_["pixel"].get("l2_delta") or 0.0),
+            "A_target": float(t["action_relative_l2"]),
+            "A_placebo": float(p_["action_relative_l2"]),
+        }
+        cell["sel_raw"] = cell["D_target"] / cell["D_placebo"] if cell["D_placebo"] > 0 else None
+        for name in ("px", "l2"):
+            s_ratio = (
+                cell[f"S_{name}_target"] / cell[f"S_{name}_placebo"] if cell[f"S_{name}_placebo"] > 0 else None
+            )
+            cell[f"S_{name}_ratio"] = s_ratio
+            cell[f"sel_adj_{name}"] = (
+                cell["sel_raw"] / s_ratio if (cell["sel_raw"] is not None and s_ratio) else None
+            )
+        cell["action_sel"] = cell["A_target"] / cell["A_placebo"] if cell["A_placebo"] > 0 else None
+        cells.append(cell)
+    return cells
+
+
+def dose_response(measurements: list[dict[str, Any]], *, prompt: str, kind: str) -> dict[str, Any]:
+    """Does the response grow with the dose, and how close to linearly?
+
+    Elasticity is log(D_hi/D_lo) / log(S_hi/S_lo) between consecutive doses,
+    with S the image-difference norm (the changed-pixel count barely moves with
+    a blend dose, so it cannot carry this check). Linear response gives 1.
+    """
+    per_dose: dict[float, dict[str, list[float]]] = defaultdict(lambda: {"D": [], "S": [], "A": []})
+    for m in measurements:
+        if m.get("prompt", "task") != prompt or m["kind"] != kind:
+            continue
+        bucket = per_dose[float(m["dose"])]
+        bucket["D"].append(float(m["latent"].get("l2_delta_mean") or 0.0))
+        bucket["S"].append(float(m["pixel"].get("l2_delta") or 0.0))
+        bucket["A"].append(float(m["action_relative_l2"]))
+    doses = sorted(per_dose)
+    rows = [
+        {
+            "dose": d,
+            "D": float(np.mean(per_dose[d]["D"])),
+            "S_l2": float(np.mean(per_dose[d]["S"])),
+            "A": float(np.mean(per_dose[d]["A"])),
+            "n": len(per_dose[d]["D"]),
+        }
+        for d in doses
+    ]
+    elasticities = []
+    for lo, hi in zip(rows, rows[1:]):
+        if lo["D"] > 0 and hi["D"] > 0 and lo["S_l2"] > 0 and hi["S_l2"] > 0 and hi["S_l2"] != lo["S_l2"]:
+            elasticities.append(float(np.log(hi["D"] / lo["D"]) / np.log(hi["S_l2"] / lo["S_l2"])))
+    monotone = all(hi["D"] > lo["D"] for lo, hi in zip(rows, rows[1:])) if len(rows) > 1 else None
+    return {
+        "kind": kind,
+        "prompt": prompt,
+        "rows": rows,
+        "elasticity": elasticities,
+        "elasticity_mean": float(np.mean(elasticities)) if elasticities else None,
+        "monotone_in_dose": monotone,
+    }
+
+
+def compute_decision_metrics(
+    measurements: list[dict[str, Any]],
+    *,
+    baseline_by_prompt: dict[tuple[int, int, str], np.ndarray] | None = None,
+    grounding_threshold: float = GROUNDING_THRESHOLD,
+) -> dict[str, Any]:
+    """Every number the pre-registered decision rules are stated in.
+
+    H1 is decided under the task prompt on the footprint-adjusted selectivity
+    with S = ||dI||_2 as the primary normaliser (it reflects how far pixels
+    moved, which the pixel count does not); |P| is reported alongside.
+
+    H2 is decided on the raw within-prompt selectivity, because the images and
+    hence S are identical across prompts, gated on prompt grounding g.
+    """
+    baseline_by_prompt = baseline_by_prompt or {}
+    prompts = sorted({m.get("prompt", "task") for m in measurements})
+    primary = "task" if "task" in prompts else (prompts[0] if prompts else "task")
+
+    # ---- H1
+    cells = h1_cells(measurements, prompt=primary)
+    nulls = [
+        float(m["latent"].get("l2_delta_mean") or 0.0)
+        for m in measurements
+        if m["kind"] == "null" and m.get("prompt", "task") == primary
+    ]
+    null_floor = _spread(nulls)
+    pooled = {
+        "D_target": float(np.mean([c["D_target"] for c in cells])) if cells else None,
+        "D_placebo": float(np.mean([c["D_placebo"] for c in cells])) if cells else None,
+        "S_px_target": float(np.mean([c["S_px_target"] for c in cells])) if cells else None,
+        "S_px_placebo": float(np.mean([c["S_px_placebo"] for c in cells])) if cells else None,
+        "S_l2_target": float(np.mean([c["S_l2_target"] for c in cells])) if cells else None,
+        "S_l2_placebo": float(np.mean([c["S_l2_placebo"] for c in cells])) if cells else None,
+        "A_target": float(np.mean([c["A_target"] for c in cells])) if cells else None,
+        "A_placebo": float(np.mean([c["A_placebo"] for c in cells])) if cells else None,
+    }
+    pooled["sel_raw"] = _ratio_of_means([c["D_target"] for c in cells], [c["D_placebo"] for c in cells])
+    for name in ("px", "l2"):
+        s_ratio = _ratio_of_means([c[f"S_{name}_target"] for c in cells], [c[f"S_{name}_placebo"] for c in cells])
+        pooled[f"S_{name}_ratio"] = s_ratio
+        pooled[f"sel_adj_{name}"] = (pooled["sel_raw"] / s_ratio) if (pooled["sel_raw"] is not None and s_ratio) else None
+    pooled["action_sel"] = _ratio_of_means([c["A_target"] for c in cells], [c["A_placebo"] for c in cells])
+
+    spread = {
+        key: _spread([c[key] for c in cells])
+        for key in ("sel_raw", "sel_adj_px", "sel_adj_l2", "action_sel", "D_target", "D_placebo")
+    }
+    ci = {
+        "sel_raw": _bootstrap_ratio_ci(cells, "D_target", "D_placebo", adjust=None),
+        "sel_adj_px": _bootstrap_ratio_ci(cells, "D_target", "D_placebo", adjust=("S_px_target", "S_px_placebo")),
+        "sel_adj_l2": _bootstrap_ratio_ci(cells, "D_target", "D_placebo", adjust=("S_l2_target", "S_l2_placebo")),
+    }
+    doses = {
+        kind: dose_response(measurements, prompt=primary, kind=kind)
+        for kind in ("target", "placebo")
+        if any(m["kind"] == kind for m in measurements)
+    }
+
+    floor_ok = (
+        null_floor["max"] is not None
+        and pooled["D_placebo"] is not None
+        and null_floor["max"] <= NEAR_ZERO_FLOOR_FRACTION * pooled["D_placebo"]
+    )
+    adj = pooled.get("sel_adj_l2")
+    adj_min = spread["sel_adj_l2"]["min"]
+    if not cells or adj is None:
+        h1_verdict = "not measured"
+    elif not floor_ok:
+        h1_verdict = "invalid: null floor is not near zero"
+    elif adj > 1.0 and adj_min is not None and adj_min > 1.0:
+        h1_verdict = "supported"
+    elif adj > 1.0:
+        h1_verdict = "weak: pooled adjusted selectivity above 1 but not in every cell"
+    else:
+        h1_verdict = "falsified"
+
+    h1 = {
+        "prompt": primary,
+        "primary_normaliser": "S_l2",
+        "cells": cells,
+        "null_floor": null_floor,
+        "null_floor_near_zero": bool(floor_ok),
+        "pooled": pooled,
+        "spread": spread,
+        "bootstrap_ci_95": ci,
+        "dose_response": doses,
+        "decision_rule": (
+            "supported if the null floor is at most 5% of the placebo response, the pooled "
+            "footprint-adjusted selectivity (S = image-difference norm) exceeds 1, and every "
+            "cell's adjusted selectivity exceeds 1; weak if only the pooled value does; "
+            "falsified otherwise"
+        ),
+        "verdict": h1_verdict,
+    }
+
+    # ---- H2
+    grounding_values = []
+    for (state_index, noise_index, label), action in baseline_by_prompt.items():
+        if label != "task":
+            continue
+        alt = baseline_by_prompt.get((state_index, noise_index, "alt"))
+        if alt is not None:
+            grounding_values.append(_rel_l2(action, alt))
+    grounding = _spread(grounding_values)
+    per_prompt = {}
+    for prompt in prompts:
+        p_cells = h1_cells(measurements, prompt=prompt)
+        per_prompt[prompt] = {
+            "n_cells": len(p_cells),
+            "D_target": float(np.mean([c["D_target"] for c in p_cells])) if p_cells else None,
+            "D_placebo": float(np.mean([c["D_placebo"] for c in p_cells])) if p_cells else None,
+            "sel_raw": _ratio_of_means([c["D_target"] for c in p_cells], [c["D_placebo"] for c in p_cells]),
+            "sel_raw_spread": _spread([c["sel_raw"] for c in p_cells]),
+            "A_target": float(np.mean([c["A_target"] for c in p_cells])) if p_cells else None,
+            "A_placebo": float(np.mean([c["A_placebo"] for c in p_cells])) if p_cells else None,
+        }
+    sel_task = per_prompt.get("task", {}).get("sel_raw")
+    sel_alt = per_prompt.get("alt", {}).get("sel_raw")
+    if "alt" not in prompts:
+        h2_verdict = "untestable: no alternate prompt"
+    elif grounding["n"] == 0 or grounding["mean"] is None or grounding["mean"] < grounding_threshold:
+        h2_verdict = "untestable: prompt grounding below threshold"
+    elif sel_task is None or sel_alt is None:
+        h2_verdict = "not measured"
+    elif sel_task <= 1.0:
+        h2_verdict = "not applicable: no selectivity under the task prompt to follow the referent"
+    elif sel_alt < 1.0:
+        h2_verdict = "supported: selectivity inverts under the sibling prompt"
+    elif sel_alt >= sel_task:
+        h2_verdict = "falsified: selectivity unchanged or stronger for the same object"
+    else:
+        h2_verdict = "partial: selectivity weakens but does not invert"
+    h2 = {
+        "grounding_threshold": grounding_threshold,
+        "grounding": grounding,
+        "grounding_values": grounding_values,
+        "perturbation_action_effect": pooled.get("A_target"),
+        "per_prompt": per_prompt,
+        "decision_rule": (
+            "untestable if g < threshold; supported if selectivity under the sibling prompt falls "
+            "below 1 while the task prompt's exceeds 1; falsified if it is unchanged or stronger; "
+            "partial if it weakens without inverting"
+        ),
+        "verdict": h2_verdict,
+    }
+    return {"h1": h1, "h2": h2}
+
+
+def _fmt(value: Any, spec: str = ".4g") -> str:
+    if value is None:
+        return "n/a"
+    try:
+        return format(float(value), spec)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _print_decision_metrics(metrics: dict[str, Any]) -> None:
+    h1, h2 = metrics["h1"], metrics["h2"]
+    print("\n--- decision metrics (task prompt) ---", flush=True)
+    print(f"cells (state x noise draw x dose): {len(h1['cells'])}", flush=True)
+    nf = h1["null_floor"]
+    print(
+        f"null floor D: mean={_fmt(nf['mean'])} max={_fmt(nf['max'])} "
+        f"({'near zero' if h1['null_floor_near_zero'] else 'NOT near zero'})",
+        flush=True,
+    )
+    p = h1["pooled"]
+    print(f"{'':<22}{'target':>12}{'placebo':>12}{'ratio':>10}", flush=True)
+    print(f"{'D (latent L2)':<22}{_fmt(p['D_target']):>12}{_fmt(p['D_placebo']):>12}{_fmt(p['sel_raw']):>10}", flush=True)
+    print(f"{'S |P| (px frac)':<22}{_fmt(p['S_px_target']):>12}{_fmt(p['S_px_placebo']):>12}{_fmt(p['S_px_ratio']):>10}", flush=True)
+    print(f"{'S ||dI||_2':<22}{_fmt(p['S_l2_target']):>12}{_fmt(p['S_l2_placebo']):>12}{_fmt(p['S_l2_ratio']):>10}", flush=True)
+    print(f"{'action rel L2':<22}{_fmt(p['A_target']):>12}{_fmt(p['A_placebo']):>12}{_fmt(p['action_sel']):>10}", flush=True)
+    for key, label in (("sel_raw", "Sel raw"), ("sel_adj_px", "Sel adj |P|"), ("sel_adj_l2", "Sel adj ||dI||")):
+        sp, ci = h1["spread"][key], h1["bootstrap_ci_95"][key]
+        print(
+            f"{label:<16} pooled={_fmt(p[key])}  cells mean={_fmt(sp['mean'])} sd={_fmt(sp['sd'])} "
+            f"min={_fmt(sp['min'])} max={_fmt(sp['max'])}  95% CI [{_fmt(ci['low'])}, {_fmt(ci['high'])}]",
+            flush=True,
+        )
+    for kind, dr in h1["dose_response"].items():
+        rows = "  ".join(f"d={r['dose']:g}: D={_fmt(r['D'])} S={_fmt(r['S_l2'])}" for r in dr["rows"])
+        print(
+            f"dose response [{kind}]: {rows}  elasticity={_fmt(dr['elasticity_mean'])} "
+            f"monotone={dr['monotone_in_dose']}",
+            flush=True,
+        )
+    print(f"H1 verdict: {h1['verdict']}", flush=True)
+
+    print("\n--- decision metrics (prompt swap) ---", flush=True)
+    g = h2["grounding"]
+    print(
+        f"prompt grounding g: mean={_fmt(g['mean'])} min={_fmt(g['min'])} max={_fmt(g['max'])} "
+        f"(n={g['n']}, threshold {h2['grounding_threshold']}); perturbation action effect "
+        f"{_fmt(h2['perturbation_action_effect'])}",
+        flush=True,
+    )
+    for prompt, row in h2["per_prompt"].items():
+        print(
+            f"  {prompt:>5}: D_target={_fmt(row['D_target'])} D_placebo={_fmt(row['D_placebo'])} "
+            f"Sel={_fmt(row['sel_raw'])} (cells {row['n_cells']})",
+            flush=True,
+        )
+    print(f"H2 verdict: {h2['verdict']}", flush=True)
 
 
 def _print_verdict(

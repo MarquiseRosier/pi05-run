@@ -556,6 +556,105 @@ def test_state_advance_uses_successive_actions_of_the_plan() -> None:
     assert np.array_equal(P.actions_to_step(chunk, 8)[-1][0], chunk[-1]), "past the chunk, hold the last action"
 
 
+def _m(state, noise, prompt, kind, dose, *, D, S_l2, S_px, A):
+    return {
+        "state_index": state, "noise_index": noise, "prompt": prompt, "kind": kind, "target": kind,
+        "dose": dose,
+        "pixel": {"changed_pixel_fraction": S_px, "l2_delta": S_l2},
+        "latent": {"l2_delta_mean": D},
+        "action_relative_l2": A,
+    }
+
+
+def _linear_run(*, alt_sel=None, null=0.0, placebo_D=None):
+    """Target responds 4x the placebo in D; its footprint is 2x; response is linear in dose."""
+    ms = []
+    for state in (0, 1):
+        for noise in (0, 1):
+            for prompt in (("task", "alt") if alt_sel is not None else ("task",)):
+                ms.append(_m(state, noise, prompt, "null", 0.0, D=null, S_l2=0.0, S_px=0.0, A=0.0))
+                for dose in (0.5, 1.0):
+                    d_t = 8.0 * dose
+                    d_p = (placebo_D if placebo_D is not None else 2.0) * dose
+                    if prompt == "alt":
+                        d_p = d_t / alt_sel
+                    ms.append(_m(state, noise, prompt, "target", dose, D=d_t, S_l2=20.0 * dose, S_px=0.02, A=0.4 * dose))
+                    ms.append(_m(state, noise, prompt, "placebo", dose, D=d_p, S_l2=10.0 * dose, S_px=0.01, A=0.05 * dose))
+    return ms
+
+
+def _baselines(g):
+    out = {}
+    for state in (0, 1):
+        for noise in (0, 1):
+            base = np.ones(8)
+            out[(state, noise, "task")] = base
+            out[(state, noise, "alt")] = base * (1 + g / np.sqrt(1.0))  # rel_l2 = g exactly
+    return out
+
+
+def test_decision_metrics_compute_the_paper_quantities_exactly() -> None:
+    """Sel, Sel_adj under both normalisers, the CI, and the dose elasticity.
+
+    Fixture: D_t/D_p = 4, footprint ratios 2 (both S), linear dose response.
+    So Sel = 4, Sel_adj = 2 for either S, elasticity = 1, and H1 is supported.
+    """
+    metrics = P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.68))
+    h1 = metrics["h1"]
+    assert len(h1["cells"]) == 2 * 2 * 2, "state x noise x dose cells under the task prompt"
+    pooled = h1["pooled"]
+    assert abs(pooled["sel_raw"] - 4.0) < 1e-9
+    assert abs(pooled["S_l2_ratio"] - 2.0) < 1e-9 and abs(pooled["S_px_ratio"] - 2.0) < 1e-9
+    assert abs(pooled["sel_adj_l2"] - 2.0) < 1e-9 and abs(pooled["sel_adj_px"] - 2.0) < 1e-9
+    assert abs(pooled["action_sel"] - 8.0) < 1e-9
+    assert h1["spread"]["sel_adj_l2"]["min"] > 1.0 and h1["spread"]["sel_adj_l2"]["sd"] == 0.0
+    ci = h1["bootstrap_ci_95"]["sel_adj_l2"]
+    assert ci["n_cells"] == 8 and abs(ci["low"] - 2.0) < 1e-9 and abs(ci["high"] - 2.0) < 1e-9
+    assert h1["null_floor"]["max"] == 0.0 and h1["null_floor_near_zero"]
+    for kind in ("target", "placebo"):
+        dr = h1["dose_response"][kind]
+        assert dr["monotone_in_dose"] is True
+        assert abs(dr["elasticity_mean"] - 1.0) < 1e-9, dr
+    assert h1["verdict"] == "supported"
+
+    h2 = metrics["h2"]
+    assert abs(h2["grounding"]["mean"] - 0.68) < 1e-9 and h2["grounding"]["n"] == 4
+    assert abs(h2["per_prompt"]["task"]["sel_raw"] - 4.0) < 1e-9
+    assert abs(h2["per_prompt"]["alt"]["sel_raw"] - 0.5) < 1e-9
+    assert h2["verdict"].startswith("supported")
+
+
+def test_decision_metrics_verdict_branches() -> None:
+    supported = P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.68))
+    assert supported["h1"]["verdict"] == "supported"
+
+    # Placebo responds as much as the target: adjusted selectivity 0.5 -> falsified.
+    falsified = P.compute_decision_metrics(_linear_run(placebo_D=8.0))
+    assert falsified["h1"]["verdict"] == "falsified", falsified["h1"]["pooled"]
+
+    # A null floor that is not near zero invalidates the paired comparison.
+    invalid = P.compute_decision_metrics(_linear_run(null=1.0))
+    assert invalid["h1"]["verdict"].startswith("invalid")
+
+    # One cell below 1 while the pool stays above: weak, not supported.
+    ms = _linear_run()
+    for m in ms:
+        if m["kind"] == "placebo" and m["state_index"] == 1 and m["noise_index"] == 1 and m["dose"] == 1.0:
+            m["latent"]["l2_delta_mean"] = 8.0
+    weak = P.compute_decision_metrics(ms)
+    assert weak["h1"]["verdict"].startswith("weak"), weak["h1"]["spread"]["sel_adj_l2"]
+
+    # H2 branches: stronger for the same object, weakens without inverting, and inert prompt.
+    assert P.compute_decision_metrics(_linear_run(alt_sel=6.0), baseline_by_prompt=_baselines(0.68))["h2"]["verdict"].startswith("falsified")
+    assert P.compute_decision_metrics(_linear_run(alt_sel=2.0), baseline_by_prompt=_baselines(0.68))["h2"]["verdict"].startswith("partial")
+    assert P.compute_decision_metrics(_linear_run(alt_sel=0.5), baseline_by_prompt=_baselines(0.001))["h2"]["verdict"].startswith("untestable")
+    assert P.compute_decision_metrics(_linear_run())["h2"]["verdict"].startswith("untestable")
+
+    # Printing must not crash on any branch.
+    for metrics in (supported, falsified, invalid, weak):
+        P._print_decision_metrics(metrics)
+
+
 def test_nomination_rejects_a_one_off_however_selective() -> None:
     """A feature seen in 2 of 80 cells must not be nominated for tracing.
 

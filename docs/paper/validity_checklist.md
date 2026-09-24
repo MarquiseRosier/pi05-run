@@ -235,7 +235,27 @@ one seed, small numbers of states, draws and doses; colour carries no task
 information in this suite so behavioural nulls are expected. A second task
 or object type would be the first extension.
 
-## Open items that need the GPU run
+## Status after run 20260924-153459 (raw artefacts downloaded and re-verified locally)
+
+The validator and the decision recomputation, run locally on the downloaded
+store, graph and summary, reproduce the Colab output exactly. Verdicts:
+
+| Hypothesis | Verdict | Deciding numbers |
+|---|---|---|
+| H1 | supported | null floor 0; adjusted selectivity pooled 4.01, every cell above 1 (min 1.23), clusters 1.27 to 12.1; geomean over layers 7.33, relative-l2 7.07, all agree |
+| H2 | untestable | g 0.73, but the behavioural anchor is 17.0 under the task prompt and 9.7 under the sibling prompt: the referent did not move |
+| H3 | falsified | head selectivity enrichment 0.92 (p 0.57), full 1.07, flat profile, 99.7 % exercised; response enrichment 1.29 / 1.20 / 1.26 for target / placebo / swap |
+
+Two readings the raw cells add. The footprint adjustment does its work at the
+initial state only: there the wrist camera sees the referent large (image
+difference 2.4x the placebo's) and raw 3.0x falls to 1.3x; at the later state
+footprints match (1.19x) and selectivity is 12 to 16x raw or adjusted. The
+pixel-count normaliser puts four of eight cells below 1 because it counts every
+wrist-camera pixel of the near bowl as a full unit of perturbation; this is why
+the norm was pre-registered as primary. Positive control: the referent recolour
+is 0.51 of the prompt swap's latent response, the placebo 0.07.
+
+## Open items
 
 - Fill the `\RESULT{}` placeholders from `decision_metrics.json`,
   `layer_selectivity.csv`, `nominated_targets.json`, `validation.json`,

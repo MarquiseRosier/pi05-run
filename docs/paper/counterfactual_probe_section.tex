@@ -1,7 +1,8 @@
 % Controlled Counterfactual Perturbation -- drop-in section.
 % Uses only what the main paper already loads (\[ \], \lVert, \mathbb, \mathrm, \texttt, tabular).
-% \RESULT{...} marks a value still to be filled; the artefact that fills each table is
-% named in a comment above it. Notation follows the transcoder section of the main paper.
+% All values are filled from run 20260924-153459 (commit 758b7c9); the artefact that fills
+% each table is named in a comment above it, and \RESULT{...} is kept for future runs.
+% Notation follows the transcoder section of the main paper.
 
 \providecommand{\RESULT}[1]{\textbf{[#1]}}
 
@@ -370,16 +371,18 @@ clusters.}
 Condition & $D$ & $S=|\mathcal{P}|$ & $S=\lVert\Delta I\rVert_2$ & Action rel.\ $\ell_2$ \\
 \hline
 Null control (max)            & $0$ & $0$ & $0$ & $0$ \\
-Positive control, prompt swap & \RESULT{val} & $0$ & $0$ & $0.729$ \\
-Target object                 & $10.11$ & \RESULT{val} & \RESULT{val} & $0.538$ \\
-Placebo object                & $1.42$  & \RESULT{val} & \RESULT{val} & $0.032$ \\
+Positive control, prompt swap & $19.7$ & $0$ & $0$ & $0.729$ \\
+Target object                 & $10.11$ & $0.0148$ & $28.8$ & $0.538$ \\
+Placebo object                & $1.42$  & $0.0049$ & $16.2$ & $0.032$ \\
 \hline
-Ratio, target over placebo    & $7.13$ & \RESULT{val} & \RESULT{val} & $17.0$ \\
+Ratio, target over placebo    & $7.13$ & $3.03$ & $1.78$ & $17.0$ \\
 \hline
 \multicolumn{5}{l}{Raw $\mathrm{Sel}$ by cell: mean $8.56\pm5.95$, range $2.92$ to $15.7$, 95\% CI $[4.00,\,11.4]$; by cluster: $3.02$ to $14.4$} \\
-\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$: pooled \RESULT{val}; cells min \RESULT{val}, max \RESULT{val}; 95\% CI [\RESULT{lo}, \RESULT{hi}]; $S=|\mathcal{P}|$: pooled \RESULT{val}} \\
-\multicolumn{5}{l}{Robustness: per-layer geometric mean $7.33$ [$5.32$, $11.3$], $18$ of $18$ layers above 1; relative-$\ell_2$ ratio \RESULT{val}} \\
-\multicolumn{5}{l}{Dose: target $D$ $9.49\rightarrow10.7$, placebo $1.25\rightarrow1.59$, both monotone; $\eta(\mathrm{target})=\RESULT{val}$, $\eta(\mathrm{placebo})=\RESULT{val}$} \\
+\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$: pooled $4.01$; cells mean $6.55\pm5.69$, min $1.23$, max $13.2$; 95\% CI $[1.81,\,8.54]$; by cluster $1.27$ to $12.1$} \\
+\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, $S=|\mathcal{P}|$: pooled $2.36$; cells min $0.61$, max $12.8$; 95\% CI $[0.92,\,6.81]$} \\
+\multicolumn{5}{l}{Robustness: per-layer geometric mean $7.33$ [$5.32$, $11.3$], $18$ of $18$ layers above 1; relative-$\ell_2$ ratio $7.07$; all three agree in direction} \\
+\multicolumn{5}{l}{Positive control: the referent recolour is $0.51$ of the prompt swap's latent response, the placebo $0.07$} \\
+\multicolumn{5}{l}{Dose: target $D$ $9.49\rightarrow10.7$, placebo $1.25\rightarrow1.59$, both monotone; $\eta(\mathrm{target})=0.62$, $\eta(\mathrm{placebo})=1.21$} \\
 \hline
 \end{tabular}
 \end{center}
@@ -416,10 +419,25 @@ bit-deterministic on this hardware, so every recorded difference is signal.
 Recolouring the referent bowl moves the pooled layer response by $10.1$ and the
 identical non-referent by $1.42$, a raw selectivity of $7.1$
 (Table~\ref{tab:cf-main}). The ratio exceeds one in every one of the eight
-cells, with a minimum of $2.9$; it is heterogeneous across states, near $3$ at
-the initial state and near $14$ five plan actions later, when the arm has
-approached the bowl and the wrist camera carries most of the change. The
-footprint-adjusted figure is \RESULT{val}. Selectivity holds in all $18$ layers
+cells, with a minimum of $2.9$, and it is heterogeneous across states: near $3$
+at the initial state and near $14$ five plan actions later.
+
+The footprint adjustment explains the heterogeneity and is what makes the
+result safe. Over both cameras the referent's recolour moves $1.78\times$ as
+much image as the placebo's, so the pooled adjusted selectivity is $4.0$. But
+the excess is not spread evenly. At the initial state the wrist camera sees the
+referent bowl large, its image difference is $2.4\times$ the placebo's, and the
+raw $3.0\times$ selectivity falls to $1.3\times$ once that is divided out. At
+the later state the two footprints are nearly equal ($1.19\times$) and the
+selectivity is $12$ to $16\times$ raw and adjusted alike. So at the state where
+footprint could have produced the effect, the adjustment removes most of it;
+at the state where it could not, the effect is large and survives untouched.
+The adjusted figure exceeds one in every cell, minimum $1.23$, and its cluster
+range is $1.27$ to $12.1$. The pixel-count normaliser tells a more conservative
+story, with four of eight cells below one: it counts every wrist-camera pixel
+of the near bowl as a full unit of perturbation whether it moved by a shade or
+a saturation, which is why the norm was pre-registered as primary. Selectivity
+holds in all $18$ layers
 (Table~\ref{tab:cf-layers}), highest in the first three ($10.8$ to $11.3$) and
 lowest in the deep layers that dominate the norm ($5.3$ to $6.2$ at layers $14$
 to $17$); the geometric mean over layers is $7.3$, so the conclusion does not
@@ -430,9 +448,12 @@ action chunk by $54\%$ in relative $\ell_2$, and by $91\%$ at the later state;
 recolouring the non-referent changes it by $3\%$. This is the behavioural form
 of H1 and it is expected: the prompt names ``the black bowl'', so a red bowl
 is no longer what the noun denotes, and a policy anchored on the referent
-must re-plan. The response is sublinear in dose for the target, near $90\%$ of
-its full-dose value at half dose, which is consistent with a categorical rather
-than graded reading of the colour.
+must re-plan. The response is sublinear in dose for the target, with elasticity
+$0.62$ and near $90\%$ of its full-dose value at half dose, which is consistent
+with a categorical rather than graded reading of the colour; the placebo's
+response is near linear ($1.21$). Against the positive control, the referent
+recolour produces half the latent response of a prompt swap that changes the
+action by $73\%$, and the placebo one fourteenth of it.
 
 \subsubsection{Referent versus position}
 
@@ -561,13 +582,14 @@ more informative than an unrelated one; the head of ten is the smallest stratum
 at which a mean is still a mean and $p$ still informative; $\alpha=0.05$ is
 conventional.
 
-\paragraph{H1.} \RESULT{supported}. The rule is: invalid if the null floor
-exceeds $5\%$ of the placebo response; supported if the pooled
+\paragraph{H1.} Supported. The rule is: invalid if the null floor exceeds
+$5\%$ of the placebo response; supported if the pooled
 $\mathrm{Sel}_{\mathrm{adj}}$ with $S=\lVert\Delta I\rVert_2$ and its minimum
 over cells both exceed one; weak if only the pooled value does; falsified
-otherwise. The floor is zero and the unadjusted ratio exceeds one in every cell
-with a minimum of $2.9$; the footprint-adjusted figure on which the rule is
-stated is \RESULT{val}. The conclusion is robust across the three summaries.
+otherwise. The floor is zero, the pooled adjusted selectivity is $4.0$, and its
+minimum over the eight cells is $1.23$. The relative-$\ell_2$ ratio ($7.1$) and
+the per-layer geometric mean ($7.3$) agree in direction with the pooled figure,
+so the conclusion is robust across summaries.
 
 \paragraph{H2.} Untestable. The rule is: untestable if there is no sibling
 prompt, if $g<0.01$, or if the anchor of Eq.~\ref{eq:anchor} does not exceed
@@ -748,7 +770,10 @@ with the rules they were decided under, the tensor shapes handed to the policy,
 and a provenance record with the git commit, library versions, device and a
 content hash of the transcoder checkpoint. Runs execute on an ephemeral
 notebook machine and each stage copies its directory to shared storage when it
-completes. The pipeline is probe, report, discovery, trace, validate; the
+completes. The reported run was produced at commit \texttt{758b7c9} of the
+repository with a clean tree, on an NVIDIA L4 with Python 3.12, LeRobot 0.6.1,
+PyTorch 2.11, MuJoCo 3.8.1 and robosuite 1.4.0, against a transcoder
+checkpoint of SHA-256 prefix \texttt{b75ee195bbe11ede}. The pipeline is probe, report, discovery, trace, validate; the
 notebook orchestrates these and displays their artefacts without computing any
 decision itself. A guard aborts the run rather than continuing on a stale
 render, an unrestored baseline, a perturbation that changed no pixels, drifting

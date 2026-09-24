@@ -274,9 +274,16 @@ The control is a second object of the \emph{same type} in the same scene. In
 \texttt{libero\_spatial} the suite instantiates two instances of the same mesh,
 \texttt{akita\_black\_bowl\_1} and \texttt{akita\_black\_bowl\_2}, and the task
 names one of them. Perturbing the other gives a control matched on mesh,
-material, colour and size, differing only in table position and task relevance.
-This is a substantially tighter control than a semantically related but
-different object, because the appearance change itself is nearly identical.
+material, colour and size, differing only in table position and in whether the
+prompt refers to it. This is a substantially tighter control than a
+semantically related but different object, because the appearance change itself
+is nearly identical.
+
+The other instance is the \emph{non-referent}, not an irrelevant object: the
+policy must discriminate against it to solve the task, so a response to it is
+a response to the bowl the task says to leave alone. H1 therefore asks whether
+features weight the referent more than the non-referent, not whether they
+ignore the non-referent.
 
 Write $D(c)$ for the layer response pooled over all $|\mathcal{L}|=18$
 instrumented layers, all $|\mathcal{T}|=n$ flow times, and all cells under the
@@ -316,10 +323,14 @@ decision, and the pixel count is reported alongside.
 Each cell yields its own $\mathrm{Sel}_{\mathrm{adj}}$, and we report the mean,
 standard deviation, minimum and maximum across cells together with a percentile
 bootstrap interval for the pooled ratio obtained by resampling cells with
-replacement ($2000$ draws). With few cells the interval is coarse; that is the
-state of the evidence, and the number of cells is reported next to it. The
-pre-registered H1 rule uses the minimum across cells, which is the stricter
-statement.
+replacement ($2000$ draws). Cells are not independent: the doses within one
+(state, draw) share a render and a noise sample, and the draws within one state
+share the robot pose. The spread is therefore also reported over (state, draw)
+clusters with doses pooled within, which is the coarser but honest unit. With
+few clusters neither interval is tight; that is the state of the evidence, and
+both $n$ are reported next to the numbers. The pre-registered H1 rule uses the
+minimum across cells, which is the stricter statement and does not rest on an
+independence assumption.
 
 \paragraph{What the adjustment assumes.}
 Eq.~\ref{eq:sel-px} is exact only if the response grows linearly in the
@@ -333,6 +344,18 @@ perturbation size. We measure this directly as a dose elasticity,
 between consecutive doses $d_1<d_2$, pooled over states and draws. Linear
 response gives $\eta=1$. If $\eta$ departs markedly from $1$ the adjustment
 over- or under-corrects and the unadjusted ratio is to be quoted alongside.
+
+\paragraph{Robustness across summaries.}
+$D$ is a Euclidean norm over $16384$ features averaged over $18$ layers, so the
+layers with the largest activations dominate it, and a selectivity read off $D$
+is mostly a statement about those layers. Two scale-free summaries are reported
+alongside: the ratio formed from the \emph{relative} layer response
+$\lVert\delta_{\ell,\tau,\cdot}\rVert_2/\lVert\tilde{z}_{\ell,\tau,\cdot}\rVert_2$,
+and the geometric mean over layers of the per-layer selectivities
+$D_\ell(\mathrm{target})/D_\ell(\mathrm{placebo})$, with its range and the
+number of layers above $1$. The H1 decision is made on
+$\mathrm{Sel}_{\mathrm{adj}}$; the conclusion is called \emph{robust} only if all
+three summaries fall on the same side of $1$.
 
 \subsubsection{Controls and guards}
 \label{sec:controls}
@@ -354,6 +377,16 @@ is then reverted and the baseline required to be restored exactly. Without this,
 a stale render cache yields $\delta=0$ everywhere, and an identity self-check
 cannot detect that condition, since comparing a cached frame against the frame
 it was cached from is trivially zero.
+
+\paragraph{Positive control.}
+A null floor says what no manipulation does; a positive control says what a
+manipulation \emph{known} to matter does. Swapping the prompt is such a
+manipulation: its effect on the action is $g$ (Eq.~\ref{eq:grounding}), and its
+latent response is available at no cost from the two baselines already
+computed in every cell. We report $D(\mathrm{prompt\ swap})$ and the target and
+placebo responses as fractions of it, so a recolour response is read on the
+scale of what a behaviour-changing input produces on these layers, not as a
+bare number.
 
 \paragraph{Dose response.}
 Each perturbation is applied at several doses along a linear interpolation
@@ -497,6 +530,12 @@ The same parents are scored under the placebo perturbation with the same null
 pool, giving the circuit's own target-over-placebo selectivity: H1 restricted
 to the traced nodes.
 
+\paragraph{Selection and test use different evidence.}
+The nominee is chosen from the probe's data and is excluded from the test. The
+parents are chosen by the tracer from dataset observations and gradients in the
+replacement model, which never sees the probe's data; they are then tested on
+the probe's data. No quantity is both selected on and tested with.
+
 \subsection{Tensor shapes}
 
 Every quantity above is a tensor, and the reductions are where errors hide.
@@ -580,7 +619,8 @@ Table~\ref{tab:cf-validation} the circuit audit.
 of Eq.~\ref{eq:layer-response}; $S$ the perturbation size; the null row is the
 nondeterminism floor. Spread and interval are across cells. Filled from
 \texttt{decision\_metrics.json} under \texttt{h1}: \texttt{pooled},
-\texttt{null\_floor}, \texttt{spread}, \texttt{bootstrap\_ci\_95}.}
+\texttt{null\_floor}, \texttt{positive\_control}, \texttt{spread},
+\texttt{cluster\_spread}, \texttt{bootstrap\_ci\_95}, \texttt{robustness}.}
 \label{tab:cf-main}
 \begin{center}
 \small
@@ -589,13 +629,17 @@ nondeterminism floor. Spread and interval are across cells. Filled from
 Condition & $D$ & $S=|\mathcal{P}|$ & $S=\lVert\Delta I\rVert_2$ & Action rel.\ $\ell_2$ \\
 \hline
 Null control (max)   & \RESULT{val} & $0$ & $0$ & \RESULT{val} \\
+Positive control, prompt swap & \RESULT{val} & $0$ & $0$ & \RESULT{g} \\
 Target object        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 Placebo object       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
 Ratio, target over placebo & \RESULT{Sel} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Target as fraction of positive control & \RESULT{val} & --- & --- & --- \\
 \hline
 \multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$ (primary): pooled \RESULT{val}; cells mean \RESULT{val} $\pm$ \RESULT{sd}, min \RESULT{val}, max \RESULT{val}; 95\% CI [\RESULT{lo}, \RESULT{hi}]} \\
+\multicolumn{5}{l}{\quad clusters (state, draw): $n=$ \RESULT{n}, min \RESULT{val}, max \RESULT{val}} \\
 \multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, $S=|\mathcal{P}|$: pooled \RESULT{val}; cells min \RESULT{val}, max \RESULT{val}; 95\% CI [\RESULT{lo}, \RESULT{hi}]} \\
+\multicolumn{5}{l}{Robustness: relative-$\ell_2$ ratio \RESULT{val}; per-layer geometric mean \RESULT{val} [min \RESULT{val}, max \RESULT{val}], \RESULT{k} of 18 layers above 1; direction agrees: \RESULT{yes or no}} \\
 \multicolumn{5}{l}{Cells $=$ \RESULT{n}; null floor near zero: \RESULT{yes or no}} \\
 \hline
 \end{tabular}
@@ -693,9 +737,24 @@ Placebo object & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \label{sec:verdicts}
 
 To be completed from Tables~\ref{tab:cf-main}--\ref{tab:cf-validation}. The
-rules below are the ones the code applies; each run writes its verdict and the
-rule it applied side by side, under \texttt{verdict} and
-\texttt{decision\_rule} in the artefacts named.
+rules below are the ones the code applies; each run writes its verdict, the
+rule it applied and the numeric thresholds side by side, under
+\texttt{verdict}, \texttt{decision\_rule} and \texttt{thresholds} in the
+artefacts named.
+
+\paragraph{Why these thresholds.}
+None is tuned to the data; each is a conventional or structural choice fixed
+before the run. The null floor bound of $5\%$ of the placebo response is the
+level below which the floor could not change the direction of a ratio near
+$1$. The grounding bound of $0.01$ is one per cent of the action norm, below
+which the prompt swap cannot be distinguished from a no-op. The consistency
+bound of $25\%$ requires a nominee to appear in at least one cell in four, the
+weakest rule that excludes a feature seen only under one state or one draw.
+The depth bound $\ell\ge4$ leaves at least four layers of parents to trace.
+The exact-selectivity bound of $2\times$ is the smallest integer ratio that
+makes ``responds more to the referent'' unambiguous. The exercised-fraction
+bound of one half requires that the scene speak for the majority of the
+circuit. $\alpha=0.05$ is conventional.
 
 \paragraph{H1.}
 \RESULT{supported, weak, falsified or invalid}. \emph{Invalid} if the largest
@@ -703,7 +762,10 @@ null $D$ exceeds $5\%$ of $D(\mathrm{placebo})$. Otherwise \emph{supported} if
 the pooled $\mathrm{Sel}_{\mathrm{adj}}$ with $S=\lVert\Delta I\rVert_2$ exceeds
 $1$ and so does its minimum over cells; \emph{weak} if only the pooled value
 does; \emph{falsified} otherwise. Quote the unadjusted ratio alongside if
-$|\eta - 1|$ is large. (\texttt{decision\_metrics.json}, \texttt{h1.verdict}.)
+$|\eta - 1|$ is large, and call the conclusion robust only if the relative
+and per-layer summaries agree in direction
+(\texttt{h1.robustness.agree\_in\_direction}).
+(\texttt{decision\_metrics.json}, \texttt{h1.verdict}.)
 
 \paragraph{H2.}
 \RESULT{supported, partial, falsified or untestable}. \emph{Untestable} if there
@@ -743,6 +805,17 @@ carry the property'' and ``it carries it on the dataset but not on this
 scene''. A positive H3 result does not suffer that ambiguity. The exercised
 fraction is what a reader should look at first.
 
+\paragraph{Does $g$ show what the prompt swap did?}
+$g$ shows that the policy processed the new prompt: the unperturbed action
+changed. It does not show that the policy resolved the new prompt's referent to
+the placebo bowl. If the sibling phrase is ambiguous in this scene, or the
+policy attends to the phrase without re-grounding it, the swap can move the
+action without moving the referent, and a non-inverting H2 would then say less
+about position than it appears to. The positive control's latent response is
+the other half of the same evidence: a swap that changed the action and the
+latents but not the selectivity is what H2 falsification looks like, and a
+reader should hold both readings open.
+
 \paragraph{Is the null for H3 fair?}
 Matching on layer, flow time and exercise makes the null ``a random active
 feature here''. It is stricter than an unmatched draw and less strict than a
@@ -777,16 +850,21 @@ objects and perturbation types is untested.
 \subsection{Reproducibility}
 
 Every stage is a script with recorded configuration and a deterministic seed.
-The pipeline and its artefacts are:
+Each probe run also writes \texttt{provenance.json}: the git commit and
+whether the tree was dirty, Python and platform, the versions of the policy,
+simulator and tensor libraries, the accelerator, and a SHA-256 of the
+transcoder checkpoint, so that a reported number can be tied to the exact code
+and weights that produced it. The pipeline and its artefacts are:
 
 \begin{enumerate}
 \item \textbf{Probe.} Paired counterfactual at frozen states. Writes the full
 signed deltas and baselines for every cell and condition
 (\texttt{latents/}), the per-cell decision quantities
 (\texttt{decision\_metrics.json}, \texttt{h1\_cells.csv}), every measurement
-(\texttt{counterfactual\_summary.json}, \texttt{measurements.csv}), the
-tensor shapes (\texttt{observation\_shapes.json}) and the rendered baseline,
-perturbed and difference images.
+including the positive control (\texttt{counterfactual\_summary.json},
+\texttt{measurements.csv}), the tensor shapes
+(\texttt{observation\_shapes.json}), provenance (\texttt{provenance.json}) and
+the rendered baseline, perturbed and difference images.
 \item \textbf{Report.} Computes Table~\ref{tab:cf-layers}, ranks candidates by
 Eq.~\ref{eq:zstd}, applies the three filters of Section~\ref{sec:zscore} with
 exact placebo responses from \texttt{latents/}, and writes the nominee and the

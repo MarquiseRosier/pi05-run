@@ -10,7 +10,8 @@
 %  paste twice; it will not clash with an existing definition.
 %
 %  RESULTS ARE PLACEHOLDERS. Every \RESULT{...} is a value to fill from a
-%  run. None of the numbers below are invented. Search for \RESULT to find
+%  run. None of the numbers below are invented. Each results table names
+%  the artefact and key that fills it. Search for \RESULT to find
 %  everything still outstanding.
 % =====================================================================
 
@@ -50,6 +51,9 @@ difference in the network's internals is caused by that object's pixels,
 because nothing else differed. Then repeat on a second object that looks
 identical but is not the one the task refers to, to check that the network is
 responding to \emph{that particular object} rather than to any coloured patch.
+Finally, use this known cause to audit the circuit tracer: if the parents it
+finds for a feature genuinely carry that feature's information about the
+object, they should respond to the object's recolour and not to the control's.
 
 \subsection{Preliminaries: the arithmetic of a transcoder circuit}
 \label{sec:circuit-math}
@@ -70,22 +74,25 @@ where $z_{\ell}\in\mathbb{R}^{B\times T\times d_{\mathrm{features}}}$ and
 $d_{\mathrm{features}}=16\,d_{\mathrm{model}}=16384$. Component $z_{\ell,i}$ is
 \emph{feature $i$ at layer $\ell$}. A feature is identified by the triple
 $(\ell,\tau,i)$, written $\mathtt{L}\ell\!:\!\tau\!:\!\mathtt{F}i$, because the
-same index at a different flow time is a different computational node.
+same index at a different flow time is a different computational node. The
+policy integrates $n$ Euler steps with $\tau = 1 - \mathrm{step}/n$, so the
+recorded flow times are $\{1, 1-1/n, \ldots, 1/n\}$.
 
 \paragraph{Probe mode versus replacement mode.}
 In probe mode the policy runs unchanged and $z_\ell$ is only recorded: it is a
 measurement, not a cause. In replacement mode $\hat{y}_\ell$ \emph{is} the MLP
 output, so $z_\ell$ lies on the computational path and derivatives with respect
-to it are meaningful. Circuit tracing therefore requires replacement mode.
+to it are meaningful. Circuit tracing therefore requires replacement mode; the
+counterfactual probe of this section runs in probe mode, on the unmodified
+policy.
 
 \paragraph{What an edge is.}
 In replacement mode, feature $j$ at a later layer $\ell'$ has pre-activation
 $a_{\ell',j,p}$ at action-token position $p$. Two positional choices are part
 of the definition and are easily left implicit by mistake. The target is
-evaluated at a \emph{single} position $p^{\star}$, taken from feature discovery
-as the token at which the target feature most strongly activated on that
-observation. The source is summed over \emph{all} of its token positions, since
-a parent may contribute from anywhere in the chunk. The edge is therefore
+evaluated at a \emph{single} position $p^{\star}$. The source is summed over
+\emph{all} of its token positions, since a parent may contribute from anywhere
+in the chunk. The edge is therefore
 \begin{equation}
 \mathrm{edge}(i \rightarrow j)
 \;=\;
@@ -98,6 +105,13 @@ a signed quantity. The derivative is obtained as a vector--Jacobian product:
 $a_{\ell',j,p^{\star}}$ is a scalar, so a single reverse pass through the
 replacement model yields the whole gradient with respect to $z_\ell$, with
 attention mixing and normalisation along the path accounted for.
+
+How $p^{\star}$ is chosen depends on the node's depth. For the traced target
+it is the token at which the target feature most strongly activated on that
+observation, supplied by feature discovery. For a parent that is itself
+expanded at the next depth, it is the source position at which that parent's
+contribution to its own child was largest, retained when the parent was found.
+Both are recorded per observation, so a replication can recover them.
 
 Eq.~\ref{eq:edge} is the first-order Taylor term for turning feature $i$
 \emph{off}: since $a_{\ell',j}(z_{\ell,i}) - a_{\ell',j}(0) \approx z_{\ell,i}\,
@@ -122,7 +136,9 @@ precisely what this section is designed to probe.
 \subsection{Hypotheses}
 \label{sec:hypotheses}
 
-Each hypothesis is stated with the observation that would falsify it.
+Each hypothesis is stated with the observation that would falsify it. The
+decision rules are fixed in advance and restated, with thresholds, in
+Section~\ref{sec:verdicts}.
 
 \paragraph{H1, object selectivity.}
 Transcoder features respond to a controlled appearance change of the object the
@@ -135,16 +151,21 @@ so H1 on its own cannot separate those; H2 is what addresses that.
 
 \paragraph{H2, referent versus position.}
 The selectivity in H1 follows the object the \emph{language refers to}.
-\emph{Falsified if} selectivity is unchanged, or strengthens for the original
-object, when the prompt is swapped to refer to the other object over
-pixel-identical images, provided the policy demonstrably reacts to the prompt
-at all (Section~\ref{sec:grounding}).
+\emph{Supported if}, over pixel-identical images, swapping the prompt to refer
+to the other object inverts the selectivity. \emph{Falsified if} selectivity is
+unchanged or strengthens for the original object. A selectivity that weakens
+without inverting is recorded as \emph{partial}: language modulates the
+response but does not determine it. All three readings presuppose that the
+policy demonstrably reacts to the prompt at all (Section~\ref{sec:grounding});
+otherwise H2 is \emph{untestable} on this scene.
 
 \paragraph{H3, circuit corroboration.}
-Features in a circuit traced upstream of a target are enriched for response to
-the controlled perturbation, relative to random feature sets matched in
-per-layer composition. \emph{Falsified if} the enrichment ratio is near $1$,
-which would indicate the traced edges do not carry the perturbed property.
+The \emph{parents} of a circuit traced upstream of a target are enriched for
+response to the controlled perturbation, relative to random features matched in
+layer and flow time and drawn from those the scene exercises. \emph{Falsified
+if} the enrichment ratio is near $1$, which would indicate the traced edges do
+not carry the perturbed property. The target node itself is excluded from the
+test, because it was nominated for responding.
 
 \medskip
 \noindent
@@ -190,9 +211,12 @@ forward passes, the signed per-feature difference is
 \tilde{z}_{\ell,\tau,i}\!\left(R(s,\theta_0),\,\epsilon\right).
 \label{eq:delta}
 \end{equation}
-Two distinct summaries of Eq.~\ref{eq:delta} are used below and should not be
-conflated. The \emph{layer response} is the Euclidean norm over the feature
-axis, averaged over the recorded flow times,
+The full vector $\delta_{\ell,\tau,\cdot}$ is recorded for every layer, flow
+time and condition; nothing below relies on a truncated summary of it.
+
+Two summaries of Eq.~\ref{eq:delta} are used and should not be conflated. The
+\emph{layer response} is the Euclidean norm over the feature axis, averaged over
+the recorded flow times,
 \begin{equation}
 D_{\ell}(c,d)
 =
@@ -201,10 +225,10 @@ D_{\ell}(c,d)
 \label{eq:layer-response}
 \end{equation}
 and the \emph{per-feature response} is the magnitude of a single component,
-$|\delta_{\ell,\tau,i}|$, averaged over the cells in which the feature was
-recorded. Eq.~\ref{eq:layer-response} drives the headline selectivity of
-Table~\ref{tab:cf-main}; the per-feature quantity drives the ranking of
-Section~\ref{sec:zscore}.
+$|\delta_{\ell,\tau,i}|$. Eq.~\ref{eq:layer-response} drives the headline
+selectivity of Table~\ref{tab:cf-main}; the per-feature quantity drives the
+ranking of Section~\ref{sec:zscore} and the circuit audit of
+Section~\ref{sec:validation-method}.
 
 \medskip
 \noindent
@@ -214,16 +238,27 @@ comparison.
 \begin{enumerate}
 \item \textbf{The state is frozen.} Physics is never stepped between the two
 renders. Only $\theta$ changes, so joint positions and velocities, camera pose
-and lighting are bit-identical.
-\item \textbf{The noise is shared.} $\pi_{0.5}$ integrates a flow from a sampled
-$x_1\sim\mathcal{N}(0,I)$. Sampling independently per pass would leave
-$\Delta z$ dominated by that draw. We sample once and pass the same tensor to
-both passes explicitly.
+and lighting are bit-identical. After every recolour is reverted the baseline
+render is re-taken and required to match the original exactly.
+\item \textbf{The noise is shared and seeded.} $\pi_{0.5}$ integrates a flow
+from a sampled $x_1\sim\mathcal{N}(0,I)$. Sampling independently per pass would
+leave $\delta$ dominated by that draw. We sample once per replicate from a
+generator seeded deterministically by (seed, state, draw index) and pass the
+same tensor to both passes explicitly, so a run is reproducible bit for bit and
+any single cell can be regenerated alone.
 \item \textbf{Closed loop is excluded.} Running a rollout per condition would
-allow the trajectories to diverge, after which $\Delta z$ reflects different
+allow the trajectories to diverge, after which $\delta$ reflects different
 robot states rather than the recolour. All measurements are open-loop at a
-fixed $s$.
+fixed $s$. Between states, the simulator is advanced by executing the first $k$
+actions of the policy's own unperturbed plan.
 \end{enumerate}
+
+\paragraph{Replication unit.}
+A \emph{cell} is one combination of state $s$, noise draw $n$ and dose $d$
+under one prompt, and every condition (baseline, null, target, placebo) is
+measured in every cell. Cells are the replication unit for every error bound
+below. Noise draws are exchangeable replicates of the policy's own stochastic
+inference; states are distinct robot poses along its plan.
 
 \paragraph{Why colour.}
 The recolour overwrites the per-geometry colour field of the target body in the
@@ -232,7 +267,8 @@ contact and no position, so the object's footprint, occlusion and physics are
 preserved exactly. Colour is in that sense the cheapest available intervention
 that leaves everything else fixed.
 
-\subsubsection{The matched placebo}
+\subsubsection{The matched placebo and the footprint adjustment}
+\label{sec:placebo}
 
 The control is a second object of the \emph{same type} in the same scene. In
 \texttt{libero\_spatial} the suite instantiates two instances of the same mesh,
@@ -242,20 +278,23 @@ material, colour and size, differing only in table position and task relevance.
 This is a substantially tighter control than a semantically related but
 different object, because the appearance change itself is nearly identical.
 
-Because the two instances occupy different screen positions, their perturbed
-pixel footprints are not exactly equal. Write
+Write $D(c)$ for the layer response pooled over all $|\mathcal{L}|=18$
+instrumented layers, all $|\mathcal{T}|=n$ flow times, and all cells under the
+task prompt,
 \[
-D(c) = \frac{1}{|\mathcal{L}|\,|\mathcal{T}|}
-\sum_{\ell\in\mathcal{L}}\sum_{\tau\in\mathcal{T}}
-\left\lVert \delta_{\ell,\tau,\cdot}(c) \right\rVert_2
+D(c) = \frac{1}{|\mathcal{L}|\,|\mathcal{T}|\,|\mathcal{K}|}
+\sum_{\kappa\in\mathcal{K}}\sum_{\ell\in\mathcal{L}}\sum_{\tau\in\mathcal{T}}
+\left\lVert \delta^{(\kappa)}_{\ell,\tau,\cdot}(c) \right\rVert_2 ,
 \]
-for the response pooled over all $|\mathcal{L}|=18$ layers and
-$|\mathcal{T}|=10$ denoise steps, and define the raw selectivity
-$\mathrm{Sel} = D(\mathrm{target})/D(\mathrm{placebo})$. Because every layer
-contributes the same number of flow times, this coincides with the mean of the
-per-layer responses of Eq.~\ref{eq:layer-response}. To ask
-whether the difference is more than a difference in how much of the image
-moved, we divide by a measure of perturbation size,
+where $\mathcal{K}$ is the set of cells $(s,n,d)$ and $\delta^{(\kappa)}$ the
+difference measured in cell $\kappa$. The raw selectivity is
+$\mathrm{Sel} = D(\mathrm{target})/D(\mathrm{placebo})$, a ratio of means over
+the same cells.
+
+Because the two instances occupy different screen positions, their perturbed
+pixel footprints are not exactly equal. To ask whether the difference is more
+than a difference in how much of the image moved, we divide by a measure of
+perturbation size,
 \begin{equation}
 \mathrm{Sel}_{\mathrm{adj}}
 =
@@ -267,46 +306,72 @@ S(c)\in\Bigl\{\,|\mathcal{P}(c)|,\;\lVert \Delta I(c)\rVert_2 \,\Bigr\},
 \label{eq:sel-px}
 \end{equation}
 where $\mathcal{P}(c)$ is the set of changed pixels and $\Delta I(c)$ the
-image-space difference. We report both choices of $S$. The pixel count ignores
-how far each pixel moved; the image norm captures magnitude but is sensitive to
-the different lighting on the two objects.
+image-space difference, each pooled over the same cells as $D$. Both choices
+of $S$ are reported. The pixel count ignores how far each pixel moved and does
+not change with dose; the image norm captures magnitude and does change with
+dose. The image norm is therefore the \emph{primary} normaliser for the H1
+decision, and the pixel count is reported alongside.
 
-\paragraph{What this adjustment assumes.}
+\paragraph{Uncertainty.}
+Each cell yields its own $\mathrm{Sel}_{\mathrm{adj}}$, and we report the mean,
+standard deviation, minimum and maximum across cells together with a percentile
+bootstrap interval for the pooled ratio obtained by resampling cells with
+replacement ($2000$ draws). With few cells the interval is coarse; that is the
+state of the evidence, and the number of cells is reported next to it. The
+pre-registered H1 rule uses the minimum across cells, which is the stricter
+statement.
+
+\paragraph{What the adjustment assumes.}
 Eq.~\ref{eq:sel-px} is exact only if the response grows linearly in the
-perturbation size. That is an assumption, not a measured fact, and the dose
-response of Section~\ref{sec:controls} is the check on it: if response is
-markedly sublinear or superlinear in dose, the adjustment over- or
-under-corrects and the unadjusted ratio should be quoted alongside.
+perturbation size. We measure this directly as a dose elasticity,
+\begin{equation}
+\eta(c) = \frac{\log D(c,d_2) - \log D(c,d_1)}
+                {\log S(c,d_2) - \log S(c,d_1)},
+\qquad S = \lVert \Delta I\rVert_2,
+\label{eq:elasticity}
+\end{equation}
+between consecutive doses $d_1<d_2$, pooled over states and draws. Linear
+response gives $\eta=1$. If $\eta$ departs markedly from $1$ the adjustment
+over- or under-corrects and the unadjusted ratio is to be quoted alongside.
 
-\subsubsection{Controls}
+\subsubsection{Controls and guards}
 \label{sec:controls}
 
-Four controls run alongside every measurement. Each rules out a specific way
-the result could be spurious.
+Each control rules out a specific way the result could be spurious; each guard
+aborts the run rather than letting it produce a plausible number.
 
 \paragraph{Null control.}
 The \emph{same} baseline observation is pushed through the policy twice with the
-same noise, and $\Delta z$ is computed between those two passes. This measures
-the nondeterminism floor. Any reported effect is meaningful only as an excess
-over it.
+same noise, and $\delta$ is computed between those two passes, in every cell.
+This measures the nondeterminism floor. A run is valid only if the largest null
+$D$ is at most $5\%$ of $D(\mathrm{placebo})$; otherwise the paired comparison
+is compromised and H1 is recorded as invalid rather than decided.
 
 \paragraph{Liveness control.}
 Before any measurement the target is recoloured to full saturation and
 re-rendered, and the pixel change is required to be non-zero; the perturbation
 is then reverted and the baseline required to be restored exactly. Without this,
-a stale render cache yields $\Delta z=0$ everywhere, and an identity self-check
+a stale render cache yields $\delta=0$ everywhere, and an identity self-check
 cannot detect that condition, since comparing a cached frame against the frame
 it was cached from is trivially zero.
 
 \paragraph{Dose response.}
-Each perturbation is applied at several doses $d$ along a linear interpolation
+Each perturbation is applied at several doses along a linear interpolation
 toward the target colour. A response caused by the recolour should grow with
-$d$; a response that is not need not.
+dose; Eq.~\ref{eq:elasticity} quantifies how, and monotonicity in dose is
+reported for target and placebo separately.
 
 \paragraph{Shape guard.}
 The tensor shapes handed to the policy are recorded on the first pass and every
 later pass is checked against them. A paired comparison across differently
 shaped inputs is not a paired comparison.
+
+\paragraph{Weight-load guard.}
+The policy loader in use returns a randomly initialised model, with only a
+printed warning, when its state dictionary fails to load, and a partial load
+passes silently. Every script that builds the policy records what the loader
+reported and aborts on any missing parameter. A run on random weights cannot
+occur without exiting non-zero.
 
 \subsubsection{Separating referent from position}
 \label{sec:grounding}
@@ -318,81 +383,105 @@ of the form ``the black bowl'' followed by a spatial relation.
 
 They can be separated by changing the language. The suite constructs its tasks
 by placing the same target object in different regions, so some sibling task's
-prompt refers to whichever region our placebo occupies. Running both prompts
-over pixel-identical images with shared noise leaves language as the only
+prompt refers to whichever region our placebo occupies. That prompt is found
+automatically from the sibling problem definitions. Running both prompts over
+pixel-identical images with shared noise leaves language as the only
 difference.
 
 Selectivity is computed \emph{within} each prompt: for a given prompt, both the
 target and the placebo response are differences against that same prompt's
 baseline. The prompt's own large effect on the activations therefore cancels,
 and what is compared across rows is a ratio of differences, not the activations
-themselves.
+themselves. Since the images are identical across prompts, $S$ is identical too,
+and the comparison is made on the raw ratio.
 
 The control is interpretable only if the policy responds to language at all. We
-therefore measure \emph{prompt grounding}, the relative change in the
-\emph{unperturbed} action chunk between the two prompts:
+therefore measure \emph{prompt grounding} in every cell, the relative change in
+the \emph{unperturbed} action chunk between the two prompts,
 \begin{equation}
 g = \frac{\lVert a(\mathrm{prompt}_{\mathrm{alt}}) - a(\mathrm{prompt}_{\mathrm{task}})\rVert_2}
          {\lVert a(\mathrm{prompt}_{\mathrm{task}})\rVert_2}.
 \label{eq:grounding}
 \end{equation}
-If $g \approx 0$ the swap manipulated nothing and H2 is untestable on this
-scene. We report $g$ alongside the perturbation effect for scale and gate the
-H2 verdict on it.
+If the mean $g$ is below $0.01$ the swap manipulated nothing and H2 is
+untestable on this scene. We report $g$ alongside the action effect of the
+perturbation itself for scale.
 
-\subsubsection{Ranking features comparably across depth}
+\subsubsection{Nominating a trace target}
 \label{sec:zscore}
 
-A feature's raw selectivity is its target response divided by its placebo
-response. When a feature does not appear in the placebo's recorded top-$K$, its
-placebo response is only bounded above by that layer's smallest recorded delta,
-and those bounds differ by an order of magnitude across depth. An identical
-relative response therefore scores several times higher in a layer whose bound
-happens to be smaller, which makes raw selectivity unusable for choosing
-\emph{which layer} to trace from.
+The probe nominates the feature whose circuit will be traced. Nomination is
+decided once, under the task prompt, by a rule written to disk with the
+nominee, and every downstream stage reads that file rather than re-ranking.
 
-We therefore rank candidates by a layer-standardised response,
+\paragraph{Ranking.}
+A feature's raw selectivity divides its target response by its placebo
+response, and placebo responses differ by an order of magnitude across depth,
+so raw selectivity cannot choose \emph{which layer} to trace from. We rank
+instead by a layer-standardised response,
 \begin{equation}
 z^{\mathrm{std}}_{\ell,i}
 =
-\frac{\overline{\Delta z}_{\ell,i}-\mu_\ell}{\sigma_\ell},
+\frac{\overline{|\delta|}_{\ell,i}-\mu_\ell}{\sigma_\ell},
 \label{eq:zstd}
 \end{equation}
-where $\mu_\ell$ and $\sigma_\ell$ are the mean and standard deviation of the
-per-feature response over the features of layer $\ell$ \emph{that the probe
-recorded}. Because only the top-$K$ per layer and denoise step are stored, this
-is a truncated population: $z^{\mathrm{std}}$ measures position within the
-recorded set, not within all $16384$ features. Since $K$ is the same for every
-layer, the comparison across layers remains well posed, which is the property
-required here. This asks how
-far above its own layer's typical feature a response sits, in that layer's
-units, so depth cancels. Candidates whose placebo response is itself elevated,
-measured by the same standardisation, are rejected: the placebo acts as a
-filter rather than as a denominator.
+where $\overline{|\delta|}_{\ell,i}$ is feature $i$'s mean per-feature response
+over the cells in which it ranked among the $K$ largest responders at its
+layer and flow time, and $\mu_\ell$, $\sigma_\ell$ are the mean and standard
+deviation of that quantity over the features of layer $\ell$ that ranked
+among the top $K$ anywhere. This is a truncated population: $z^{\mathrm{std}}$
+measures position within the layer's responders, not within all $16384$
+features. Since $K$ is the same for every layer, the comparison across layers
+remains well posed, which is the property required here.
 
-\paragraph{Reproducibility requirement.}
-A candidate must additionally fire in at least a fixed fraction of its layer's
-measurement cells, where a cell is one combination of state, dose, prompt and
-denoise step. Without this requirement a feature that fired once against a
-near-zero placebo bound tops the ranking on the strength of a single
+\paragraph{Filters.}
+Three criteria are applied before ranking, each ruling out a specific bad
+nominee.
+\begin{enumerate}
+\item \textbf{Reproducibility.} The feature must rank among the top $K$
+responders in at least $25\%$ of its layer's cells, where a cell here is one
+(state, draw, dose, flow time) under the task prompt. Without this a feature
+that fired once against a near-zero placebo tops the ranking on one
 observation.
+\item \textbf{Depth.} The feature must sit at layer $\ell\ge 4$. A shallower
+target has almost nothing upstream, so its trace fans out sideways rather
+than finding a circuit.
+\item \textbf{Placebo.} From the recorded full deltas, the feature's exact
+mean placebo response at its peak flow time must be at most half its exact
+mean target response. The placebo acts as a filter, not as a denominator, so a
+placebo response of exactly zero is admissible rather than divided by.
+\end{enumerate}
+The peak flow time is the $\tau$ at which the feature's target response was
+largest, and the nominee is named $\mathtt{L}\ell\!:\!\tau\!:\!\mathtt{F}i$ in
+the key format the tracer consumes.
 
 \subsubsection{Using the counterfactual to audit the traced circuit}
 \label{sec:validation-method}
 
-Let $\mathcal{C}$ be the node set of a circuit traced upstream of some target.
-For each node in $\mathcal{C}$ that the probe measured we have
-$\overline{\Delta z}$. Write $\bar{\Delta}_{\mathcal{C}}$ for the circuit's mean
-response and compare it against random feature sets drawn with the \emph{same
-per-layer composition} as $\mathcal{C}$. Composition matching is necessary
-because response magnitude varies by more than an order of magnitude across
-depth; an unmatched control would mostly measure which layers the circuit
-happens to inhabit.
+Let $\mathcal{C}$ be the set of \emph{parent} nodes of a circuit traced upstream
+of the nominated target; the target node is excluded because it was nominated
+for responding to the probe, and scoring it would make the test circular. Each
+parent is a node $(\ell,\tau,i)$ and is scored at \emph{its own} flow time: the
+probe step is $\mathrm{round}((1-\tau)\,n)$, and the node's response is the mean
+of $|\delta_{\ell,\tau,i}|$ over the task-prompt cells. Because every delta was
+recorded in full, every parent has a known response; there are no unmeasured
+nodes.
 
-Draws are made with replacement from each layer's recorded features, so the
-null is ``a feature set of this per-layer composition, drawn at random from
-what the probe recorded''. With $M$ such draws $\bar{\Delta}^{(m)}$, the
-enrichment and its Monte-Carlo tail probability are
+\paragraph{Exercised nodes.}
+A feature the scene never activates has a genuine zero response here, which is
+different from an unknown one and different again from a feature that was
+active and did not move. A node is \emph{exercised} if it is active in some
+baseline or moves under the target perturbation in some cell. Unexercised
+parents are excluded from the mean and their count reported; the
+\emph{exercised fraction} bounds what the test can say.
+
+\paragraph{Matched null.}
+Write $\bar{\Delta}_{\mathcal{C}}$ for the mean response over exercised
+parents. A random draw over all $16384$ features would be mostly unexercised
+zeros and would make any active set look enriched. The null is therefore
+matched: for each exercised parent, a random feature is drawn from the
+exercised features at the \emph{same} layer and flow time, and the draw's mean
+response $\bar{\Delta}^{(m)}$ is computed. With $M$ such draws,
 \begin{equation}
 \mathrm{Enrich}(\mathcal{C}) = \frac{\bar{\Delta}_{\mathcal{C}}}
 {\frac{1}{M}\sum_{m}\bar{\Delta}^{(m)}},
@@ -400,29 +489,25 @@ enrichment and its Monte-Carlo tail probability are
 p = \frac{1+\left|\{\,m:\bar{\Delta}^{(m)}\ge\bar{\Delta}_{\mathcal{C}}\,\}\right|}{M+1}.
 \label{eq:enrich}
 \end{equation}
-
 The $+1$ in numerator and denominator makes the estimate conservative and keeps
 $p>0$ at finite $M$. Because circuit nodes are connected and therefore
 correlated, the effective sample size is below $|\mathcal{C}|$; the test is one
 of whether the set as a whole is unusual, not of independent evidence per node.
-
-\paragraph{Coverage must be read first.}
-The probe records only the top-$K$ features per layer and denoise step. A
-circuit node it never recorded has an \emph{unknown} response, not a zero one.
-Such nodes are excluded from $\bar{\Delta}_{\mathcal{C}}$ and reported
-separately. Below roughly half coverage the comparison should not be treated as
-conclusive in either direction.
+The same parents are scored under the placebo perturbation with the same null
+pool, giving the circuit's own target-over-placebo selectivity: H1 restricted
+to the traced nodes.
 
 \subsection{Tensor shapes}
 
 Every quantity above is a tensor, and the reductions are where errors hide.
 Table~\ref{tab:cf-shapes} fixes the shapes end to end for one forward pass.
+Rows marked as recorded are read from the run's
+\texttt{observation\_shapes.json}, which the shape guard also checks against.
 
 \begin{table}[t]
-\caption{Shapes for a single forward pass, with $B=1$. The recorded artefact is
-the reduced $\tilde{z}$ of Eq.~\ref{eq:reduce}, not the full code: storing
-$z$ for every layer and step would be $18\times10\times50\times16384$ values
-per pass.}
+\caption{Shapes for a single forward pass, with $B=1$. The recorded artefact
+per pass is the reduced $\tilde{z}$ of Eq.~\ref{eq:reduce} for every layer and
+step, stored in full; the unreduced $z$ would be $T$ times larger.}
 \label{tab:cf-shapes}
 \begin{center}
 \small
@@ -430,15 +515,15 @@ per pass.}
 \hline
 Quantity & Shape & Note \\
 \hline
-Camera images & $(1,3,360,360)\times 2$ & agentview and wrist \\
-Language tokens & $(1,200)$ & padded; same length for both prompts \\
-Proprioceptive state & $(1,8)$ & \\
-Flow noise $\epsilon$ & $(1,50,32)$ & sampled once, shared by both passes \\
+Camera images & \RESULT{recorded} $\times 2$ & agentview and wrist, after the policy's resize \\
+Language tokens & $(1,200)$ & padded to the tokenizer maximum; same for both prompts \\
+Proprioceptive state & \RESULT{recorded} & padded to the policy's state width \\
+Flow noise $\epsilon$ & $(1,50,32)$ & sampled once per cell, shared by both passes \\
 MLP input $x_\ell$ & $(1,50,1024)$ & per layer, per denoise step \\
 Sparse code $z_{\ell,\tau}$ & $(1,50,16384)$ & $16\times$ expansion \\
 Reduced code $\tilde{z}_{\ell,\tau}$ & $(16384,)$ & max over batch and token \\
-Codes per pass & $18\times10$ & layers $\times$ denoise steps \\
-Action chunk & $(50,7)$ & after unpadding to the action dimension \\
+Codes per pass & $18\times n$ & layers $\times$ denoise steps \\
+Action chunk & \RESULT{recorded} & after unpadding to the action dimension \\
 \hline
 \end{tabular}
 \end{center}
@@ -446,12 +531,15 @@ Action chunk & $(50,7)$ & after unpadding to the action dimension \\
 
 \subsection{Experimental configuration}
 
-Table~\ref{tab:cf-config} records the settings a replication must match.
+Table~\ref{tab:cf-config} records the settings a replication must match. All
+are written by the run to \texttt{counterfactual\_summary.json} under
+\texttt{config}.
 
 \begin{table}[t]
-\caption{Configuration of the counterfactual probe. Cells per layer is the
-product of states, doses, prompts and denoise steps, and forms the denominator
-of the reproducibility requirement in Section~\ref{sec:zscore}.}
+\caption{Configuration of the counterfactual probe. Cells per condition is the
+product of states, noise draws and doses under one prompt; cells per layer
+multiplies that by the denoise steps and is the denominator of the
+reproducibility filter in Section~\ref{sec:zscore}.}
 \label{tab:cf-config}
 \begin{center}
 \small
@@ -460,15 +548,19 @@ of the reproducibility requirement in Section~\ref{sec:zscore}.}
 Quantity & Value & Note \\
 \hline
 Suite and task & \RESULT{suite, task} & single task, held fixed \\
-Seed & \RESULT{seed} & fixes the initial state \\
-States & \RESULT{n} & separated by \RESULT{k} environment steps \\
+Seed & \RESULT{seed} & fixes the initial state and the noise draws \\
+States & \RESULT{n} & separated by \RESULT{k} actions of the unperturbed plan \\
+Noise draws per state & \RESULT{n} & seeded by (seed, state, draw) \\
 Doses & \RESULT{list} & linear blend toward the target colour \\
 Prompts & task, sibling & pixel-identical images \\
-Denoise steps & \RESULT{n} & $\tau = 1 - \mathrm{step}/n$ \\
-Cells per layer & \RESULT{n} & see caption \\
+Denoise steps $n$ & \RESULT{n} & $\tau = 1 - \mathrm{step}/n$ \\
+Cells per condition & \RESULT{n} & states $\times$ draws $\times$ doses \\
+Cells per layer & \RESULT{n} & cells per condition $\times$ $n$ \\
 Target object & \RESULT{body} & the task's object of interest \\
 Placebo object & \RESULT{body} & same mesh, different instance \\
-Recorded features & \RESULT{K} & top-$K$ per layer per denoise step \\
+Top-$K$ for ranking & \RESULT{K} & Eq.~\ref{eq:zstd} only; deltas are stored in full \\
+Nomination thresholds & $25\%$, $\ell\ge4$, $2\times$ & consistency, depth, exact selectivity \\
+Null draws $M$ & \RESULT{M} & Eq.~\ref{eq:enrich} \\
 \hline
 \end{tabular}
 \end{center}
@@ -476,27 +568,57 @@ Recorded features & \RESULT{K} & top-$K$ per layer per denoise step \\
 
 \subsection{Results}
 
-All entries in this subsection are to be filled from a completed run.
-Table~\ref{tab:cf-main} reports the headline selectivity,
-Table~\ref{tab:cf-prompt} the prompt-swap control, and
-Table~\ref{tab:cf-layers} the response broken down by layer.
+All entries in this subsection are to be filled from a completed run. Each
+table caption names the artefact that fills it. Table~\ref{tab:cf-main} reports
+the headline selectivity and its uncertainty, Table~\ref{tab:cf-dose} the dose
+response, Table~\ref{tab:cf-prompt} the prompt-swap control,
+Table~\ref{tab:cf-layers} the response by layer, and
+Table~\ref{tab:cf-validation} the circuit audit.
 
 \begin{table}[t]
-\caption{Selectivity under the task prompt. $\overline{\Delta z}$ is the mean
-per-feature response magnitude of Eq.~\ref{eq:delta}. The null row is the
-nondeterminism floor. Uncertainty is reported across independent runs.}
+\caption{Selectivity under the task prompt. $D$ is the pooled layer response
+of Eq.~\ref{eq:layer-response}; $S$ the perturbation size; the null row is the
+nondeterminism floor. Spread and interval are across cells. Filled from
+\texttt{decision\_metrics.json} under \texttt{h1}: \texttt{pooled},
+\texttt{null\_floor}, \texttt{spread}, \texttt{bootstrap\_ci\_95}.}
 \label{tab:cf-main}
 \begin{center}
-\begin{tabular}{lccc}
+\small
+\begin{tabular}{lcccc}
 \hline
-Condition & $\overline{\Delta z}$ & Action rel.\ $\ell_2$ & Changed pixels \\
+Condition & $D$ & $S=|\mathcal{P}|$ & $S=\lVert\Delta I\rVert_2$ & Action rel.\ $\ell_2$ \\
 \hline
-Null control   & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Target object  & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Placebo object & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Null control (max)   & \RESULT{val} & $0$ & $0$ & \RESULT{val} \\
+Target object        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Placebo object       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
-Selectivity & \RESULT{val} & \RESULT{val} & --- \\
-Footprint-adjusted, Eq.~\ref{eq:sel-px} & \RESULT{val} & \RESULT{val} & --- \\
+Ratio, target over placebo & \RESULT{Sel} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+\hline
+\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, Eq.~\ref{eq:sel-px}, $S=\lVert\Delta I\rVert_2$ (primary): pooled \RESULT{val}; cells mean \RESULT{val} $\pm$ \RESULT{sd}, min \RESULT{val}, max \RESULT{val}; 95\% CI [\RESULT{lo}, \RESULT{hi}]} \\
+\multicolumn{5}{l}{$\mathrm{Sel}_{\mathrm{adj}}$, $S=|\mathcal{P}|$: pooled \RESULT{val}; cells min \RESULT{val}, max \RESULT{val}; 95\% CI [\RESULT{lo}, \RESULT{hi}]} \\
+\multicolumn{5}{l}{Cells $=$ \RESULT{n}; null floor near zero: \RESULT{yes or no}} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\begin{table}[t]
+\caption{Dose response under the task prompt, pooled over states and draws.
+$\eta$ is Eq.~\ref{eq:elasticity}; linear response gives $1$. Filled from
+\texttt{decision\_metrics.json} under \texttt{h1.dose\_response}.}
+\label{tab:cf-dose}
+\begin{center}
+\small
+\begin{tabular}{lcccc}
+\hline
+Condition & Dose & $D$ & $\lVert\Delta I\rVert_2$ & Action rel.\ $\ell_2$ \\
+\hline
+Target  & \RESULT{d} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Target  & \RESULT{d} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Placebo & \RESULT{d} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Placebo & \RESULT{d} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+\hline
+\multicolumn{5}{l}{$\eta(\mathrm{target}) = \RESULT{val}$, monotone: \RESULT{yes or no}; $\eta(\mathrm{placebo}) = \RESULT{val}$, monotone: \RESULT{yes or no}} \\
 \hline
 \end{tabular}
 \end{center}
@@ -504,32 +626,36 @@ Footprint-adjusted, Eq.~\ref{eq:sel-px} & \RESULT{val} & \RESULT{val} & --- \\
 
 \begin{table}[t]
 \caption{Prompt-swap control. Images and noise are identical between rows and
-only the language differs. Prompt grounding $g$ is Eq.~\ref{eq:grounding}.}
+only the language differs; $D$ as in Table~\ref{tab:cf-main}. Prompt grounding
+$g$ is Eq.~\ref{eq:grounding}, mean over cells. Filled from
+\texttt{decision\_metrics.json} under \texttt{h2}: \texttt{per\_prompt},
+\texttt{grounding}, \texttt{perturbation\_action\_effect}.}
 \label{tab:cf-prompt}
 \begin{center}
 \begin{tabular}{lccc}
 \hline
-Prompt & Target $\overline{\Delta z}$ & Placebo $\overline{\Delta z}$ & Selectivity \\
+Prompt & Target $D$ & Placebo $D$ & Selectivity \\
 \hline
 Task, names target     & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 Sibling, names placebo & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
-\multicolumn{4}{l}{Prompt grounding $g = \RESULT{val}$; perturbation action effect $\RESULT{val}$} \\
+\multicolumn{4}{l}{$g = \RESULT{val}$ (min \RESULT{val}, max \RESULT{val}, threshold $0.01$); perturbation action effect $\RESULT{val}$} \\
 \hline
 \end{tabular}
 \end{center}
 \end{table}
 
 \begin{table}[t]
-\caption{Per-layer response. Selectivity is comparable within a layer; across
-layers use $z^{\mathrm{std}}$ of Eq.~\ref{eq:zstd}, since the placebo bound is
-layer-dependent.}
+\caption{Per-layer response $D_\ell$ of Eq.~\ref{eq:layer-response} under the
+task prompt. Selectivity is comparable within a layer; to compare features
+across layers use $z^{\mathrm{std}}$ of Eq.~\ref{eq:zstd}. Filled from
+\texttt{layer\_selectivity.csv}, rows with \texttt{prompt = task}.}
 \label{tab:cf-layers}
 \begin{center}
 \small
 \begin{tabular}{cccc}
 \hline
-Layer & Target $\overline{\Delta z}$ & Placebo $\overline{\Delta z}$ & Selectivity \\
+Layer & Target $D_\ell$ & Placebo $D_\ell$ & Selectivity \\
 \hline
 0 & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 $\vdots$ & & & \\
@@ -540,42 +666,59 @@ $\vdots$ & & & \\
 \end{table}
 
 \begin{table}[t]
-\caption{Circuit corroboration, Section~\ref{sec:validation-method}. Coverage is
-the fraction of circuit nodes the probe recorded; unmeasured nodes are excluded
-rather than treated as silent.}
+\caption{Circuit corroboration, Section~\ref{sec:validation-method}, parents
+only. Random mean is over $M$ matched draws; $p$ is the Monte-Carlo tail of
+Eq.~\ref{eq:enrich}. Filled from \texttt{validation.json}:
+\texttt{conditions}, \texttt{exercised\_fraction},
+\texttt{circuit\_selectivity\_target\_over\_placebo}; the nominee from
+\texttt{nominated\_targets.json}.}
 \label{tab:cf-validation}
 \begin{center}
+\small
 \begin{tabular}{lcccc}
 \hline
-Condition & Circuit mean & Random mean & Enrichment & $p$ \\
+Perturbation & Circuit mean & Random mean & Enrichment & $p$ \\
 \hline
-Target perturbation  & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Placebo perturbation & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Target object  & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Placebo object & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
-\multicolumn{5}{l}{Coverage $= \RESULT{val}$; traced target $= \RESULT{key}$; $M = \RESULT{val}$ draws} \\
+\multicolumn{5}{l}{Traced target $= \RESULT{key}$ ($z^{\mathrm{std}} = \RESULT{val}$, exact selectivity \RESULT{val}, fired in \RESULT{val} of cells)} \\
+\multicolumn{5}{l}{Parents $= \RESULT{n}$; exercised $= \RESULT{n}$ (\RESULT{fraction}); $M = \RESULT{val}$; circuit selectivity $= \RESULT{val}$} \\
 \hline
 \end{tabular}
 \end{center}
 \end{table}
 
 \subsection{Hypothesis verdicts}
+\label{sec:verdicts}
 
-To be completed from Tables~\ref{tab:cf-main}--\ref{tab:cf-validation} against
-the falsification criteria of Section~\ref{sec:hypotheses}. The decision rules
-are fixed in advance.
+To be completed from Tables~\ref{tab:cf-main}--\ref{tab:cf-validation}. The
+rules below are the ones the code applies; each run writes its verdict and the
+rule it applied side by side, under \texttt{verdict} and
+\texttt{decision\_rule} in the artefacts named.
 
 \paragraph{H1.}
-\RESULT{supported or falsified}. Supported if the footprint-adjusted
-selectivity of Eq.~\ref{eq:sel-px} exceeds $1$ by more than the run-to-run
-spread, with the null floor at or near zero.
+\RESULT{supported, weak, falsified or invalid}. \emph{Invalid} if the largest
+null $D$ exceeds $5\%$ of $D(\mathrm{placebo})$. Otherwise \emph{supported} if
+the pooled $\mathrm{Sel}_{\mathrm{adj}}$ with $S=\lVert\Delta I\rVert_2$ exceeds
+$1$ and so does its minimum over cells; \emph{weak} if only the pooled value
+does; \emph{falsified} otherwise. Quote the unadjusted ratio alongside if
+$|\eta - 1|$ is large. (\texttt{decision\_metrics.json}, \texttt{h1.verdict}.)
 
 \paragraph{H2.}
-\RESULT{supported, falsified or untestable}. Untestable if $g$ is negligible;
-otherwise falsified if selectivity fails to invert under the sibling prompt.
+\RESULT{supported, partial, falsified or untestable}. \emph{Untestable} if there
+is no sibling prompt or mean $g<0.01$. Otherwise, with
+$\mathrm{Sel}_{\mathrm{task}}>1$: \emph{supported} if
+$\mathrm{Sel}_{\mathrm{alt}}<1$; \emph{falsified} if
+$\mathrm{Sel}_{\mathrm{alt}}\ge\mathrm{Sel}_{\mathrm{task}}$; \emph{partial}
+otherwise. If $\mathrm{Sel}_{\mathrm{task}}\le1$ there is no selectivity to
+follow the referent and H2 does not apply. (\texttt{h2.verdict}.)
 
 \paragraph{H3.}
-\RESULT{supported or falsified}. Supported if enrichment exceeds $1$ at
-$p<0.05$ with coverage above one half.
+\RESULT{supported, falsified or inconclusive}. \emph{Inconclusive} if fewer
+than half the parents are exercised by the scene. Otherwise \emph{supported} if
+enrichment exceeds $1$ at $p<0.05$; \emph{falsified} otherwise.
+(\texttt{validation.json}, \texttt{h3\_verdict}.)
 
 \subsection{Threats to validity}
 \label{sec:threats}
@@ -584,30 +727,38 @@ $p<0.05$ with coverage above one half.
 Within a single comparison, yes: the two renders share state, camera and noise,
 and the pixel difference is confined to the perturbed object. Across
 comparisons the target and placebo differ in screen position as well as task
-relevance. Eq.~\ref{eq:sel-px} addresses this partially and the prompt swap
-more directly, but residual position confounding remains and is reported as
-such.
+relevance. Eq.~\ref{eq:sel-px} addresses the footprint part of this and the
+prompt swap the relevance part, but residual position confounding remains and
+is reported as such.
 
 \paragraph{Are the circuit and the probe talking about the same inputs?}
 Not exactly, and this bounds what H3 can establish. The circuit is traced on the
 dataset observations where the target feature fires, whereas the probe measures
 on environment renders of one held-fixed task. A parent that is genuinely
-upstream of the target on the tracing distribution may simply never activate in
-the probe's scene, in which case it is absent from the probe's recorded top-$K$
-and is excluded rather than counted against the circuit. This is one reason
-coverage can be low, and it means a null H3 result is ambiguous between ``the
-edges do not carry this property'' and ``this scene does not exercise them''.
-A positive H3 result does not suffer the same ambiguity.
+upstream of the target on the tracing distribution may never activate in the
+probe's scene. Because every delta is recorded, such a parent is identified as
+unexercised and reported, rather than being silently absent; but a parent that
+is exercised and does not respond remains ambiguous between ``this edge does not
+carry the property'' and ``it carries it on the dataset but not on this
+scene''. A positive H3 result does not suffer that ambiguity. The exercised
+fraction is what a reader should look at first.
+
+\paragraph{Is the null for H3 fair?}
+Matching on layer, flow time and exercise makes the null ``a random active
+feature here''. It is stricter than an unmatched draw and less strict than a
+null matched on baseline activation magnitude. A circuit whose parents are
+simply the most active features at their layer could be enriched under this
+null without carrying the property; the placebo row and the circuit's own
+selectivity are the check against that reading.
 
 \paragraph{Does the measurement answer the question?}
-$\Delta z$ is measured on the features the transcoders expose, so any claim is
+$\delta$ is measured on the features the transcoders expose, so any claim is
 about \emph{transcoder features} rather than about the underlying MLP basis. A
 response not visible in the sparse code is not visible here.
 
 \paragraph{Is the effect size meaningful?}
 Only relative to the null floor, which the design forces to be measured rather
-than assumed. If that floor is not near zero the paired comparison is
-compromised, and the run should be discarded rather than interpreted.
+than assumed, and relative to the placebo. Both are reported in every table.
 
 \paragraph{Is colour the right variable?}
 Colour is convenient because it leaves geometry and physics untouched, but it
@@ -618,38 +769,48 @@ Claims about behaviour require a task in which the perturbed property is
 load-bearing.
 
 \paragraph{Scope.}
-One task, one seed, a small number of states and doses. The design controls
-confounds tightly but samples narrowly. Generalisation across tasks, objects
-and perturbation types is untested.
+One task, one seed, a small number of states, draws and doses. The design
+controls confounds tightly but samples narrowly, and the intervals in
+Table~\ref{tab:cf-main} are correspondingly wide. Generalisation across tasks,
+objects and perturbation types is untested.
 
 \subsection{Reproducibility}
 
-Every stage is a script with recorded configuration. Each run writes its full
-configuration, the observation tensor shapes handed to the policy, the raw
-per-feature deltas, and the rendered baseline, perturbed and difference images.
-The pipeline is:
+Every stage is a script with recorded configuration and a deterministic seed.
+The pipeline and its artefacts are:
 
 \begin{enumerate}
-\item \textbf{Probe.} Paired counterfactual at frozen states, writing
-per-feature deltas, measurements, shapes and images.
-\item \textbf{Report.} Ranks features by Eq.~\ref{eq:zstd} subject to the
-reproducibility requirement, and nominates trace targets.
-\item \textbf{Discovery.} Collects the top-$K$ activating observations the
-tracer requires.
-\item \textbf{Trace.} Expands a circuit backward from the nominated target in
-replacement mode.
-\item \textbf{Validate.} Scores the traced circuit against the controlled
-perturbation using Eq.~\ref{eq:enrich}.
+\item \textbf{Probe.} Paired counterfactual at frozen states. Writes the full
+signed deltas and baselines for every cell and condition
+(\texttt{latents/}), the per-cell decision quantities
+(\texttt{decision\_metrics.json}, \texttt{h1\_cells.csv}), every measurement
+(\texttt{counterfactual\_summary.json}, \texttt{measurements.csv}), the
+tensor shapes (\texttt{observation\_shapes.json}) and the rendered baseline,
+perturbed and difference images.
+\item \textbf{Report.} Computes Table~\ref{tab:cf-layers}, ranks candidates by
+Eq.~\ref{eq:zstd}, applies the three filters of Section~\ref{sec:zscore} with
+exact placebo responses from \texttt{latents/}, and writes the nominee and the
+rule to \texttt{nominated\_targets.json}.
+\item \textbf{Discovery.} Collects the top-activating dataset observations and
+token positions the tracer requires for the nominee.
+\item \textbf{Trace.} Expands a circuit backward from the nominee in
+replacement mode (\texttt{graph.json}).
+\item \textbf{Validate.} Scores the traced parents against \texttt{latents/}
+using Eq.~\ref{eq:enrich} and writes \texttt{validation.json}.
 \end{enumerate}
 
 Target and placebo objects are selected automatically from the task's own
 problem definition, using the declared object of interest plus a sibling
-instance of the same object type, so the choice is determined by the task
-rather than by the experimenter.
+instance of the same object type, and the sibling prompt from the sibling
+problem whose target occupies the placebo's region, so none of these choices
+is made by the experimenter.
 
 \paragraph{Failure modes that abort rather than pass silently.}
 The following are checked at run time and stop the run rather than producing a
-plausible number: a stale render cache or an invisible target, via the liveness
-control; drifting tensor shapes between conditions, via the shape guard; a
-perturbation that changes no pixels; a checkpoint whose vision weights fail to
-load; and a nominated target that fired in too few cells to be reproducible.
+plausible number: a policy whose pretrained weights did not fully load; a stale
+render cache or an invisible target, via the liveness control; a baseline that
+is not restored exactly after a recolour is reverted; a perturbation that
+changes no pixels; drifting tensor shapes between conditions, via the shape
+guard; and a nomination stage that finds no feature meeting all three filters,
+which reports the rejections by criterion instead of tracing the best available
+candidate.

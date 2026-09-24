@@ -69,6 +69,7 @@ from pi05_mi.counterfactual_store import DeltaStore, sort_layer_names  # noqa: E
 from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tensor  # noqa: E402
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers  # noqa: E402
 from pi05_mi.pi05_weights import assert_weights_loaded, install_load_recorder  # noqa: E402
+from pi05_mi.provenance import collect_provenance  # noqa: E402
 from pi05_mi.scene_perturbation import (  # noqa: E402
     blend_geom_color,
     find_objects,
@@ -834,6 +835,28 @@ def main() -> None:
 
     print(f"loading transcoders from {args.checkpoint}", flush=True)
     transcoders = load_transcoders(args.checkpoint, device)
+
+    # What answered, not just what was asked: commit, versions, device and a
+    # content hash of the checkpoint, so a number can be tied to code and weights.
+    provenance = collect_provenance(
+        repo_root=Path(__file__).resolve().parents[1],
+        device=device,
+        checkpoint=args.checkpoint,
+        policy_path=args.policy_path,
+        policy_dtype=args.policy_dtype,
+        extra={"argv": sys.argv[1:]},
+    )
+    (args.output_dir / "provenance.json").write_text(
+        json.dumps(provenance, indent=2, default=_json_default), encoding="utf-8"
+    )
+    digest = (provenance.get("transcoder_checkpoint") or {}).get("digest", "")
+    print(
+        f"provenance: commit {provenance['git'].get('commit')} dirty={provenance['git'].get('dirty')} "
+        f"lerobot={provenance['packages'].get('lerobot')} torch={provenance['packages'].get('torch')} "
+        f"device={provenance['device'].get('gpu_name', provenance['device'].get('device'))} "
+        f"checkpoint sha256={digest[:16]}",
+        flush=True,
+    )
     accumulator = LatentAccumulator()
     context = Pi05TranscoderContext(
         mode="probe",
@@ -1197,6 +1220,7 @@ def main() -> None:
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,
+        "provenance": provenance,
         "prompt_grounding_rel_l2": [
             _rel_l2(baseline_by_prompt[(i, n, "task")], baseline_by_prompt[(i, n, "alt")])
             for i in range(args.states)

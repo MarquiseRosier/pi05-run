@@ -259,6 +259,47 @@ def test_identical_renders_have_exactly_zero_delta() -> None:
         renderer.close()
 
 
+def test_changed_pixels_counts_pixels_not_channel_values() -> None:
+    """A batched frame must not turn the count into a per-channel fraction.
+
+    Observations carry a leading batch axis, so frames arrive as (1, H, W, C).
+    Reducing over channels only for rank 3 left that axis in place and made
+    changed_pixel_fraction move with how many channels crossed the threshold
+    rather than how many pixels did -- producing a spurious 2/3 ratio between
+    perturbation doses.
+    """
+    base = np.zeros((100, 100, 3), dtype=np.uint8)
+    one_channel = base.copy()
+    one_channel[:10, :10, 0] = 200  # 100 pixels, red only
+    all_channels = base.copy()
+    all_channels[:10, :10, :] = 200  # the same 100 pixels, every channel
+
+    for perturbed in (one_channel, all_channels):
+        flat = image_delta_stats(base, perturbed)
+        batched = image_delta_stats(base[None], perturbed[None])
+        assert flat["changed_pixel_count"] == 100
+        assert batched["changed_pixel_count"] == 100, "batched input must count the same pixels"
+        assert abs(flat["changed_pixel_fraction"] - 0.01) < 1e-12
+        assert abs(batched["changed_pixel_fraction"] - 0.01) < 1e-12
+
+    # A pixel changing in one channel counts once, same as changing in three.
+    assert (
+        image_delta_stats(base[None], one_channel[None])["changed_pixel_count"]
+        == image_delta_stats(base[None], all_channels[None])["changed_pixel_count"]
+    )
+
+
+def test_magnitude_metrics_are_rank_invariant() -> None:
+    """The L2/mean/max figures were always correct; keep them that way."""
+    rng = np.random.default_rng(3)
+    base = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+    pert = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+    flat = image_delta_stats(base, pert)
+    batched = image_delta_stats(base[None], pert[None])
+    for key in ("mean_abs_delta", "max_abs_delta", "l2_delta", "relative_l2"):
+        assert abs(flat[key] - batched[key]) < 1e-12, key
+
+
 def test_image_delta_stats_handles_uint8_and_float_inputs() -> None:
     base_u8 = np.zeros((8, 8, 3), dtype=np.uint8)
     pert_u8 = base_u8.copy()

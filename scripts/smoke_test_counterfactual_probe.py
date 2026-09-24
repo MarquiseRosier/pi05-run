@@ -698,7 +698,10 @@ def test_nomination_rejects_a_one_off_however_selective() -> None:
         json.dumps({"config": {"num_inference_steps": 10}})
     )
     script = Path(__file__).resolve().parent / "report_pi05_counterfactual_features.py"
-    out = subprocess.run([sys.executable, str(script), str(run)], capture_output=True, text=True).stdout
+    # The fixture lives at layer 2; disable the depth rule so only consistency is under test.
+    out = subprocess.run(
+        [sys.executable, str(script), str(run), "--min-trace-layer", "0"], capture_output=True, text=True
+    ).stdout
 
     import csv as _csv
 
@@ -706,7 +709,8 @@ def test_nomination_rejects_a_one_off_however_selective() -> None:
     assert float(ranked[fluke]["selectivity"]) > float(ranked[consistent]["selectivity"]), (
         "the fluke should still win on raw selectivity; that is why the filter is needed"
     )
-    assert ranked[fluke]["layer_cells"] == "80", "cell counts must be reported against the total"
+    # Nomination is decided on the task prompt's cells: 2 states x 2 doses x 10 steps.
+    assert ranked[fluke]["layer_cells"] == "40", "cell counts must be reported against the total"
     nomination = out[out.index("Nominated"):] if "Nominated" in out else ""
     assert f"F{consistent}" in nomination, nomination
     assert f"F{fluke}" not in nomination, "a 2/80 feature must not be nominated"
@@ -821,6 +825,82 @@ def test_ranking_is_fair_across_layers_of_different_scale() -> None:
     )
     nomination = out[out.index("Nominated"):] if "Nominated" in out else ""
     assert "L17" in nomination, f"a deep feature must be nominable\n{nomination}"
+
+
+def test_exact_placebo_from_the_store_overrides_the_top_k_bound() -> None:
+    """A feature the placebo's top-K missed can still be placebo-responsive.
+
+    Fixture: feature 9 responds 2.0 to the target in every cell and 1.8 to the
+    placebo -- but the placebo's top-K is filled by 25 larger responders, so on
+    the CSV alone feature 9 reads 'placebo below top-K' and is nominated. The
+    store knows its exact placebo response, and the nominator must reject it,
+    while nominating feature 11 (target 2.0, placebo 0.0).
+    """
+    import csv as _csv
+    import subprocess
+    import tempfile
+
+    from pi05_mi.counterfactual_store import DeltaStore
+
+    layer = "paligemma_with_expert.gemma_expert.model.layers.6.mlp"
+    n_features, steps = 64, 10
+    sneaky, clean, decoys = 9, 11, list(range(30, 55))  # 25 decoys fill the placebo top-K
+
+    def code(kind):
+        acc = P.LatentAccumulator()
+        for step in range(steps):
+            vector = np.zeros(n_features, dtype=np.float32)
+            if kind != "baseline":
+                vector[sneaky] = 2.0 if kind == "target" else 1.8
+                vector[clean] = 2.0 if kind == "target" else 0.0
+                if kind == "placebo":
+                    vector[decoys] = 5.0
+            acc.max[(layer, step)] = vector
+            acc.mean[(layer, step)] = vector
+        return acc
+
+    baseline, target, placebo = code("baseline"), code("target"), code("placebo")
+    run = Path(tempfile.mkdtemp())
+    store = DeltaStore.create(run / "latents", layer_names=[layer], num_steps=steps, num_features=n_features)
+    rows = []
+    for state in (0, 1):
+        for dose in (0.5, 1.0):
+            for condition, other in (("target", target), ("placebo", placebo)):
+                for row in P.latent_delta_rows(baseline, other, condition=condition, top_features=25):
+                    row.update({"state_index": state, "noise_index": 0, "dose": dose, "target": condition, "prompt": "task"})
+                    rows.append(row)
+        store.write_block(
+            state=state, noise=0, prompt="task", baseline_max=baseline.max,
+            deltas={
+                ("target", 0.5): P.full_delta(baseline, target), ("target", 1.0): P.full_delta(baseline, target),
+                ("placebo", 0.5): P.full_delta(baseline, placebo), ("placebo", 1.0): P.full_delta(baseline, placebo),
+            },
+        )
+    P.write_csv(run / "latent_deltas.csv", rows)
+    (run / "counterfactual_summary.json").write_text(json.dumps({"config": {"num_inference_steps": steps}}))
+    script = Path(__file__).resolve().parent / "report_pi05_counterfactual_features.py"
+    out = subprocess.run(
+        [sys.executable, str(script), str(run), "--min-trace-layer", "4"], capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+
+    ranked = {int(r["feature"]): r for r in _csv.DictReader((run / "candidate_features.csv").open())}
+    assert ranked[sneaky]["placebo_measured"] == "False", "on the CSV alone the placebo looks unmeasured"
+    assert abs(float(ranked[sneaky]["placebo_exact_mean_abs_delta"]) - 1.8) < 1e-6, "the store knows better"
+    assert float(ranked[clean]["placebo_exact_mean_abs_delta"]) == 0.0
+    nominated = json.loads((run / "nominated_targets.json").read_text())
+    keys = [row["feature_key"] for row in nominated["nominated"]]
+    assert f"F{clean}" in " ".join(keys), keys
+    assert f"F{sneaky}" not in " ".join(keys), f"a placebo-responsive feature must not be nominated: {keys}"
+    assert nominated["criteria"]["rejected"].get("placebo-responsive", 0) >= 1
+    assert "exact placebo" in nominated["criteria"]["placebo_rule"]
+
+    # Shallow layers are excluded by the pre-registered depth rule.
+    out = subprocess.run(
+        [sys.executable, str(script), str(run), "--min-trace-layer", "7"], capture_output=True, text=True
+    )
+    nominated = json.loads((run / "nominated_targets.json").read_text())
+    assert nominated["nominated"] == [] and nominated["criteria"]["rejected"].get("too shallow", 0) >= 1
 
 
 def test_elevated_placebo_disqualifies_a_candidate() -> None:

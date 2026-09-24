@@ -65,6 +65,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from pi05_mi.counterfactual_store import DeltaStore, sort_layer_names  # noqa: E402
 from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tensor  # noqa: E402
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers  # noqa: E402
 from pi05_mi.scene_perturbation import (  # noqa: E402
@@ -153,6 +154,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num-inference-steps", type=int, default=10)
     parser.add_argument("--top-features", type=int, default=25, help="Top changed features to record per layer.")
+    parser.add_argument(
+        "--no-full-deltas",
+        dest="full_deltas",
+        action="store_false",
+        default=True,
+        help=(
+            "Skip writing the full per-feature delta store (latents/). The store is what makes the "
+            "placebo response exact and lets a traced circuit be scored at full coverage."
+        ),
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--policy-dtype", default="bfloat16")
     parser.add_argument("--save-images", action="store_true", default=True)
@@ -238,6 +249,14 @@ def latent_delta_rows(
             }
         )
     return rows
+
+
+def full_delta(baseline: LatentAccumulator, other: LatentAccumulator) -> dict[tuple[str, int], np.ndarray]:
+    """Signed per-feature difference of the reduced code, for every (layer, step)."""
+    return {
+        key: (other.max[key] - baseline.max[key]).astype(np.float32)
+        for key in baseline.max.keys() & other.max.keys()
+    }
 
 
 def summarize_latent_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -908,6 +927,26 @@ def main() -> None:
     noise_seed = args.seed if args.noise_seed is None else args.noise_seed
     if args.noise_samples < 1:
         raise SystemExit("--noise-samples must be at least 1")
+    store: DeltaStore | None = None
+
+    def ensure_store(latents: LatentAccumulator) -> DeltaStore | None:
+        nonlocal store
+        if not args.full_deltas or store is not None:
+            return store
+        layer_names = sort_layer_names({name for name, _step in latents.max})
+        num_features = int(next(iter(latents.max.values())).shape[0])
+        store = DeltaStore.create(
+            args.output_dir / "latents",
+            layer_names=layer_names,
+            num_steps=args.num_inference_steps,
+            num_features=num_features,
+        )
+        print(
+            f"full delta store: {len(layer_names)} layers x {args.num_inference_steps} steps x "
+            f"{num_features} features per block -> {store.root}",
+            flush=True,
+        )
+        return store
     last_baseline_actions = None
     # Keyed (state, noise draw, prompt): the unperturbed action and latents.
     baseline_by_prompt: dict[tuple[int, int, str], np.ndarray] = {}
@@ -982,6 +1021,10 @@ def main() -> None:
                 # prompt-swap control manipulated nothing and proves nothing.
                 baseline_by_prompt[(state_index, noise_index, prompt_label)] = baseline_actions
                 baseline_latents_by_prompt[(state_index, noise_index, prompt_label)] = baseline_latents
+                ensure_store(baseline_latents)
+                block_deltas: dict[tuple[str, float], dict[tuple[str, int], np.ndarray]] = {}
+                if store is not None:
+                    block_deltas[("null", 0.0)] = full_delta(baseline_latents, null_latents)
 
                 null_rows = latent_delta_rows(
                     baseline_latents, null_latents, condition="null", top_features=args.top_features
@@ -1022,6 +1065,8 @@ def main() -> None:
                         rows = latent_delta_rows(
                             baseline_latents, perturbed_latents, condition=kind, top_features=args.top_features
                         )
+                        if store is not None:
+                            block_deltas[(kind, dose)] = full_delta(baseline_latents, perturbed_latents)
                         for row in rows:
                             row["state_index"] = state_index
                             row["noise_index"] = noise_index
@@ -1053,6 +1098,15 @@ def main() -> None:
                             }
                         )
 
+                if store is not None:
+                    store.write_block(
+                        state=state_index,
+                        noise=noise_index,
+                        prompt=prompt_label,
+                        baseline_max=baseline_latents.max,
+                        deltas=block_deltas,
+                    )
+
         harness.prompt = prompt_variants[0][1]
 
         # Advance the unperturbed trajectory so the next measurement sits at a
@@ -1081,6 +1135,7 @@ def main() -> None:
             "noise_seed": noise_seed,
             "num_inference_steps": args.num_inference_steps,
             "top_features": args.top_features,
+            "full_delta_store": None if store is None else str(store.root),
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,

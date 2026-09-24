@@ -581,6 +581,43 @@ def test_nomination_rejects_a_one_off_however_selective() -> None:
     assert f"F{fluke}" not in nomination, "a 2/80 feature must not be nominated"
 
 
+def test_vision_tower_remap_only_fires_when_the_model_wants_it() -> None:
+    """The compat patch must not break a load that would otherwise succeed.
+
+    It flattens `.vision_tower.vision_model.*` to `.vision_tower.*`. Newer
+    LeRobot builds nest SigLIP under `vision_model` exactly as the checkpoint
+    does, so flattening there makes load_state_dict raise -- and LeRobot
+    swallows that, leaving the policy on random vision weights. Every feature
+    discovered or circuit traced under those weights is meaningless.
+    """
+    import types
+
+    import torch
+    from lerobot.policies.pi05 import modeling_pi05
+
+    from train_pi05_transcoders import patch_pi05_checkpoint_key_compat
+
+    nested = (
+        "model.paligemma_with_expert.paligemma.model.vision_tower"
+        ".vision_model.embeddings.patch_embedding.weight"
+    )
+    flat = nested.replace(".vision_model.", ".")
+
+    def remap_with(model_keys):
+        modeling_pi05.PI05Policy._fix_pytorch_state_dict_keys = lambda self, sd, mc: sd
+        patch_pi05_checkpoint_key_compat()
+        fake = types.SimpleNamespace(state_dict=lambda: {key: None for key in model_keys})
+        out = modeling_pi05.PI05Policy._fix_pytorch_state_dict_keys(
+            fake, {nested: torch.zeros(1)}, None
+        )
+        return next(iter(out))
+
+    assert remap_with([nested]) == nested, (
+        "a model that nests vision_model must keep the checkpoint's keys untouched"
+    )
+    assert remap_with([flat]) == flat, "an older flat-layout model must still get the remap"
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -78,6 +78,19 @@ def patch_pi05_checkpoint_key_compat() -> None:
 
     def _fix_pytorch_state_dict_keys_compat(self, state_dict, model_config):
         fixed_state_dict = original(self, state_dict, model_config)
+
+        # Only flatten when this LeRobot build actually wants the flat layout.
+        # Newer builds nest SigLIP under `vision_model` exactly as the checkpoint
+        # does, and remapping there produces the very failure this patch exists
+        # to prevent: load_state_dict raises, LeRobot swallows it, and the policy
+        # silently runs on random vision weights.
+        try:
+            model_keys = self.state_dict().keys()
+        except Exception:
+            model_keys = ()
+        if any(".vision_tower.vision_model." in key for key in model_keys):
+            return fixed_state_dict
+
         remapped_state_dict = {}
         remap_count = 0
         for key, value in fixed_state_dict.items():

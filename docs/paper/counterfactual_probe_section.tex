@@ -80,15 +80,25 @@ to it are meaningful. Circuit tracing therefore requires replacement mode.
 
 \paragraph{What an edge is.}
 In replacement mode, feature $j$ at a later layer $\ell'$ has pre-activation
-$a_{\ell',j}$. The influence of an earlier feature $i$ at layer $\ell$ is the
-sensitivity of that pre-activation to it, evaluated at the current input and
-weighted by how active the source actually is:
+$a_{\ell',j,p}$ at action-token position $p$. Two positional choices are part
+of the definition and are easily left implicit by mistake. The target is
+evaluated at a \emph{single} position $p^{\star}$, taken from feature discovery
+as the token at which the target feature most strongly activated on that
+observation. The source is summed over \emph{all} of its token positions, since
+a parent may contribute from anywhere in the chunk. The edge is therefore
 \begin{equation}
 \mathrm{edge}(i \rightarrow j)
 \;=\;
-z_{\ell,i}\,\frac{\partial a_{\ell',j}}{\partial z_{\ell,i}}.
+\sum_{t=1}^{T}
+z_{\ell,i,t}\,
+\frac{\partial a_{\ell',j,p^{\star}}}{\partial z_{\ell,i,t}},
 \label{eq:edge}
 \end{equation}
+a signed quantity. The derivative is obtained as a vector--Jacobian product:
+$a_{\ell',j,p^{\star}}$ is a scalar, so a single reverse pass through the
+replacement model yields the whole gradient with respect to $z_\ell$, with
+attention mixing and normalisation along the path accounted for.
+
 Eq.~\ref{eq:edge} is the first-order Taylor term for turning feature $i$
 \emph{off}: since $a_{\ell',j}(z_{\ell,i}) - a_{\ell',j}(0) \approx z_{\ell,i}\,
 \partial a_{\ell',j}/\partial z_{\ell,i}$, the edge estimates how much of $j$'s
@@ -99,9 +109,7 @@ Two factors in Eq.~\ref{eq:edge} are worth separating. The derivative is
 \emph{fixed wiring}: it depends on the weights and the surrounding activations,
 not on how strongly $i$ fired. Multiplying by $z_{\ell,i}$ converts it into an
 \emph{attribution for this input}, so a strongly wired parent that did not fire
-contributes nothing here. Section~B evaluates the derivative by a
-vector--Jacobian product through the replacement model, which accounts for
-attention mixing and normalisation along the path.
+contributes nothing here.
 
 \paragraph{What an edge is not.}
 Eq.~\ref{eq:edge} is a first-order local quantity. It describes how
@@ -235,9 +243,17 @@ This is a substantially tighter control than a semantically related but
 different object, because the appearance change itself is nearly identical.
 
 Because the two instances occupy different screen positions, their perturbed
-pixel footprints are not exactly equal. Write $D(c)$ for the layer response of
-Eq.~\ref{eq:layer-response} averaged over layers, and define the raw
-selectivity $\mathrm{Sel} = D(\mathrm{target})/D(\mathrm{placebo})$. To ask
+pixel footprints are not exactly equal. Write
+\[
+D(c) = \frac{1}{|\mathcal{L}|\,|\mathcal{T}|}
+\sum_{\ell\in\mathcal{L}}\sum_{\tau\in\mathcal{T}}
+\left\lVert \delta_{\ell,\tau,\cdot}(c) \right\rVert_2
+\]
+for the response pooled over all $|\mathcal{L}|=18$ layers and
+$|\mathcal{T}|=10$ denoise steps, and define the raw selectivity
+$\mathrm{Sel} = D(\mathrm{target})/D(\mathrm{placebo})$. Because every layer
+contributes the same number of flow times, this coincides with the mean of the
+per-layer responses of Eq.~\ref{eq:layer-response}. To ask
 whether the difference is more than a difference in how much of the image
 moved, we divide by a measure of perturbation size,
 \begin{equation}

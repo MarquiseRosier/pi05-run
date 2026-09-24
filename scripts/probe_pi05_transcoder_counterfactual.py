@@ -36,6 +36,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+def _harden_environment() -> None:
+    """Neutralise host env vars that break a headless LIBERO import.
+
+    Colab exports ``MPLBACKEND=module://matplotlib_inline.backend_inline``,
+    which is only meaningful inside the kernel process. LIBERO imports
+    matplotlib while building its env wrapper, so an inherited inline backend
+    aborts the import in any subprocess.
+    """
+    if "inline" in os.environ.get("MPLBACKEND", ""):
+        os.environ["MPLBACKEND"] = "Agg"
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    # Offscreen rendering needs a headless GL backend; honour an explicit choice.
+    os.environ.setdefault("MUJOCO_GL", "egl")
+    os.environ.setdefault("PYOPENGL_PLATFORM", os.environ["MUJOCO_GL"])
+
+
+_harden_environment()
+
 import numpy as np
 import torch
 
@@ -205,11 +223,12 @@ def summarize_latent_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
 class Harness:
     vec_env: Any
     inner_env: Any
-    policy: Any
-    preprocessor: Any
-    env_preprocessor: Any
     prompt: str
     preprocess_observation: Callable[[dict], dict]
+    # Absent on a --list-objects pass, which needs the scene but not the policy.
+    policy: Any = None
+    preprocessor: Any = None
+    env_preprocessor: Any = None
 
 
 def ensure_libero_config() -> Path | None:
@@ -255,7 +274,12 @@ def ensure_libero_config() -> Path | None:
     return config_file
 
 
-def build_harness(args: argparse.Namespace) -> Harness:
+def build_harness(args: argparse.Namespace, *, load_policy: bool = True) -> Harness:
+    """Build the LIBERO env, and the policy stack only when it will be used.
+
+    Listing the scene's objects needs the simulator but not Pi0.5, and loading
+    the policy means a multi-GB download, so the discovery pass skips it.
+    """
     ensure_libero_config()
 
     from lerobot.configs.policies import PreTrainedConfig
@@ -264,6 +288,23 @@ def build_harness(args: argparse.Namespace) -> Harness:
     from lerobot.policies.factory import make_policy, make_pre_post_processors
     from lerobot.scripts.lerobot_eval import preprocess_observation
 
+    env_cfg = LiberoEnv(task=args.suite, task_ids=[args.task_id])
+    print(f"building LIBERO env {args.suite} task {args.task_id}", flush=True)
+    envs = make_env(env_cfg, n_envs=1, use_async_envs=False)
+    vec_env = envs[args.suite][args.task_id]
+    inner_env = vec_env.envs[0] if hasattr(vec_env, "envs") else vec_env
+
+    harness = Harness(
+        vec_env=vec_env,
+        inner_env=inner_env,
+        prompt=args.prompt or "",
+        preprocess_observation=preprocess_observation,
+    )
+    if not load_policy:
+        print("skipping policy load (discovery pass)", flush=True)
+        return harness
+
+    print(f"loading policy {args.policy_path}", flush=True)
     policy_cfg = PreTrainedConfig.from_pretrained(
         args.policy_path,
         cache_dir=os.environ.get("HF_HUB_CACHE"),
@@ -275,10 +316,6 @@ def build_harness(args: argparse.Namespace) -> Harness:
     policy_cfg.compile_model = False
     policy_cfg.gradient_checkpointing = False
     policy_cfg.n_action_steps = 10
-
-    env_cfg = LiberoEnv(task=args.suite, task_ids=[args.task_id])
-    envs = make_env(env_cfg, n_envs=1, use_async_envs=False)
-    vec_env = envs[args.suite][args.task_id]
 
     policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg, rename_map={})
     policy.eval()
@@ -293,18 +330,10 @@ def build_harness(args: argparse.Namespace) -> Harness:
             "rename_observations_processor": {"rename_map": {}},
         },
     )
-    env_preprocessor, _ = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy_cfg)
-
-    inner_env = vec_env.envs[0] if hasattr(vec_env, "envs") else vec_env
-    return Harness(
-        vec_env=vec_env,
-        inner_env=inner_env,
-        policy=policy,
-        preprocessor=preprocessor,
-        env_preprocessor=env_preprocessor,
-        prompt=args.prompt or "",
-        preprocess_observation=preprocess_observation,
-    )
+    harness.policy = policy
+    harness.preprocessor = preprocessor
+    harness.env_preprocessor, _ = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy_cfg)
+    return harness
 
 
 def rerender_observation(harness: Harness) -> dict[str, Any]:
@@ -435,8 +464,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     device = torch.device(args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu")
 
-    print("building LIBERO env and Pi0.5 policy", flush=True)
-    harness = build_harness(args)
+    harness = build_harness(args, load_policy=not args.list_objects)
 
     env_observation, _info = harness.vec_env.reset(seed=[args.seed])
     if not harness.prompt:

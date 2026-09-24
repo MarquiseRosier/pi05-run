@@ -618,6 +618,102 @@ def test_vision_tower_remap_only_fires_when_the_model_wants_it() -> None:
     assert remap_with([flat]) == flat, "an older flat-layout model must still get the remap"
 
 
+def _two_scale_run(tmp_dir):
+    """Two layers whose response scales differ 40x, each with one standout.
+
+    This is the shape of the real data: L2 deltas are ~0.1 and L17 deltas ~4.
+    A fair ranking must be able to nominate either standout.
+    """
+    import numpy as _np
+
+    specs = {2: (0.10, 6), 17: (4.00, 9)}
+    n_features = 64
+
+    def build(boost, scale_mult):
+        acc = P.LatentAccumulator()
+        for layer, (scale, star) in specs.items():
+            name = f"paligemma_with_expert.gemma_expert.model.layers.{layer}.mlp"
+            for step in range(10):
+                rng = _np.random.default_rng(layer * 100 + step)
+                vector = _np.abs(rng.normal(scale * scale_mult, scale * 0.15, n_features))
+                if boost:
+                    vector[star] = scale * 5
+                acc.max[(name, step)] = vector
+                acc.mean[(name, step)] = vector
+        return acc
+
+    baseline, target, placebo = build(False, 0.0), build(True, 1.0), build(False, 0.25)
+    rows = []
+    for state in (0, 1):
+        for dose in (0.5, 1.0):
+            for condition, other in (("target", target), ("placebo", placebo)):
+                for row in P.latent_delta_rows(baseline, other, condition=condition, top_features=25):
+                    row.update({"state_index": state, "dose": dose, "target": condition, "prompt": "task"})
+                    rows.append(row)
+    P.write_csv(tmp_dir / "latent_deltas.csv", rows)
+    (tmp_dir / "counterfactual_summary.json").write_text(
+        json.dumps({"config": {"num_inference_steps": 10}})
+    )
+    return specs
+
+
+def test_ranking_is_fair_across_layers_of_different_scale() -> None:
+    """Raw selectivity is floor-biased; the layer-standardised score is not.
+
+    Selectivity divides by the layer's own placebo floor, and those floors span
+    an order of magnitude across depth, so an identical relative response scores
+    very differently depending on where it sits. Standardising within layer
+    removes that, letting deep features compete.
+    """
+    import csv as _csv
+    import subprocess
+    import tempfile
+
+    run = Path(tempfile.mkdtemp())
+    _two_scale_run(run)
+    script = Path(__file__).resolve().parent / "report_pi05_counterfactual_features.py"
+    out = subprocess.run(
+        [sys.executable, str(script), str(run), "--min-consistency", "0.1"],
+        capture_output=True, text=True,
+    ).stdout
+
+    ranked = {
+        (int(r["layer_index"]), int(r["feature"])): r
+        for r in _csv.DictReader((run / "candidate_features.csv").open())
+    }
+    shallow, deep = ranked[(2, 6)], ranked[(17, 9)]
+    assert abs(float(shallow["target_z"]) - float(deep["target_z"])) < 0.5, (
+        "two equally-standout features must score alike regardless of layer scale"
+    )
+    assert float(deep["target_mean_abs_delta"]) > 20 * float(shallow["target_mean_abs_delta"]), (
+        "the fixture must actually have very different absolute scales"
+    )
+    nomination = out[out.index("Nominated"):] if "Nominated" in out else ""
+    assert "L17" in nomination, f"a deep feature must be nominable\n{nomination}"
+
+
+def test_elevated_placebo_disqualifies_a_candidate() -> None:
+    """A feature that also responds to the control object is not selective."""
+    import numpy as _np
+
+    from report_pi05_counterfactual_features import candidate_features
+
+    layer = "paligemma_with_expert.gemma_expert.model.layers.3.mlp"
+    rows = []
+    for state in (0, 1):
+        for condition, boosted in (("target", True), ("placebo", True)):
+            for step in range(4):
+                rows.append({
+                    "condition": condition, "layer": layer, "denoise_step": step,
+                    "state_index": state, "dose": 1.0, "features": 32,
+                    "top_feature_ids": [5, 6, 7],
+                    "top_feature_deltas": [9.0 if boosted else 0.1, 0.2, 0.1],
+                })
+    scored = {r["feature"]: r for r in candidate_features(rows, min_cells=2)}
+    assert scored[5]["placebo_measured"] is True
+    assert scored[5]["placebo_z"] is not None
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

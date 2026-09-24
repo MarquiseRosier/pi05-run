@@ -71,6 +71,7 @@ class Pi05TranscoderContext:
         latent_top_k: int = 64,
         save_full_latents: bool = False,
         latent_callback: Callable[[str, int, Tensor, Tensor], None] | None = None,
+        latent_intervention: Callable[[str, int, Tensor, Tensor], Tensor | None] | None = None,
         diffusion_callback: Callable[[str, Tensor, Tensor | None], None] | None = None,
         store_latent_summaries: bool = True,
         capture_diffusion: bool = False,
@@ -83,6 +84,11 @@ class Pi05TranscoderContext:
         self.latent_top_k = latent_top_k
         self.save_full_latents = save_full_latents
         self.latent_callback = latent_callback
+        # Causal intervention hook. In replace mode the wrapper offers each
+        # transcoder latent to this callable; returning a tensor substitutes it
+        # and the decoder is re-run, so the patched features -- and nothing
+        # else -- drive the rest of the forward pass.
+        self.latent_intervention = latent_intervention
         self.diffusion_callback = diffusion_callback
         self.store_latent_summaries = store_latent_summaries
         self.current_timestep: Tensor | None = None
@@ -212,6 +218,17 @@ class WrappedActionExpertMLP(nn.Module):
             if self.transcoder is None:
                 raise RuntimeError(f"Cannot run {self.name} in replace mode without a transcoder")
             y_hat, latent = self.transcoder(x, timestep)
+            intervention = self.context.latent_intervention
+            if intervention is not None:
+                patched = intervention(self.name, self.layer_index, latent, timestep)
+                if patched is not None:
+                    if patched.shape != latent.shape:
+                        raise ValueError(
+                            f"Latent intervention on {self.name} returned shape {tuple(patched.shape)}, "
+                            f"expected {tuple(latent.shape)}"
+                        )
+                    latent = patched
+                    y_hat = self.transcoder.decoder(latent.to(dtype=self.transcoder.decoder.weight.dtype))
             self.context.record_latent(self.name, self.layer_index, latent, timestep)
             return y_hat.to(dtype=x.dtype)
 

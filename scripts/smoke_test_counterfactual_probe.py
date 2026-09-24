@@ -473,6 +473,56 @@ def test_save_image_accepts_the_formats_the_probe_produces() -> None:
         assert (tmp / name).exists() and (tmp / name).stat().st_size > 0, f"{name} not written"
 
 
+def _measurement(state: int, prompt: str, kind: str, latent: float, action: float) -> dict:
+    return {
+        "state_index": state, "prompt": prompt, "kind": kind, "target": kind, "dose": 1.0,
+        "pixel": {"changed_pixel_fraction": 0.01},
+        "latent": {"l2_delta_mean": latent},
+        "action_relative_l2": action,
+    }
+
+
+def test_verdict_runs_with_prompt_variants_and_grounding_data() -> None:
+    """The closing summary must not reach for main()'s locals.
+
+    This shipped broken: the prompt-grounding block referenced `args` and
+    `baseline_by_prompt` from inside a module-level function, so every run
+    crashed at the very end -- after all the measurement work was done.
+    """
+    measurements = []
+    for state in (0, 1):
+        for prompt in ("task", "alt"):
+            measurements.append(_measurement(state, prompt, "null", 0.0, 0.0))
+            measurements.append(_measurement(state, prompt, "target", 8.0, 0.3))
+            measurements.append(_measurement(state, prompt, "placebo", 1.5, 0.03))
+
+    baseline = {
+        (state, prompt): np.full(4, 1.0 if prompt == "task" else 1.5)
+        for state in (0, 1)
+        for prompt in ("task", "alt")
+    }
+    P._print_verdict(measurements, baseline_by_prompt=baseline, states=2)
+
+
+def test_verdict_runs_without_any_prompt_variants() -> None:
+    measurements = [
+        _measurement(0, "task", "null", 0.0, 0.0),
+        _measurement(0, "task", "target", 8.0, 0.3),
+    ]
+    P._print_verdict(measurements, baseline_by_prompt={}, states=1)
+
+
+def test_verdict_runs_with_no_grounding_data_at_all() -> None:
+    """Defaults must work: the signature is also called from older call sites."""
+    measurements = [
+        _measurement(0, "task", "null", 0.0, 0.0),
+        _measurement(0, "task", "target", 8.0, 0.3),
+        _measurement(0, "alt", "target", 9.0, 0.4),
+        _measurement(0, "alt", "placebo", 1.0, 0.02),
+    ]
+    P._print_verdict(measurements)
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

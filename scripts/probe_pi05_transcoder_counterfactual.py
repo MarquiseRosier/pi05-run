@@ -858,6 +858,8 @@ def main() -> None:
         print("\nno alt prompt found; selectivity cannot be separated from screen position", flush=True)
 
     last_baseline_actions = None
+    baseline_by_prompt: dict[tuple[int, str], np.ndarray] = {}
+    baseline_latents_by_prompt: dict[tuple[int, str], LatentAccumulator] = {}
     latent_rows: list[dict[str, Any]] = []
     measurements: list[dict[str, Any]] = []
     image_dir = args.output_dir / "images"
@@ -885,6 +887,11 @@ def main() -> None:
             null_latents, null_actions = forward(baseline_obs, noise, label=f"{tag}/null")
             if prompt_label == prompt_variants[0][0]:
                 last_baseline_actions = baseline_actions
+            # Keep the unperturbed action per prompt: comparing these says whether
+            # the policy responds to the language at all. If it does not, the
+            # prompt-swap control manipulated nothing and proves nothing.
+            baseline_by_prompt[(state_index, prompt_label)] = baseline_actions
+            baseline_latents_by_prompt[(state_index, prompt_label)] = baseline_latents
 
             null_rows = latent_delta_rows(
                 baseline_latents, null_latents, condition="null", top_features=args.top_features
@@ -1001,6 +1008,11 @@ def main() -> None:
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,
+        "prompt_grounding_rel_l2": [
+            _rel_l2(baseline_by_prompt[(i, "task")], baseline_by_prompt[(i, "alt")])
+            for i in range(args.states)
+            if (i, "task") in baseline_by_prompt and (i, "alt") in baseline_by_prompt
+        ],
         "observation_shapes": shape_report,
         "measurements": measurements,
         "interpretation": (
@@ -1084,6 +1096,40 @@ def _print_verdict(measurements: list[dict[str, Any]]) -> None:
             ]
             return float(np.mean(vals)) if vals else 0.0
 
+        # Does the policy respond to the language at all on these images? Without
+        # this, a "selectivity did not follow the prompt" result is ambiguous
+        # between "features track position" and "the prompt was ignored".
+        grounding = []
+        for state_index in range(args.states):
+            a = baseline_by_prompt.get((state_index, "task"))
+            b = baseline_by_prompt.get((state_index, "alt"))
+            if a is not None and b is not None:
+                grounding.append(_rel_l2(a, b))
+        perturbation_effect = float(
+            np.mean([m["action_relative_l2"] for m in measurements if m["kind"] == "target"])
+        ) if any(m["kind"] == "target" for m in measurements) else 0.0
+
+        print("\nprompt grounding check (unperturbed action, task prompt vs alt prompt):", flush=True)
+        if grounding:
+            mean_grounding = float(np.mean(grounding))
+            print(
+                f"  swapping the prompt alone moves the action by rel_l2={mean_grounding:.4g}; "
+                f"recolouring the target moves it by {perturbation_effect:.4g}",
+                flush=True,
+            )
+            if mean_grounding < 0.01:
+                print(
+                    "  The policy barely reacts to the language here, so the prompt swap did not "
+                    "actually change what the task refers to. Treat the control below as VOID.",
+                    flush=True,
+                )
+            else:
+                print(
+                    "  The policy does react to the language, so the prompt swap is a real "
+                    "manipulation and the control below is interpretable.",
+                    flush=True,
+                )
+
         print("\nprompt-swap control (same pixels, different language):", flush=True)
         print(f"  {'prompt':>6} {'target obj':>12} {'placebo obj':>13} {'selectivity':>12}", flush=True)
         ratios = {}
@@ -1093,6 +1139,7 @@ def _print_verdict(measurements: list[dict[str, Any]]) -> None:
             shown = "n/a" if ratios[prompt] is None else f"{ratios[prompt]:.2f}x"
             print(f"  {prompt:>6} {t:>12.4f} {p_:>13.4f} {shown:>12}", flush=True)
         task_ratio, alt_ratio = ratios.get("task"), ratios.get("alt")
+        grounded = bool(grounding) and float(np.mean(grounding)) >= 0.01
         if task_ratio and alt_ratio:
             if alt_ratio < 1.0 < task_ratio:
                 print(
@@ -1102,10 +1149,25 @@ def _print_verdict(measurements: list[dict[str, Any]]) -> None:
                 )
             elif alt_ratio >= task_ratio:
                 print(
-                    "  Selectivity does NOT follow the prompt. The response tracks screen "
-                    "position or visual salience rather than task relevance.",
+                    f"  Selectivity does not follow the prompt; it strengthens for the same object "
+                    f"({task_ratio:.2f}x -> {alt_ratio:.2f}x) even though the alt prompt refers to "
+                    "the other one.",
                     flush=True,
                 )
+                if grounded:
+                    print(
+                        "  Since the policy does react to the language, this is evidence the "
+                        "response is tied to the object or its position rather than to the "
+                        "linguistic referent.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "  But the policy barely reacts to the language here, so this does NOT "
+                        "establish position over relevance: the manipulation may simply not have "
+                        "landed.",
+                        flush=True,
+                    )
             else:
                 print(
                     f"  Selectivity weakens under the alt prompt ({task_ratio:.2f}x -> {alt_ratio:.2f}x) "

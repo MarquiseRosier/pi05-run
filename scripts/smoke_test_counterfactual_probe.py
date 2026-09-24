@@ -378,6 +378,85 @@ def test_cached_rerender_would_hide_a_perturbation() -> None:
     assert P.image_delta_stats(cached_before, forced)["changed_pixel_fraction"] == 1.0
 
 
+SIBLING_BDDL = """
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:language Pick the akita black bowl next to the ramekin and place it on the plate)
+  (:obj_of_interest
+    akita_black_bowl_1
+    plate_1
+  )
+  (:init
+    (On akita_black_bowl_1 main_table_next_to_ramekin_region)
+    (On akita_black_bowl_2 main_table_next_to_box_region)
+  )
+)
+"""
+
+TASK0_WITH_INIT = """
+(define (problem LIBERO_Tabletop_Manipulation)
+  (:language Pick the akita black bowl between the plate and the ramekin and place it on the plate)
+  (:obj_of_interest
+    akita_black_bowl_1
+    plate_1
+  )
+  (:init
+    (On akita_black_bowl_1 main_table_between_plate_ramekin_region)
+    (On akita_black_bowl_2 main_table_next_to_ramekin_region)
+  )
+)
+"""
+
+
+def _suite_dir():
+    import tempfile
+
+    folder = Path(tempfile.mkdtemp()) / "libero_spatial"
+    folder.mkdir(parents=True)
+    (folder / "task0.bddl").write_text(TASK0_WITH_INIT)
+    (folder / "sibling.bddl").write_text(SIBLING_BDDL)
+    return folder
+
+
+def _harness_at(path: Path):
+    class _Inner:
+        _task_bddl_file = str(path)
+
+    class _Harness:
+        inner_env = _Inner()
+
+    return _Harness()
+
+
+def test_init_region_is_read_for_a_suffixed_body_name() -> None:
+    """Scene bodies carry a _main suffix that BDDL object names do not."""
+    assert P._init_region_of(TASK0_WITH_INIT, "akita_black_bowl_2_main") == "main_table_next_to_ramekin_region"
+    assert P._init_region_of(TASK0_WITH_INIT, "akita_black_bowl_1_main") == "main_table_between_plate_ramekin_region"
+    assert P._init_region_of(TASK0_WITH_INIT, "no_such_object_main") is None
+
+
+def test_alt_prompt_is_the_sibling_task_naming_the_placebo_location() -> None:
+    """The control that separates task relevance from screen position."""
+    folder = _suite_dir()
+    found = P.find_prompt_referring_to(_harness_at(folder / "task0.bddl"), "akita_black_bowl_2_main")
+    assert found is not None
+    prompt, source = found
+    assert "next to the ramekin" in prompt, prompt
+    assert source == "sibling"
+
+
+def test_no_alt_prompt_when_no_sibling_places_its_target_there() -> None:
+    import tempfile
+
+    folder = Path(tempfile.mkdtemp()) / "libero_spatial"
+    folder.mkdir(parents=True)
+    (folder / "task0.bddl").write_text(TASK0_WITH_INIT)
+    assert P.find_prompt_referring_to(_harness_at(folder / "task0.bddl"), "akita_black_bowl_2_main") is None
+
+
+def test_alt_prompt_lookup_survives_a_missing_bddl() -> None:
+    assert P.find_prompt_referring_to(_harness_with_bddl(None), "akita_black_bowl_2_main") is None
+
+
 def test_save_image_accepts_the_formats_the_probe_produces() -> None:
     import tempfile
 

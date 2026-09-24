@@ -719,12 +719,26 @@ def main() -> None:
         specificity = report.get("specificity")
         head_enrich = (head_sel or {}).get("enrichment")
         head_p = (head_sel or {}).get("monte_carlo_p")
-        if decision.startswith("supported") and head_enrich is not None and not math.isnan(head_enrich):
+        # The deciding statistic: the head stratum when there is one, else the
+        # circuit's own selectivity (legacy path, or a circuit smaller than the head).
+        deciding = head_sel if head_enrich is not None else (selectivity or None)
+        deciding_enrich = (deciding or {}).get("enrichment")
+        deciding_p = (deciding or {}).get("monte_carlo_p")
+        deciding_where = (
+            f"The top {head_stratum['nodes']} parents by influence"
+            if head_enrich is not None and head_stratum and not head_stratum["is_full_circuit"]
+            else "The traced parents"
+        )
+        if decision.startswith("supported") and deciding_enrich is not None and not math.isnan(deciding_enrich):
+            agree = (
+                f", and the full circuit agrees in direction ({sel_enrich:.3f}x)"
+                if deciding is head_sel and sel_enrich is not None and head_stratum and not head_stratum["is_full_circuit"]
+                else ""
+            )
             verdict.append(
-                f"The top {head_stratum['nodes']} parents by influence are {head_enrich:.3f}x more selective "
-                f"for the perturbed object than matched random features (Monte-Carlo p={head_p:.4f}), and "
-                f"the full circuit agrees in direction ({sel_enrich:.3f}x). The trace is corroborated on a "
-                "cause we set, not one we inferred from activations."
+                f"{deciding_where} are {deciding_enrich:.3f}x more selective for the perturbed object than "
+                f"matched random features (Monte-Carlo p={deciding_p:.4f}){agree}. The trace is "
+                "corroborated on a cause we set, not one we inferred from activations."
             )
             if decision.startswith("supported, not specific"):
                 verdict.append(

@@ -143,8 +143,8 @@ class TimeConditionedTranscoder(nn.Module):
         scale, shift = scale_shift.chunk(2, dim=-1)
         return scale, shift
 
-    def forward(self, x: Tensor, timesteps: Tensor) -> tuple[Tensor, Tensor]:
-        """Return ``(predicted_mlp_output, sparse_latent)``.
+    def encode(self, x: Tensor, timesteps: Tensor) -> tuple[Tensor, Tensor]:
+        """Return ``(feature_preactivation, sparse_latent)``.
 
         Args:
             x: MLP input, shaped ``[records, d_model]`` or
@@ -170,8 +170,26 @@ class TimeConditionedTranscoder(nn.Module):
             raise ValueError(f"Expected x with rank 2 or 3, got shape {tuple(x.shape)}")
 
         x_mod = x_for_transcoder * (1.0 + scale) + shift
-        z = F.relu(self.encoder(x_mod))
+        preactivation = self.encoder(x_mod)
+        z = F.relu(preactivation)
+        return preactivation, z
+
+    def forward(
+        self,
+        x: Tensor,
+        timesteps: Tensor,
+        *,
+        return_preactivation: bool = False,
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor, Tensor]:
+        """Return ``(predicted_mlp_output, sparse_latent)``.
+
+        Set ``return_preactivation=True`` when circuit tracing needs the
+        encoder pre-ReLU feature values as attribution targets.
+        """
+        preactivation, z = self.encode(x, timesteps)
         y_hat = self.decoder(z)
+        if return_preactivation:
+            return y_hat, z, preactivation
         return y_hat, z
 
     def loss(

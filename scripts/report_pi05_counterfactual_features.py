@@ -35,6 +35,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("run_dir", type=Path, help="A counterfactual probe output directory.")
     parser.add_argument("--top", type=int, default=30, help="Candidate features to print.")
     parser.add_argument(
+        "--min-consistency",
+        type=float,
+        default=0.25,
+        help=(
+            "Fraction of a layer's measurement cells a feature must appear in to be nominated "
+            "for tracing. Selectivity alone rewards features that fired once with a large delta."
+        ),
+    )
+    parser.add_argument(
         "--min-cells",
         type=int,
         default=2,
@@ -147,7 +156,9 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
     # Smallest delta the probe recorded in each cell: the detection floor for
     # anything that did not make that cell's top-K list.
     placebo_floor: dict[str, list[float]] = defaultdict(list)
-    target_cells: set[tuple[str, int, float]] = set()
+    # How many measurement cells each layer actually had, so "appeared in 2" can
+    # be read against "out of 80" rather than taken at face value.
+    cells_per_layer: dict[str, set[tuple[Any, ...]]] = defaultdict(set)
 
     for row in rows:
         ids = row.get("top_feature_ids") or []
@@ -156,7 +167,9 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
             continue
         magnitudes = [abs(float(value)) for value in deltas]
         if row["condition"] == "target":
-            target_cells.add((row["layer"], row["state_index"], row["dose"]))
+            cells_per_layer[row["layer"]].add(
+                (row["state_index"], row["dose"], row.get("prompt"), row["denoise_step"])
+            )
             for feature, magnitude in zip(ids, magnitudes):
                 target_hits[(row["layer"], int(feature))].append(magnitude)
         elif row["condition"] == "placebo":
@@ -203,6 +216,10 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
                 "feature": feature,
                 "target_mean_abs_delta": target_mean,
                 "target_cells": len(magnitudes),
+                "layer_cells": len(cells_per_layer.get(layer, ())),
+                "consistency": (
+                    len(magnitudes) / len(cells_per_layer[layer]) if cells_per_layer.get(layer) else 0.0
+                ),
                 "placebo_response": placebo_mean,
                 "placebo_measured": measured,
                 "placebo_upper_bound": None if measured else bound,
@@ -272,15 +289,16 @@ def main() -> None:
         f"\ncandidate features (>= {args.min_cells} cells, ranked by selectivity) "
         f"- {len(features)} found, showing {min(args.top, len(features))}"
     )
-    print(f"  {'layer':>5} {'feature':>8} {'target':>10} {'placebo':>10} {'sel':>8} {'cells':>6}  note")
+    print(f"  {'layer':>5} {'feature':>8} {'target':>10} {'placebo':>10} {'sel':>8} {'cells':>9}  note")
     for row in features[: args.top]:
         sel = f"{row['selectivity']:.2f}x"
         if row["selectivity_is_lower_bound"]:
             sel = ">=" + sel
         note = "" if row["placebo_measured"] else "placebo below top-K"
+        cells = f"{row['target_cells']}/{row['layer_cells']}"
         print(
             f"  {row['layer_index']:>5} {row['feature']:>8} {row['target_mean_abs_delta']:>10.4f} "
-            f"{row['placebo_response']:>10.4f} {sel:>8} {row['target_cells']:>6}  {note}"
+            f"{row['placebo_response']:>10.4f} {sel:>8} {cells:>9}  {note}"
         )
 
     out_dir = csv_path.parent
@@ -288,16 +306,30 @@ def main() -> None:
     write_csv(out_dir / "candidate_features.csv", features)
     print(f"\nWrote {out_dir / 'layer_selectivity.csv'} and {out_dir / 'candidate_features.csv'}")
 
-    nominated = [row for row in features if row.get("feature_key")][:5]
+    # Nominate only reproducible features. A feature that fired in 2 of 80 cells
+    # can top the selectivity ranking on a single large delta against a tiny
+    # placebo floor, and tracing it would chase a fluke.
+    eligible = [
+        row for row in features
+        if row.get("feature_key") and row["consistency"] >= args.min_consistency
+    ]
+    if not eligible:
+        best = max((r["consistency"] for r in features), default=0.0)
+        print(
+            f"\nNo feature appeared in at least {args.min_consistency:.0%} of its layer's cells "
+            f"(best was {best:.0%}). Nominating on selectivity alone would chase a one-off, so "
+            "widen the probe (--states, --dose) or lower --min-consistency deliberately."
+        )
+    nominated = eligible[:5]
     if nominated:
         print(
-            "\nNominated targets for circuit tracing. These are selected by controlled "
-            "counterfactual selectivity rather than by activation statistics, so they are a "
-            "different nomination route into the same tracer:"
+            "\nNominated targets for circuit tracing, filtered to features that fired "
+            f"consistently (>= {args.min_consistency:.0%} of their layer's cells). Selected by "
+            "controlled counterfactual response rather than activation statistics:"
         )
         for row in nominated:
             print(f"  {row['feature_key']:<22} selectivity {row['selectivity']:.1f}x  "
-                  f"cells {row['target_cells']}")
+                  f"cells {row['target_cells']}/{row['layer_cells']} ({row['consistency']:.0%})")
         print("\n  python scripts/trace_pi05_transcoder_circuit.py \\")
         print(f"    --target {nominated[0]['feature_key']} \\")
         print("    --checkpoint <transcoder.pt> --feature-dir <feature discovery dir>")

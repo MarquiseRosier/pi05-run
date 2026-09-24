@@ -11,6 +11,7 @@ assumptions.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -521,6 +522,63 @@ def test_verdict_runs_with_no_grounding_data_at_all() -> None:
         _measurement(0, "alt", "placebo", 1.0, 0.02),
     ]
     P._print_verdict(measurements)
+
+
+def test_nomination_rejects_a_one_off_however_selective() -> None:
+    """A feature seen in 2 of 80 cells must not be nominated for tracing.
+
+    Selectivity is target/placebo, and the placebo floor is tiny, so a single
+    large delta can top the ranking. The first real run nominated exactly such
+    a feature -- 2 cells, 201x -- and tracing it would have chased a fluke.
+    """
+    import subprocess
+    import tempfile
+
+    layer = "paligemma_with_expert.gemma_expert.model.layers.2.mlp"
+    n_features, consistent, fluke = 64, 11, 22
+    fluke_cells = {((0, 0.5, "task"), 0), ((0, 0.5, "task"), 1)}
+
+    def accumulator(cell=None):
+        acc = P.LatentAccumulator()
+        for step in range(10):
+            vector = np.full(n_features, 0.02)
+            if cell is not None:
+                vector[consistent] = 2.0
+                if (cell, step) in fluke_cells:
+                    vector[fluke] = 40.0
+            acc.max[(layer, step)] = vector
+            acc.mean[(layer, step)] = vector
+        return acc
+
+    baseline = accumulator()
+    rows = []
+    for state in (0, 1):
+        for dose in (0.5, 1.0):
+            for prompt in ("task", "alt"):
+                for condition in ("target", "placebo"):
+                    other = accumulator((state, dose, prompt)) if condition == "target" else baseline
+                    for row in P.latent_delta_rows(baseline, other, condition=condition, top_features=25):
+                        row.update({"state_index": state, "dose": dose, "target": condition, "prompt": prompt})
+                        rows.append(row)
+
+    run = Path(tempfile.mkdtemp())
+    P.write_csv(run / "latent_deltas.csv", rows)
+    (run / "counterfactual_summary.json").write_text(
+        json.dumps({"config": {"num_inference_steps": 10}})
+    )
+    script = Path(__file__).resolve().parent / "report_pi05_counterfactual_features.py"
+    out = subprocess.run([sys.executable, str(script), str(run)], capture_output=True, text=True).stdout
+
+    import csv as _csv
+
+    ranked = {int(r["feature"]): r for r in _csv.DictReader((run / "candidate_features.csv").open())}
+    assert float(ranked[fluke]["selectivity"]) > float(ranked[consistent]["selectivity"]), (
+        "the fluke should still win on raw selectivity; that is why the filter is needed"
+    )
+    assert ranked[fluke]["layer_cells"] == "80", "cell counts must be reported against the total"
+    nomination = out[out.index("Nominated"):] if "Nominated" in out else ""
+    assert f"F{consistent}" in nomination, nomination
+    assert f"F{fluke}" not in nomination, "a 2/80 feature must not be nominated"
 
 
 def main() -> None:

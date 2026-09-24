@@ -142,8 +142,8 @@ Section~\ref{sec:verdicts}.
 
 \paragraph{H1, object selectivity.}
 Transcoder features respond to a controlled appearance change of the object the
-task designates substantially more than to a matched appearance change of a
-visually identical object it does not. \emph{Falsified if} the two responses are
+task designates more than to a matched appearance change of a visually
+identical object it does not, once perturbation size is accounted for. \emph{Falsified if} the two responses are
 comparable once perturbation size is accounted for (Eq.~\ref{eq:sel-px}), which
 would indicate the features track generic pixel change. Note that the two
 objects necessarily differ in screen position as well as in task designation,
@@ -164,11 +164,13 @@ object. Otherwise H2 is \emph{untestable} on this scene.
 The \emph{parents} of a circuit traced upstream of a target are more
 \emph{selective} for the perturbed object than random features matched in
 layer and flow time and drawn from those the scene exercises. \emph{Falsified
-if} the selectivity enrichment of Eq.~\ref{eq:sel-enrich} is near $1$, or if
-the parents are enriched as much for a manipulation of a different kind as for
-the recolour, either of which would indicate the traced edges do not carry the
-perturbed property. The target node itself is excluded from the test, because
-it was nominated for responding.
+if} the selectivity enrichment of Eq.~\ref{eq:sel-enrich} is near $1$ at the
+head of the influence ranking, which would indicate the traced edges do not
+carry the perturbed property beyond what any active feature at those layers
+carries. Whether the parents are also enriched for a manipulation of a
+different kind qualifies a supported verdict (Eq.~\ref{eq:specificity}) but
+does not overturn it. The target node itself is excluded from the test,
+because it was nominated for responding.
 
 \medskip
 \noindent
@@ -241,8 +243,9 @@ comparison.
 \begin{enumerate}
 \item \textbf{The state is frozen.} Physics is never stepped between the two
 renders. Only $\theta$ changes, so joint positions and velocities, camera pose
-and lighting are bit-identical. After every recolour is reverted the baseline
-render is re-taken and required to match the original exactly.
+and lighting are bit-identical. Once every recolour at a state has been
+reverted, the baseline is re-rendered and required to match the original
+exactly; the same exact-restore check runs on the liveness probe at start-up.
 \item \textbf{The noise is shared and seeded.} $\pi_{0.5}$ integrates a flow
 from a sampled $x_1\sim\mathcal{N}(0,I)$. Sampling independently per pass would
 leave $\delta$ dominated by that draw. We sample once per replicate from a
@@ -258,9 +261,9 @@ actions of the policy's own unperturbed plan.
 
 \paragraph{Replication unit.}
 A \emph{cell} is one combination of state $s$, noise draw $n$ and dose $d$
-under one prompt, and every condition (baseline, null, target, placebo) is
-measured in every cell. Cells are the replication unit for every error bound
-below. Noise draws are exchangeable replicates of the policy's own stochastic
+under one prompt. The target and placebo are measured in every cell; the null
+control and the positive control have no dose and are measured once per
+(state, draw). Cells are the replication unit for every error bound below. Noise draws are exchangeable replicates of the policy's own stochastic
 inference; states are distinct robot poses along its plan.
 
 \paragraph{Why colour.}
@@ -590,27 +593,38 @@ manipulations,
 \label{eq:specificity}
 \end{equation}
 The placebo is excluded from $\mathcal{M}$: it is the matched control for the
-same manipulation and already the denominator of Eq.~\ref{eq:sel-enrich}. A
-set equally enriched for a recolour and for a language change is enriched for
-responsiveness, and $\mathrm{Spec}\le 1$ falsifies H3 whatever
-Eq.~\ref{eq:sel-enrich} says.
+same manipulation and already the denominator of Eq.~\ref{eq:sel-enrich}.
+$\mathrm{Spec}$ qualifies a supported verdict rather than deciding it. If
+Eq.~\ref{eq:sel-enrich} passes and $\mathrm{Spec}>1$, the parents are
+\emph{object-specific}. If it passes and $\mathrm{Spec}\le1$, the parents are
+as enriched for a language change as for the recolour, which is what a circuit
+that computes the referent from both vision and language would look like; the
+verdict is \emph{supported, not specific}, and those parents are not a
+colour-only handle for steering. $\mathrm{Spec}$ alone cannot falsify,
+because that same pattern is produced by a legitimate referent circuit. What
+separates a referent circuit from a generically responsive set is
+Eq.~\ref{eq:sel-enrich}: generic responsiveness scales the target and placebo
+responses alike and leaves the selectivity ratio at the random set's.
 
-\paragraph{Read the effect size, not the $p$-value.}
+\paragraph{Where the decision is taken.}
 At large $|\mathcal{C}|$ the mean over the circuit and the mean over a draw
-both concentrate, so any systematic difference drives $p$ to its floor
-$1/(M+1)$. A $p$ at that floor therefore carries no information about
-magnitude. The reported verdict requires $p<\alpha$, but the quantity to read
-is $\mathrm{SelEnrich}$.
+both concentrate, so any systematic difference, however small, drives $p$ to
+its floor $1/(M+1)$; a selectivity enrichment of $1.05$ over $1700$ nodes is
+``significant'' and means nothing. This applies to Eq.~\ref{eq:sel-enrich} as
+much as to Eq.~\ref{eq:enrich}. The decision is therefore taken where $p$ is
+informative: parents are ordered by their traced influence, and H3 is decided
+on the \emph{head} of that ranking, the top $10$ parents, which is also the
+tracer's strongest claim. The full circuit is required to agree in direction
+($\mathrm{SelEnrich}>1$) but no $p$ is asked of it. Both are reported.
 
 \paragraph{Enrichment as a function of circuit size.}
-Parents are ordered by their traced influence and Eqs.~\ref{eq:enrich} to
-\ref{eq:specificity} are evaluated over the top $10$, $50$, $200$ and all of
-them. A tracer whose ranking is informative shows enrichment that is strong at
-the head and decays; a flat profile says the ranking carries no information
-about the property, and no amount of pruning would help. The contrast between
-the head and the full set separates ``this circuit is wrong'' from ``this
-graph was pruned too loosely'', which are different defects with different
-fixes.
+Eqs.~\ref{eq:enrich} to \ref{eq:specificity} are also evaluated over the top
+$50$, top $200$ and all parents. A tracer whose ranking is informative shows
+enrichment that is strong at the head and decays; a flat profile says the
+ranking carries no information about the property, and no amount of pruning
+would help. The contrast between the head and the full set separates ``this
+circuit is wrong'' from ``this graph was pruned too loosely'', which are
+different defects with different fixes.
 
 \paragraph{Selection and test use different evidence.}
 The nominee is chosen from the probe's data and is excluded from the test. The
@@ -797,8 +811,9 @@ $\vdots$ & & & \\
 \begin{table}[t]
 \caption{Circuit corroboration, Section~\ref{sec:validation-method}, parents
 only, at the full circuit. Random mean is over $M$ matched draws; $p$ is the
-Monte-Carlo tail of Eq.~\ref{eq:enrich}. The verdict rests on the last two
-rows, not on the enrichment column. Filled from \texttt{validation.json}:
+Monte-Carlo tail of Eq.~\ref{eq:enrich}. The verdict is taken at the head of
+Table~\ref{tab:cf-strata}, not on this table's enrichment column; this table
+shows the full circuit for scale. Filled from \texttt{validation.json}:
 \texttt{conditions}, \texttt{selectivity}, \texttt{specificity},
 \texttt{exercised\_fraction}; the nominee from
 \texttt{nominated\_targets.json}. Table~\ref{tab:cf-strata} breaks the same
@@ -825,20 +840,21 @@ Prompt swap    & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \end{table}
 
 \begin{table}[t]
-\caption{Enrichment by influence rank. A ranking that carries information
-about the perturbed property shows a strong head that decays; a flat profile
-says it does not. Filled from \texttt{validation.json} under \texttt{strata}.}
+\caption{Enrichment by influence rank. The head row decides H3; the rest show
+how the effect dilutes. A ranking that carries information about the perturbed
+property shows a strong head that decays; a flat profile says it does not.
+Filled from \texttt{validation.json} under \texttt{strata}.}
 \label{tab:cf-strata}
 \begin{center}
 \small
-\begin{tabular}{lcccc}
+\begin{tabular}{lccccc}
 \hline
-Parents included & Target enrichment & Circuit selectivity & $\mathrm{SelEnrich}$ & $\mathrm{Spec}$ \\
+Parents included & Target enrichment & Circuit selectivity & $\mathrm{SelEnrich}$ & $p$ & $\mathrm{Spec}$ \\
 \hline
-Top 10        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Top 50        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-Top 200       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
-All           & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 10 (decides) & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 50        & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+Top 200       & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
+All           & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} & \RESULT{val} \\
 \hline
 \end{tabular}
 \end{center}
@@ -868,8 +884,9 @@ bound of one half requires that the scene speak for the majority of the
 circuit. The selectivity and specificity bounds are both $1$, the value at
 which a circuit is indistinguishable from a matched random set and at which an
 intervention is no more informative than an unrelated one; neither is a tuned
-quantity. $\alpha=0.05$ is conventional, and at large circuit sizes it is the
-effect size rather than $p$ that carries the verdict.
+quantity. The head of $10$ is the smallest stratum at which a mean is still a
+mean and the Monte-Carlo $p$ is still informative. $\alpha=0.05$ is
+conventional.
 
 \paragraph{H1.}
 \RESULT{supported, weak, falsified or invalid}. \emph{Invalid} if the largest
@@ -894,12 +911,16 @@ otherwise. If $\mathrm{Sel}_{\mathrm{task}}\le1$ there is no selectivity to
 follow the referent and H2 does not apply. (\texttt{h2.verdict}.)
 
 \paragraph{H3.}
-\RESULT{supported, falsified or inconclusive}. \emph{Inconclusive} if fewer
-than half the parents are exercised by the scene. Otherwise \emph{supported}
-only if the selectivity enrichment of Eq.~\ref{eq:sel-enrich} exceeds $1$ at
-$p<0.05$ \emph{and} the specificity of Eq.~\ref{eq:specificity} exceeds $1$;
-\emph{falsified} if either fails. Response enrichment alone never decides.
-(\texttt{validation.json}, \texttt{h3\_verdict}.)
+\RESULT{supported and object-specific, supported but not specific, falsified,
+or inconclusive}. \emph{Inconclusive} if fewer than half the parents are
+exercised by the scene. \emph{Falsified} if the selectivity enrichment of
+Eq.~\ref{eq:sel-enrich} over the top $10$ parents by influence is at most
+$1$ or has $p\ge0.05$, or if the full circuit's selectivity enrichment is at
+most $1$. Otherwise \emph{supported}, qualified as \emph{object-specific} if
+the specificity of Eq.~\ref{eq:specificity} at the head exceeds $1$ and as
+\emph{not specific} if it does not. Response enrichment alone never decides,
+and specificity alone never falsifies. (\texttt{validation.json},
+\texttt{h3\_verdict}, \texttt{decision\_stratum\_nodes}.)
 
 \subsection{Threats to validity}
 \label{sec:threats}
@@ -950,6 +971,16 @@ null matched on baseline activation magnitude. A circuit whose parents are
 simply the most active features at their layer could be enriched under the
 response test without carrying the property, which is precisely why the
 verdict rests on Eqs.~\ref{eq:sel-enrich} and~\ref{eq:specificity} instead.
+
+\paragraph{Can specificity be misread?}
+Yes, in one direction. A set enriched as much for the prompt swap as for the
+recolour has two readings: generically responsive features, or a circuit that
+genuinely computes the referent from vision and language together. The
+specificity statistic cannot tell them apart, and a rule that falsified on it
+alone would wrongly reject the second. The two are separated by
+Eq.~\ref{eq:sel-enrich}: a referent circuit is more object-selective than a
+random set at its layers, a generically responsive one is not. This is why
+specificity qualifies and selectivity decides.
 
 \paragraph{Is the traced graph a circuit?}
 Not necessarily. The tracer expands a bounded number of nodes but records

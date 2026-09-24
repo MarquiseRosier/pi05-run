@@ -747,6 +747,18 @@ def test_decision_metrics_verdict_branches() -> None:
     assert unmoved["h2"]["verdict"].startswith("untestable"), unmoved["h2"]["verdict"]
     assert "referent" in unmoved["h2"]["verdict"]
 
+    # The check has two halves: the task prompt must anchor the action on the target
+    # in the first place. A run whose action is not anchored under the task prompt
+    # has no referent to move, and must say so rather than test H2.
+    ms = _linear_run(alt_sel=0.5)
+    for m in ms:
+        if m["prompt"] == "task" and m["kind"] in ("target", "placebo"):
+            m["action_relative_l2"] = 0.2  # equal sensitivity: anchor exactly 1
+    unanchored = P.compute_decision_metrics(ms, baseline_by_prompt=_baselines(0.73))
+    rc = unanchored["h2"]["referent_check"]
+    assert rc["task_anchored_on_target"] is False and rc["referent_moved"] is False
+    assert unanchored["h2"]["verdict"].startswith("untestable") and "not anchored" in unanchored["h2"]["verdict"]
+
     # Grounding values may be supplied directly (recomputation from a saved summary).
     direct = P.compute_decision_metrics(_linear_run(alt_sel=0.5), grounding_values=[0.7, 0.75])
     assert direct["h2"]["grounding"]["n"] == 2 and direct["h2"]["verdict"].startswith("supported")

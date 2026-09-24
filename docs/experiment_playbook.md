@@ -200,6 +200,13 @@ A `partial` on 1, 3, 4, 5 or 9 is a Phase 0 defect. A `gap` on 6 or 7 invalidate
   same observation. Ask of every decision statistic: what else would produce this number, and is
   that measured? Here the fix was a ratio of ratios plus a second manipulation as a specificity
   control.
+- **A control that also falsifies the hypothesis's legitimate variants** — specificity against a
+  language swap rejected "generically responsive" sets, but a real referent circuit integrating
+  language produces the same pattern. Before making a control a falsifier, ask which *true*
+  hypotheses it would also reject; if any, it is a qualifier.
+- **Fixing the statistic but not the saturation** — the corrected ratio-of-ratios still had p at
+  its floor over 1721 nodes. Where n is large, decide on a pre-registered head of the ranking
+  where p is informative, and report the rest.
 - **A saturated p-value read as strong evidence** — with 1721 nodes every p hit its floor of
   1/(M+1) regardless of effect size. Past a few hundred units, significance stops discriminating
   and only the effect size carries the verdict; say so next to the number.

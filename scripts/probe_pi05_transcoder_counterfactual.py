@@ -1754,15 +1754,21 @@ def compute_decision_metrics(
         a_t, a_p = row.get("A_target"), row.get("A_placebo")
         anchors[prompt] = (a_t / a_p) if (a_t is not None and a_p) else None
     anchor_task, anchor_alt = anchors.get("task"), anchors.get("alt")
-    referent_moved = anchor_alt is not None and anchor_alt < 1.0
+    # The check has two halves. Under the task prompt the action must be
+    # anchored on the target (anchor > 1), or there is no referent to move.
+    # Under the alternate prompt it must re-anchor on the placebo (anchor < 1).
+    task_anchored = anchor_task is not None and anchor_task > 1.0
+    referent_moved = task_anchored and anchor_alt is not None and anchor_alt < 1.0
     referent_check = {
         "behavioural_anchor_task": anchor_task,
         "behavioural_anchor_alt": anchor_alt,
+        "task_anchored_on_target": bool(task_anchored),
         "anchor_ratio_alt_over_task": (anchor_alt / anchor_task) if (anchor_alt is not None and anchor_task) else None,
         "referent_moved": bool(referent_moved),
         "rule": (
-            "the action's sensitivity to the target's colour over the placebo's must fall below 1 "
-            "under the alternate prompt; otherwise the swap did not move the behavioural referent"
+            "under the task prompt the action must be more sensitive to the target's colour than the "
+            "placebo's (anchor > 1); under the alternate prompt that anchor must fall below 1. Otherwise "
+            "the swap did not move the behavioural referent"
         ),
     }
 
@@ -1770,6 +1776,11 @@ def compute_decision_metrics(
         h2_verdict = "untestable: no alternate prompt"
     elif grounding["n"] == 0 or grounding["mean"] is None or grounding["mean"] < grounding_threshold:
         h2_verdict = "untestable: prompt grounding below threshold"
+    elif not task_anchored:
+        h2_verdict = (
+            "untestable: under the task prompt the action is not anchored on the target object "
+            f"(anchor {_fmt(anchor_task, '.2f')}), so there is no referent for the swap to move"
+        )
     elif not referent_moved:
         h2_verdict = (
             "untestable: the prompt swap did not move the behavioural referent "

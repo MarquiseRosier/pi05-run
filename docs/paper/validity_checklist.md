@@ -162,8 +162,19 @@ run) and on a specificity check against manipulations of a different kind
 influence rank, which separates "this circuit is wrong" from "this graph was
 pruned too loosely".
 
+**Second correction (same day).** The corrected rule over-reached in two ways.
+Specificity was a hard falsifier, but a circuit that integrates the referent
+from vision and language is legitimately enriched for the prompt swap too; only
+selectivity enrichment separates a circuit from generic responsiveness, because
+generic responsiveness scales target and placebo alike. Specificity now
+qualifies a supported verdict (object-specific / not specific). And selectivity
+enrichment at 1721 nodes saturates exactly as response enrichment did, so the
+decision is taken at the head of the influence ranking (top 10), where p is
+informative and the tracer's claim is strongest, with the full circuit required
+to agree in direction.
+
 **Was.** Target node scored inside the circuit mean; verdict on the wrong
-statistic.
+statistic; then specificity as falsifier and a saturating full-circuit p.
 
 ## 7. Instrument checks that abort
 

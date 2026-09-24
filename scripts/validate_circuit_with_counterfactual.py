@@ -134,39 +134,75 @@ def _mean(values: list[float]) -> float:
     return float(np.mean(values)) if values else float("nan")
 
 
+def _ok(stats: dict[str, Any] | None) -> bool:
+    return bool(stats) and stats.get("enrichment") is not None and not math.isnan(stats["enrichment"])
+
+
 def h3_verdict(
     *,
-    selectivity_enrichment: float | None,
-    selectivity_p: float | None,
+    head: dict[str, Any] | None,
+    full: dict[str, Any] | None,
     specificity: float | None,
     response_enrichment: float | None,
     response_p: float | None,
     exercised_fraction: float | None,
     alpha: float,
     min_exercised: float,
+    head_nodes: int | None = None,
 ) -> str:
-    """Decide H3 on selectivity, not on bare response.
+    """Decide H3 on selectivity enrichment at the head of the influence ranking.
 
-    Bare response enrichment cannot tell a property-carrying circuit from a
-    generically responsive one, and at large node counts its p-value saturates
-    at 1/(M+1) whatever the effect size. Selectivity divides that common
-    responsiveness out, and the specificity check rejects a set that is
-    enriched as much for a manipulation of a different kind.
+    Three facts shape the rule. Bare response enrichment cannot separate a
+    property-carrying circuit from a generically responsive one, since
+    attribution selects active, high-variance features and those respond more
+    to any manipulation; selectivity divides that common factor out, because
+    generic responsiveness scales the target and placebo responses alike and
+    leaves their ratio at the random set's. At large node counts every
+    Monte-Carlo p saturates at 1/(M+1) whatever the effect size, so the
+    decision is taken where p is informative: the top parents by traced
+    influence, which is also the tracer's strongest claim. And a set enriched
+    as much for a manipulation of a different kind is not thereby falsified,
+    because a circuit that integrates the referent from vision and language
+    would look exactly like that; specificity qualifies a supported verdict,
+    it does not overturn one.
+
+    ``head`` and ``full`` are selectivity statistics for the decision stratum
+    and for the whole circuit; the full circuit must agree in direction.
     """
     if exercised_fraction is None:
         return "not measured"
     if exercised_fraction < min_exercised:
         return f"inconclusive: only {exercised_fraction:.1%} of parents are exercised by this scene"
 
-    if selectivity_enrichment is not None and not math.isnan(selectivity_enrichment):
-        if not (selectivity_enrichment > 1.0 and selectivity_p is not None and selectivity_p < alpha):
-            return "falsified: the circuit is no more selective than a matched random set"
-        if specificity is not None and not math.isnan(specificity) and specificity <= 1.0:
+    if _ok(head) or _ok(full):
+        decide = head if _ok(head) else full
+        where = f"the top {head_nodes} parents by influence" if (head_nodes and _ok(head)) else "the circuit"
+        if decide["enrichment"] <= 1.0 or decide.get("monte_carlo_p") is None or decide["monte_carlo_p"] >= alpha:
             return (
-                "falsified: enriched no more for the perturbed property than for a manipulation of a "
-                "different kind, so the set is enriched for responsiveness rather than for this property"
+                f"falsified: {where} are no more selective for the perturbed object than matched "
+                f"random features (selectivity enrichment {decide['enrichment']:.3f}, p="
+                f"{'n/a' if decide.get('monte_carlo_p') is None else f'{decide['monte_carlo_p']:.4f}'})"
             )
-        return "supported"
+        if _ok(full) and full is not decide and full["enrichment"] <= 1.0:
+            return (
+                f"falsified: {where} are enriched but the circuit as a whole is less selective than "
+                f"random ({full['enrichment']:.3f}); the head does not represent the set"
+            )
+        if specificity is None or math.isnan(specificity):
+            return "supported (no manipulation of a different kind was measured, so specificity is untested)"
+        if specificity > 1.0:
+            return "supported: object-specific"
+        return (
+            "supported, not specific to the recolour: as enriched for a manipulation of a different "
+            "kind, which is consistent with a circuit that integrates the referent from vision and "
+            "language and cannot be separated from that here"
+        )
+
+    if response_enrichment is None or response_p is None or math.isnan(response_enrichment):
+        return "not measured"
+    if response_enrichment > 1.0 and response_p < alpha:
+        return "supported (response enrichment only: no placebo condition for the selectivity test)"
+    return "falsified"
 
     if response_enrichment is None or response_p is None or math.isnan(response_enrichment):
         return "not measured"
@@ -660,15 +696,20 @@ def main() -> None:
         ratio = target_stats.get("ratio")
         p_value = target_stats.get("monte_carlo_p")
         selectivity = report.get("selectivity") or {}
+        head_stratum = strata[0] if strata else None
+        head_sel = (head_stratum or {}).get("selectivity")
+        head_spec = (head_stratum or {}).get("specificity")
+        report["decision_stratum_nodes"] = head_stratum["nodes"] if head_stratum else None
         decision = h3_verdict(
-            selectivity_enrichment=selectivity.get("enrichment"),
-            selectivity_p=selectivity.get("monte_carlo_p"),
-            specificity=report.get("specificity"),
+            head=head_sel,
+            full=selectivity or None,
+            specificity=head_spec if head_stratum else report.get("specificity"),
             response_enrichment=ratio,
             response_p=p_value,
             exercised_fraction=report.get("exercised_fraction"),
             alpha=args.alpha,
             min_exercised=args.min_exercised_fraction,
+            head_nodes=head_stratum["nodes"] if head_stratum else None,
         )
         report["h3_verdict"] = decision
         # `is not None`, not truthiness: a ratio of exactly 0.0 is the strongest
@@ -676,18 +717,26 @@ def main() -> None:
         sel_enrich = selectivity.get("enrichment")
         sel_p = selectivity.get("monte_carlo_p")
         specificity = report.get("specificity")
-        if decision.startswith("supported") and sel_enrich is not None and not math.isnan(sel_enrich):
+        head_enrich = (head_sel or {}).get("enrichment")
+        head_p = (head_sel or {}).get("monte_carlo_p")
+        if decision.startswith("supported") and head_enrich is not None and not math.isnan(head_enrich):
             verdict.append(
-                f"The traced parents are {sel_enrich:.3f}x more selective for the perturbed object than "
-                f"matched random features (Monte-Carlo p={sel_p:.4f}), and more enriched for this "
-                "property than for a manipulation of a different kind. The trace is corroborated on a "
+                f"The top {head_stratum['nodes']} parents by influence are {head_enrich:.3f}x more selective "
+                f"for the perturbed object than matched random features (Monte-Carlo p={head_p:.4f}), and "
+                f"the full circuit agrees in direction ({sel_enrich:.3f}x). The trace is corroborated on a "
                 "cause we set, not one we inferred from activations."
             )
+            if decision.startswith("supported, not specific"):
+                verdict.append(
+                    "  It is as enriched for the prompt swap as for the recolour. That does not undo the "
+                    "result: a circuit that computes the referent from both vision and language would "
+                    "look like this. It does mean the parents are not a colour-only handle."
+                )
         elif decision.startswith("supported"):
             verdict.append(
                 f"The traced parents respond {ratio:.2f}x more than matched random features to the "
                 f"controlled perturbation (Monte-Carlo p={p_value:.4f}), which corroborates the trace. "
-                "This run has no placebo condition, so the stronger selectivity test could not be run "
+                "No placebo condition was recorded, so the stronger selectivity test could not be run "
                 "and the result cannot separate this property from generic responsiveness."
             )
         elif decision.startswith("inconclusive"):
@@ -702,22 +751,28 @@ def main() -> None:
                     "these edges are not carrying the perturbed property, whatever else they carry."
                 )
             if sel_enrich is not None and not math.isnan(sel_enrich):
+                head_note = (
+                    f" At the top {head_stratum['nodes']} by influence it is {head_enrich:.3f}x (p="
+                    f"{'n/a' if head_p is None else f'{head_p:.4f}'})."
+                    if head_enrich is not None and head_stratum and not head_stratum["is_full_circuit"]
+                    else ""
+                )
                 verdict.append(
                     f"The traced parents respond {ratio:.2f}x more than random, but they are only "
                     f"{sel_enrich:.3f}x more SELECTIVE than random "
                     f"({selectivity.get('circuit', float('nan')):.2f}x against "
-                    f"{selectivity.get('random_mean', float('nan')):.2f}x). Response enrichment alone "
-                    "does not separate a circuit that carries this property from a set of generically "
-                    "responsive features."
+                    f"{selectivity.get('random_mean', float('nan')):.2f}x).{head_note} Response enrichment "
+                    "alone does not separate a circuit that carries this property from a set of "
+                    "generically responsive features; selectivity does, and here it is at the random level."
                 )
             if specificity is not None and not math.isnan(specificity) and specificity <= 1.0:
                 against = ", ".join(
                     f"{name} {value:.2f}x" for name, value in (report.get("specificity_against") or {}).items()
                 )
                 verdict.append(
-                    f"  Decisive: the set is enriched {ratio:.2f}x for the recolour and {against} for a "
-                    "manipulation of a different kind. Equal enrichment across unrelated interventions "
-                    "means these features are responsive in general, not tuned to the perturbed property."
+                    f"  Consistent with that: the set is enriched {ratio:.2f}x for the recolour and {against} "
+                    "for a manipulation of a different kind. With selectivity at the random level, equal "
+                    "enrichment across unrelated interventions reads as responsiveness in general."
                 )
             if p_value is not None and p_value <= 1.5 / (target_stats.get("draws") or 1):
                 verdict.append(

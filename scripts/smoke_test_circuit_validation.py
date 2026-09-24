@@ -72,7 +72,7 @@ def _csv_probe_run() -> Path:
     return run
 
 
-def _store_probe_run(*, swap_tracks_responders: bool = False) -> Path:
+def _store_probe_run(*, swap_tracks_responders: bool = False, placebo_tracks_responders: bool = False) -> Path:
     """Full-delta fixture. Active features 0..31; responders 5,6,7 at every layer.
 
     Target delta: responders 3.0, other active features 0.02, inactive 0.
@@ -80,9 +80,11 @@ def _store_probe_run(*, swap_tracks_responders: bool = False) -> Path:
     Prompt-swap delta (the manipulation of a different kind): uniform 1.0 over
     every active feature, so it carries no information about the responders.
     With ``swap_tracks_responders`` it instead boosts the same responders by the
-    same factor the target does, which is the real failure mode: a set enriched
-    as much for a language change as for a recolour is enriched for
-    responsiveness, not for the perturbed property.
+    same contrast the target does: a referent-like pattern, enriched for the
+    recolour and for the language change but not for the placebo. With
+    ``placebo_tracks_responders`` as well, the responders move for everything
+    alike, which is generic responsiveness: response enrichment is high for
+    every condition and selectivity enrichment sits at the random level.
     """
     run = Path(tempfile.mkdtemp())
     store = DeltaStore.create(run / "latents", layer_names=LAYERS, num_steps=STEPS, num_features=N_FEATURES)
@@ -104,7 +106,7 @@ def _store_probe_run(*, swap_tracks_responders: bool = False) -> Path:
                     d_s[ACTIVE] = 0.04 if swap_tracks_responders else 1.0
                     for f in RESPONDERS[layer]:
                         d_t[f] = 3.0 if prompt == "task" else 1.0
-                        d_p[f] = 0.25
+                        d_p[f] = 3.0 if placebo_tracks_responders else 0.25
                         if swap_tracks_responders:
                             d_s[f] = 6.0
                     baseline[(name, step)] = base
@@ -170,7 +172,8 @@ def test_store_true_circuit_is_enriched_selective_and_supported() -> None:
     assert sel["enrichment"] > 1.4 and sel["monte_carlo_p"] < 0.05, sel
     # The prompt swap is uniform here, so it carries no information: specificity is large.
     assert report["specificity"] > 5.0, report["specificity"]
-    assert report["h3_verdict"] == "supported"
+    assert report["decision_stratum_nodes"] == 5, "five parents: the head is the whole circuit"
+    assert report["h3_verdict"] == "supported: object-specific", report["h3_verdict"]
     assert report["circuit_selectivity_target_over_placebo"] > 5.0
     assert report["cells_per_condition"]["target"] == 2, "task prompt only: two states"
     assert "corroborated" in stdout
@@ -197,27 +200,45 @@ def test_store_wrong_circuit_is_not_enriched_and_says_so() -> None:
 
 
 def test_store_a_generically_responsive_set_is_falsified_not_supported() -> None:
-    """The real failure mode: enriched as much for a language swap as for the recolour.
+    """The real failure mode: responds more than random to every manipulation alike.
 
-    Response enrichment alone calls this supported. It is not: a set that
-    responds more than random to every manipulation is enriched for being
-    responsive, and says nothing about the perturbed property.
+    Response enrichment alone calls this supported (it is high for target,
+    placebo and swap). Selectivity enrichment sits at the random level, because
+    generic responsiveness scales target and placebo alike, and that is what
+    falsifies it.
+    """
+    stdout, report = _run(
+        _trace_dir({7: [5, 6], 8: [5, 6, 7]}),
+        _store_probe_run(swap_tracks_responders=True, placebo_tracks_responders=True),
+    )
+    for condition in ("target", "placebo", "prompt_swap"):
+        assert report["conditions"][condition]["ratio"] > 5.0, condition
+    # Circuit selectivity is exactly 1 (3.0 / 3.0); a random set's is about 1 too.
+    assert abs(report["selectivity"]["circuit"] - 1.0) < 1e-6
+    assert report["selectivity"]["enrichment"] < 1.2, report["selectivity"]
+    assert report["h3_verdict"].startswith("falsified"), report["h3_verdict"]
+    assert "responsiveness in general" in stdout
+
+
+def test_store_a_referent_like_set_is_supported_but_not_specific() -> None:
+    """Enriched for the recolour AND for the language swap, but not the placebo.
+
+    That is what a circuit integrating the referent from vision and language
+    would look like. Specificity at or below 1 qualifies the verdict; it must
+    not overturn it, because selectivity enrichment, the statistic that
+    separates a circuit from generic responsiveness, passes.
     """
     stdout, report = _run(
         _trace_dir({7: [5, 6], 8: [5, 6, 7]}), _store_probe_run(swap_tracks_responders=True)
     )
     target_enrich = report["conditions"]["target"]["ratio"]
     swap_enrich = report["conditions"]["prompt_swap"]["ratio"]
-    # The swap is twice the magnitude but the same contrast, so enrichment matches
-    # while the raw responses differ, exactly as in the run that exposed this.
     assert report["conditions"]["prompt_swap"]["circuit_mean"] > report["conditions"]["target"]["circuit_mean"]
     assert target_enrich > 5.0 and abs(target_enrich - swap_enrich) < 1e-6, (target_enrich, swap_enrich)
-    # The selectivity gate still passes; specificity is what rejects it.
     assert report["selectivity"]["enrichment"] > 1.4
     assert abs(report["specificity"] - 1.0) < 1e-6, report["specificity"]
-    assert report["h3_verdict"].startswith("falsified"), report["h3_verdict"]
-    assert "manipulation of a different kind" in report["h3_verdict"]
-    assert "responsive in general" in stdout
+    assert report["h3_verdict"].startswith("supported, not specific"), report["h3_verdict"]
+    assert "not a colour-only handle" in stdout
 
 
 def test_store_reports_enrichment_by_influence_stratum() -> None:
@@ -256,6 +277,8 @@ def test_store_reports_enrichment_by_influence_stratum() -> None:
         "the high-influence head must be more selective than the whole diluted set"
     )
     assert report["selectivity_enrichment_top_vs_full"] > 1.25
+    assert report["decision_stratum_nodes"] == 10, "decided at the head, where p is informative"
+    assert report["h3_verdict"].startswith("supported"), report["h3_verdict"]
     assert "pruned too loosely" in stdout
     assert "influence stratum" in stdout
 
@@ -318,7 +341,7 @@ def test_csv_path_pairs_its_draws_so_both_paths_share_one_rule() -> None:
     # Responders move 2.98 under the target and 0.23 under the placebo.
     assert abs(sel["circuit"] - 2.98 / 0.23) < 1e-6, sel
     assert sel["random_mean"] > 1.0 and sel["enrichment"] > 1.0, sel
-    assert report["h3_verdict"] == "supported", report["h3_verdict"]
+    assert report["h3_verdict"].startswith("supported (no manipulation"), report["h3_verdict"]
     assert report["specificity"] is None, "no manipulation of a different kind in this fixture"
 
 
@@ -381,18 +404,28 @@ def test_h3_verdict_branches() -> None:
     from validate_circuit_with_counterfactual import h3_verdict
 
     base = dict(response_enrichment=1.3, response_p=0.0005, exercised_fraction=1.0,
-                alpha=0.05, min_exercised=0.5)
-    assert h3_verdict(selectivity_enrichment=1.6, selectivity_p=0.001, specificity=5.0, **base) == "supported"
-    assert h3_verdict(selectivity_enrichment=1.06, selectivity_p=0.5, specificity=5.0, **base).startswith("falsified")
-    assert h3_verdict(selectivity_enrichment=1.6, selectivity_p=0.001, specificity=1.0, **base).startswith("falsified")
-    # Response enrichment alone must never carry a verdict when selectivity exists.
-    low = h3_verdict(selectivity_enrichment=0.9, selectivity_p=0.001, specificity=5.0, **base)
-    assert low.startswith("falsified"), low
+                alpha=0.05, min_exercised=0.5, head_nodes=10)
+    good = {"enrichment": 1.8, "monte_carlo_p": 0.002}
+    flat = {"enrichment": 1.06, "monte_carlo_p": 0.0005}   # saturated p at large n, trivial effect
+    weak = {"enrichment": 1.06, "monte_carlo_p": 0.41}
+
+    assert h3_verdict(head=good, full=flat, specificity=5.0, **base) == "supported: object-specific"
+    assert h3_verdict(head=good, full=flat, specificity=1.0, **base).startswith("supported, not specific")
+    assert h3_verdict(head=good, full=flat, specificity=None, **base).startswith("supported (no manipulation")
+    # A saturated, trivial full-circuit p must not carry the verdict: the head decides.
+    assert h3_verdict(head=weak, full=flat, specificity=5.0, **base).startswith("falsified")
+    assert "top 10" in h3_verdict(head=weak, full=flat, specificity=5.0, **base)
+    # An enriched head over an anti-selective body is not a circuit.
+    assert "does not represent" in h3_verdict(head=good, full={"enrichment": 0.8, "monte_carlo_p": 0.9}, specificity=5.0, **base)
+    # Specificity never falsifies on its own.
+    assert not h3_verdict(head=good, full=good, specificity=0.5, **base).startswith("falsified")
     # Coverage gate wins over everything.
     gated = dict(base, exercised_fraction=0.2)
-    assert h3_verdict(selectivity_enrichment=9.0, selectivity_p=0.0001, specificity=9.0, **gated).startswith("inconclusive")
+    assert h3_verdict(head=good, full=good, specificity=9.0, **gated).startswith("inconclusive")
+    # Only a full-circuit statistic (single stratum): it decides.
+    assert h3_verdict(head=None, full=good, specificity=5.0, **base) == "supported: object-specific"
     # Legacy path: no selectivity available, fall back and say so.
-    fallback = h3_verdict(selectivity_enrichment=None, selectivity_p=None, specificity=None, **base)
+    fallback = h3_verdict(head=None, full=None, specificity=None, **base)
     assert fallback.startswith("supported (response enrichment only")
 
 

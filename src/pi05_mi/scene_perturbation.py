@@ -110,28 +110,44 @@ class ColorPerturbation:
             raw.geom_matid[geom_id] = self.original_matid[offset]
 
 
-def resolve_mj_model(candidate: Any) -> Any:
-    """Return the raw ``mjModel`` from a robosuite/LIBERO wrapper or a model.
+_WRAPPER_ATTRS = ("_model", "model", "sim", "env", "unwrapped")
 
-    robosuite wraps ``mjModel`` (``sim.model`` holds the raw handle in
-    ``_model``), and LIBERO wraps robosuite again. Rather than hard-code one
-    traversal that breaks on a version bump, walk the known attribute names and
-    accept the first object that exposes the arrays this module writes.
+
+def resolve_mj_model(candidate: Any) -> Any:
+    """Return the genuine ``mujoco.MjModel`` behind a robosuite/LIBERO wrapper.
+
+    robosuite's ``binding_utils.MjModel`` is *not* an ``mujoco.MjModel``: its
+    metaclass installs a ``property`` for every public attribute of the real
+    class, forwarding to the instance it holds in ``_model``. So the wrapper
+    answers ``hasattr(w, "geom_rgba")`` with True while still being rejected by
+    the C API -- ``mujoco.mj_id2name(wrapper, ...)`` raises ``TypeError``.
+
+    Duck-typing therefore stops one level too early. Accept only a real
+    ``mujoco.MjModel`` and keep walking otherwise.
     """
+    import mujoco
+
     seen: set[int] = set()
     queue = [candidate]
+    inspected: list[str] = []
     while queue:
         node = queue.pop(0)
         if node is None or id(node) in seen:
             continue
         seen.add(id(node))
-        if all(hasattr(node, attr) for attr in ("geom_rgba", "geom_matid", "geom_bodyid")):
+        if isinstance(node, mujoco.MjModel):
             return node
-        for attr in ("_model", "model", "sim", "env", "unwrapped"):
-            queue.append(getattr(node, attr, None))
+        inspected.append(type(node).__name__)
+        for attr in _WRAPPER_ATTRS:
+            try:
+                queue.append(getattr(node, attr, None))
+            except Exception:
+                # A wrapper property can raise before the sim is built; that
+                # branch simply has nothing to offer.
+                continue
     raise TypeError(
-        "Could not resolve a MuJoCo model exposing geom_rgba/geom_matid/geom_bodyid "
-        f"from {type(candidate).__name__}. Pass the raw mjModel explicitly."
+        f"Could not resolve a mujoco.MjModel from {type(candidate).__name__}. "
+        f"Walked {_WRAPPER_ATTRS} through: {inspected}. Pass the raw model explicitly."
     )
 
 

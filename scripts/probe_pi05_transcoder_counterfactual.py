@@ -1049,7 +1049,7 @@ def main() -> None:
         ],
     )
 
-    _print_verdict(measurements)
+    _print_verdict(measurements, baseline_by_prompt=baseline_by_prompt, states=args.states)
     print(f"\nArtifacts in {args.output_dir}", flush=True)
     harness.vec_env.close()
 
@@ -1071,7 +1071,18 @@ def _infer_prompt(harness: Harness, observation: dict[str, Any]) -> str:
     return str(language) if language else ""
 
 
-def _print_verdict(measurements: list[dict[str, Any]]) -> None:
+def _print_verdict(
+    measurements: list[dict[str, Any]],
+    *,
+    baseline_by_prompt: dict[tuple[int, str], np.ndarray] | None = None,
+    states: int = 0,
+) -> None:
+    """Summarise the run.
+
+    ``baseline_by_prompt`` holds the unperturbed action per (state, prompt);
+    it is what decides whether the prompt swap manipulated anything at all.
+    """
+    baseline_by_prompt = baseline_by_prompt or {}
     nulls = [m for m in measurements if m["kind"] == "null"]
     targets = [m for m in measurements if m["kind"] == "target"]
     if not nulls or not targets:
@@ -1100,7 +1111,7 @@ def _print_verdict(measurements: list[dict[str, Any]]) -> None:
         # this, a "selectivity did not follow the prompt" result is ambiguous
         # between "features track position" and "the prompt was ignored".
         grounding = []
-        for state_index in range(args.states):
+        for state_index in range(states):
             a = baseline_by_prompt.get((state_index, "task"))
             b = baseline_by_prompt.get((state_index, "alt"))
             if a is not None and b is not None:

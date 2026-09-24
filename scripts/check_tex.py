@@ -8,8 +8,10 @@ table overruns the measure. This runs Tectonic on the standalone wrapper at the
 ICLR text width and fails on:
 
   * any TeX error (the engine's own exit status);
-  * unresolved references in the final pass (``There were undefined
-    references``, or ``??`` in the extracted text);
+  * unresolved references in the final pass, except those pointing at a label
+    that another section in the same directory defines -- a standalone build of
+    one section cannot resolve a cross-section reference, but the assembled
+    paper can, so those are reported and not failed;
   * an ``Overfull \\hbox`` wider than --max-overfull points, which is a table or
     line running into the margin.
 
@@ -27,7 +29,12 @@ import sys
 from pathlib import Path
 
 PAPER_DIR = Path(__file__).resolve().parents[1] / "docs" / "paper"
-WRAPPER = "counterfactual_probe_standalone.tex"
+WRAPPER = "counterfactual_probe_section_standalone.tex"
+
+
+def discover_wrappers(paper_dir: Path = PAPER_DIR) -> list[str]:
+    """Every per-experiment standalone build, in a stable order."""
+    return sorted(p.name for p in paper_dir.glob("*_standalone.tex"))
 
 
 def compile_tex(paper_dir: Path, wrapper: str, out_dir: Path) -> tuple[int, str, Path]:
@@ -48,6 +55,21 @@ def overfull_boxes(log: str) -> list[tuple[float, str]]:
     return sorted(((pts, where) for where, pts in seen.items()), reverse=True)
 
 
+def labels_defined_in(paper_dir: Path) -> set[str]:
+    """Every label defined by any section in the directory.
+
+    A reference to one of these from a standalone build is a cross-section
+    reference, which the assembled paper resolves. A reference to anything else
+    is a typo and must fail.
+    """
+    labels: set[str] = set()
+    for path in paper_dir.glob("*.tex"):
+        if path.name.endswith("_standalone.tex") or path.name.startswith("_"):
+            continue
+        labels.update(re.findall(r"\\label\{([^}]+)\}", path.read_text(errors="replace")))
+    return labels
+
+
 def pdf_text(pdf: Path) -> str | None:
     if shutil.which("pdftotext") is None or not pdf.exists():
         return None
@@ -66,11 +88,16 @@ def check(paper_dir: Path = PAPER_DIR, wrapper: str = WRAPPER, *, max_overfull: 
         errors = [l for l in log.splitlines() if l.startswith("!") or "error:" in l.lower()]
         failures.append("compile failed: " + (errors[0] if errors else f"exit {rc}"))
         return failures
-    if "There were undefined references" in log:
-        refs = sorted(set(re.findall(r"Reference `([^']+)' on page", log)))
-        failures.append(f"unresolved references: {refs}")
+    external = labels_defined_in(paper_dir)
+    unresolved = sorted(set(re.findall(r"Reference `([^']+)' on page", log)))
+    unknown = [r for r in unresolved if r not in external]
+    cross = [r for r in unresolved if r in external]
+    if unknown:
+        failures.append(f"unresolved references defined nowhere: {unknown}")
+    if cross:
+        print(f"     cross-section references (resolve in the assembled paper): {cross}")
     text = pdf_text(pdf)
-    if text is not None and re.search(r"\?\?", text):
+    if text is not None and re.search(r"\?\?", text) and not cross:
         failures.append("'??' appears in the rendered text (an unresolved reference)")
     for pts, where in overfull_boxes(log):
         if pts > max_overfull:
@@ -81,20 +108,44 @@ def check(paper_dir: Path = PAPER_DIR, wrapper: str = WRAPPER, *, max_overfull: 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--paper-dir", type=Path, default=PAPER_DIR)
-    parser.add_argument("--wrapper", default=WRAPPER)
+    parser.add_argument("--wrapper", default=None, help="One wrapper file. Default: every section.")
+    parser.add_argument("--section", default=None, help="Section stem, e.g. e4_time_conditioning.")
     parser.add_argument("--max-overfull", type=float, default=2.0, help="Tolerated overfull width in points.")
     parser.add_argument("--out-dir", type=Path, default=None)
     args = parser.parse_args()
-    failures = check(args.paper_dir, args.wrapper, max_overfull=args.max_overfull, out_dir=args.out_dir)
-    out = args.out_dir or (args.paper_dir / "build" / "check")
-    if failures:
-        print("TEX CHECK FAILED")
-        for f in failures:
-            print("  -", f)
+    if args.section:
+        wrappers = [f"{args.section}_standalone.tex"]
+    elif args.wrapper:
+        wrappers = [args.wrapper]
+    else:
+        wrappers = discover_wrappers(args.paper_dir)
+    if not wrappers:
+        print("TEX CHECK: no standalone wrappers found")
         sys.exit(1)
-    text = pdf_text(out / (Path(args.wrapper).stem + ".pdf")) or ""
-    pages = text.count("\f") + 1 if text else "?"
-    print(f"TEX CHECK OK: compiled, references resolved, no overfull box above {args.max_overfull}pt ({pages} pages)")
+
+    any_failed = False
+    for wrapper in wrappers:
+        stem = Path(wrapper).stem
+        out = args.out_dir or (args.paper_dir / "build" / stem)
+        if not (args.paper_dir / wrapper).exists():
+            print(f"FAIL {stem}: no such wrapper")
+            any_failed = True
+            continue
+        failures = check(args.paper_dir, wrapper, max_overfull=args.max_overfull, out_dir=out)
+        if failures:
+            any_failed = True
+            print(f"FAIL {stem}")
+            for f in failures:
+                print("  -", f)
+            continue
+        text = pdf_text(out / (stem + ".pdf")) or ""
+        pages = text.count("\f") + 1 if text else "?"
+        print(f"ok   {stem}  ({pages} pages)")
+    if any_failed:
+        print("\nTEX CHECK FAILED")
+        sys.exit(1)
+    print(f"\nTEX CHECK OK: {len(wrappers)} section(s) compiled, references resolved, "
+          f"no overfull box above {args.max_overfull}pt")
 
 
 if __name__ == "__main__":

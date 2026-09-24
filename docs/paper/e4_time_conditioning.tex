@@ -1,0 +1,184 @@
+% E4: Does the flow-time conditioning do work, and what does it cost?
+% Drop-in section. Uses only what the main paper already loads.
+% All values are filled from discovery run counterfactual-20260924-154113.
+% Artefact keys for each table are named in a comment above it.
+
+\providecommand{\RESULT}[1]{\textbf{[#1]}}
+
+\section{What the Flow-Time Conditioning Buys, and What It Costs}
+\label{sec:tau}
+
+Conditioning each transcoder on the flow timestep $\tau$ is the architectural
+choice that distinguishes these sparse codes from an ordinary transcoder, and
+it has a price that is easy to miss. A feature is identified by the triple
+$(\ell,\tau,i)$, so the same dictionary index at ten denoise steps is ten
+computational nodes, and a circuit traced over them is traced over a node space
+ten times the dictionary. Neither side of that trade has been measured. This
+section measures both from a feature-discovery run, with no retraining and no
+additional inference.
+
+The finding is that the trade is real but uneven. Conditioning does genuine
+work in the middle of the action expert and at its last layer, and almost none
+at the first two layers or at layers twelve through sixteen. Meanwhile the cost
+is uniform: at every one of the eighteen layers, codes at adjacent flow times
+are near-duplicates.
+
+\subsection{Hypothesis}
+
+\paragraph{H4.} The sparse code depends on the flow timestep in a way that
+smooth interpolation between denoise steps does not explain.
+
+\emph{Falsified if} the code at distant flow times is as correlated as a smooth
+drift along $\tau$ would predict, which would mean the time MLP reparameterises
+the code without restructuring it.
+
+\emph{Decision quantity.} For layer $\ell$, let $\mu_{\ell,\tau}\in\mathbb{R}^{d_{\mathrm{features}}}$
+be the per-feature mean activation at flow time $\tau$, and let
+$r_{\ell}(\tau_a,\tau_b)$ be the correlation across features between
+$\mu_{\ell,\tau_a}$ and $\mu_{\ell,\tau_b}$. Write $r^{\mathrm{adj}}_{\ell}$ for
+the mean over adjacent pairs and $r^{\mathrm{far}}_{\ell}$ for the first-to-last
+pair. The decision quantity is the \emph{structure ratio}
+\begin{equation}
+\rho_{\ell}
+=
+\frac{r^{\mathrm{far}}_{\ell}}
+     {\left(r^{\mathrm{adj}}_{\ell}\right)^{\,n-1}},
+\label{eq:tau-structure}
+\end{equation}
+with $n$ the number of denoise steps.
+
+\emph{Rule, fixed in advance.} A layer \emph{uses its conditioning} when
+$\rho_{\ell} < 0.5$ and the layer is reliable in the sense of
+Section~\ref{sec:tau-method}. Verdict set: \{conditioning used at every usable
+layer, used at some, unused, not measured\}.
+
+\subsection{Method}
+\label{sec:tau-method}
+
+\paragraph{The null is smooth drift, not zero correlation.}
+A low distant-$\tau$ correlation on its own is not evidence of structure. If the
+code simply wanders a little at each denoise step, and each step's change is
+independent of the last, then correlation decays geometrically with lag and the
+first-to-last pair sits at $(r^{\mathrm{adj}})^{n-1}$. That is what a time MLP
+doing nothing but smoothly reparameterising would produce, and at
+$r^{\mathrm{adj}}=0.98$ over ten steps it already predicts a distant correlation
+of $0.83$. The denominator of Eq.~\ref{eq:tau-structure} is that prediction, so
+$\rho$ asks whether the code changes with $\tau$ by more than drift, which is
+the question the architecture's claim actually turns on.
+
+\paragraph{The reliability ceiling.}
+These are correlations between means estimated from finitely many observations,
+so sampling noise attenuates every one of them and even two identical flow times
+would not correlate at one. With $s_{\ell,\tau,i}$ the per-feature standard
+deviation over $N$ observations, the estimated means carry a sampling variance
+of $\mathbb{E}_i[s^2]/N$ and the reliability is
+\begin{equation}
+\kappa_{\ell,\tau}
+=
+1 - \frac{\mathbb{E}_i\!\left[s_{\ell,\tau,i}^2\right]/N}
+         {\mathrm{Var}_i\!\left[\mu_{\ell,\tau,i}\right]},
+\label{eq:tau-reliability}
+\end{equation}
+so a correlation divided by $\sqrt{\kappa_a \kappa_b}$ is the disattenuated
+estimate. A layer whose minimum reliability falls below $0.2$ is reported as not
+measurable at this sample size rather than corrected, because dividing by a
+near-zero ceiling manufactures structure. Features that never fire at any flow
+time carry no information about $\tau$ and are excluded, so the correlation is
+taken over the layer's live dictionary.
+
+\subsection{Results}
+
+% Filled from tau_conditioning.csv and tau_conditioning.json -> layers, summary.
+\begin{table}[t]
+\caption{Flow-time structure by layer, from $160$ observations at $n=10$ denoise
+steps. Drift is the smooth-interpolation prediction
+$(r^{\mathrm{adj}})^{9}$; $\rho$ is Eq.~\ref{eq:tau-structure}. Reliability is
+the minimum of Eq.~\ref{eq:tau-reliability} over the layer's flow times.}
+\label{tab:tau-layers}
+\begin{center}
+\small
+\begin{tabular}{ccccccc|c}
+\hline
+Layer & Live & $\kappa_{\min}$ & $r^{\mathrm{adj}}$ & $r^{\mathrm{far}}$ & Drift & $\rho$ & Uses $\tau$ \\
+\hline
+0  & $3428$  & $0.99$ & $0.989$ & $0.654$ & $0.908$ & $0.72$ & no \\
+1  & $4230$  & $0.99$ & $0.989$ & $0.647$ & $0.903$ & $0.72$ & no \\
+2  & $4923$  & $0.99$ & $0.979$ & $0.157$ & $0.823$ & $0.19$ & yes \\
+3  & $7551$  & $0.99$ & $0.977$ & $0.116$ & $0.811$ & $0.14$ & yes \\
+4  & $15291$ & $1.00$ & $0.980$ & $0.239$ & $0.832$ & $0.29$ & yes \\
+5  & $15234$ & $1.00$ & $0.980$ & $0.307$ & $0.836$ & $0.37$ & yes \\
+6  & $16166$ & $0.99$ & $0.977$ & $0.204$ & $0.814$ & $0.25$ & yes \\
+7  & $14989$ & $0.99$ & $0.978$ & $0.248$ & $0.822$ & $0.30$ & yes \\
+8  & $16253$ & $0.99$ & $0.976$ & $0.174$ & $0.806$ & $0.22$ & yes \\
+9  & $16300$ & $0.98$ & $0.976$ & $0.176$ & $0.804$ & $0.22$ & yes \\
+10 & $16158$ & $0.98$ & $0.979$ & $0.326$ & $0.824$ & $0.40$ & yes \\
+11 & $16309$ & $0.98$ & $0.977$ & $0.317$ & $0.808$ & $0.39$ & yes \\
+12 & $16135$ & $0.98$ & $0.989$ & $0.683$ & $0.908$ & $0.75$ & no \\
+13 & $15761$ & $0.98$ & $0.989$ & $0.667$ & $0.908$ & $0.74$ & no \\
+14 & $15378$ & $0.98$ & $0.996$ & $0.907$ & $0.962$ & $0.94$ & no \\
+15 & $15507$ & $0.98$ & $0.994$ & $0.843$ & $0.947$ & $0.89$ & no \\
+16 & $11405$ & $0.99$ & $0.995$ & $0.820$ & $0.952$ & $0.86$ & no \\
+17 & $7083$  & $0.99$ & $0.980$ & $0.388$ & $0.834$ & $0.47$ & yes \\
+\hline
+\multicolumn{8}{l}{$r^{\mathrm{adj}}$: median $0.980$, range $0.976$ to $0.996$. $r^{\mathrm{far}}$: median $0.321$, range $0.116$ to $0.907$.} \\
+\multicolumn{8}{l}{Every layer is reliable ($\kappa_{\min}\ge0.98$), so none is excluded and no correction exceeds $2\%$.} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\paragraph{H4 verdict: supported at $11$ of $18$ layers.}
+Conditioning restructures the code well beyond drift at layers $2$ through $11$
+and at layer $17$, where $\rho$ runs from $0.14$ to $0.47$. It does not at
+layers $0$, $1$ and $12$ through $16$, where $\rho$ runs from $0.72$ to $0.94$
+and the observed distant correlation is close to what smooth interpolation alone
+predicts. The split is not a power artefact: reliability is at least $0.98$
+everywhere, so the $160$-observation run is ample for this measurement and the
+disattenuation changes no correlation by more than two per cent.
+
+\paragraph{The cost is uniform, and it is a circuit-tracing problem.}
+At every layer, codes one denoise step apart correlate at $0.976$ or better.
+Whatever conditioning does across the full range of $\tau$, it does almost
+nothing between neighbours. The consequence is not aesthetic. Because a feature
+is a $(\ell,\tau,i)$ triple, two adjacent nodes in a traced circuit can be the
+same computational object counted twice, and a backward trace with a budget
+measured in nodes spends most of that budget re-expanding near-duplicates. This
+is a concrete mechanism for the fan-out reported in
+Section~\ref{sec:counterfactual}, where a trace from a single target reached
+$1681$ parents. It also suggests a cheap remedy worth testing: collapse or
+deduplicate adjacent-$\tau$ nodes before expanding the frontier.
+
+\subsection{Relation to the rest of the paper}
+
+\paragraph{Architecture.} This is the first direct evidence that the time
+conditioning changes what the code represents rather than merely how it is
+parameterised, and it localises that evidence to the middle of the action
+expert. It supports the architectural choice while narrowing the claim: at
+layers $14$ to $16$ the conditioning is close to inert, and a cheaper
+unconditioned transcoder might serve there.
+
+\paragraph{Feature discovery.} The discovery table lists
+$\mathtt{L12}\!:\!\tau\!=\!1.0\!:\!\mathtt{F7584}$ and
+$\mathtt{L12}\!:\!\tau\!=\!0.9\!:\!\mathtt{F7584}$ as separate top-ranked
+entries with the same top-$20$ context, and reads their co-occurrence as
+evidence that the feature is not a single-timestep artefact. The measurement
+here gives that reading its footing and its limit: at layer $12$ adjacent flow
+times correlate at $0.989$, so the two entries are near-duplicates by
+construction. Their agreement confirms stability, but it is close to
+automatic and should not be counted as independent support.
+
+\paragraph{Circuit construction.} The redundancy above bears directly on trace
+size and on how a node budget should be spent. It does not challenge any
+reported circuit; it explains a mechanism by which traces inflate.
+
+\subsection{Limitations}
+
+The measurement is correlational and taken over per-feature means, so it
+characterises how the layer's code as a whole moves with $\tau$, not whether any
+individual feature keeps its meaning. It uses one discovery run on one dataset
+slice; the structure ratio is a summary of the first-to-last pair and does not
+describe the shape of the path between them. And it says what conditioning
+\emph{does}, not what it is \emph{worth}: a matched transcoder trained with the
+time MLP frozen at its zero initialisation would establish whether the
+restructuring improves reconstruction at equal sparsity, and remains the
+confirmatory experiment.

@@ -29,8 +29,9 @@ def _skip() -> bool:
 
 
 def _sandbox(mutate) -> Path:
+    """Copy the wrapper, the section and everything the wrapper inputs."""
     tmp = Path(tempfile.mkdtemp())
-    for name in (WRAPPER, SECTION):
+    for name in (WRAPPER, SECTION, "_standalone_preamble.tex"):
         (tmp / name).write_text((PAPER_DIR / name).read_text())
     src = (tmp / SECTION).read_text()
     (tmp / SECTION).write_text(mutate(src))

@@ -91,6 +91,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-id", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--prompt", default=None, help="Override the task language prompt.")
+    parser.add_argument(
+        "--alt-prompt",
+        default=None,
+        help=(
+            "A second prompt to repeat every measurement under, on pixel-identical images. "
+            "Defaults to a sibling task's language that refers to the placebo's location, which "
+            "separates task relevance from screen position. Use --no-alt-prompt to skip."
+        ),
+    )
+    parser.add_argument("--no-alt-prompt", dest="use_alt_prompt", action="store_false", default=True)
 
     parser.add_argument("--list-objects", action="store_true", help="Print the scene's objects and exit.")
     parser.add_argument(
@@ -430,6 +440,50 @@ def auto_select_targets(harness: Harness, mj_model: Any) -> tuple[str | None, st
         to_pattern(placebo_body) if placebo_body else None,
         notes,
     )
+
+
+def _init_region_of(bddl_text: str, body_name: str) -> str | None:
+    """Where a BDDL places a given object at reset."""
+    base = re.sub(r"_main$|_cabinet_.*$|_burner.*$|_button$", "", body_name)
+    match = re.search(rf"\(On\s+{re.escape(base)}\s+(\S+?)\)", bddl_text)
+    return match.group(1) if match else None
+
+
+def find_prompt_referring_to(harness: Harness, placebo_body: str) -> tuple[str, str] | None:
+    """Find a sibling task whose prompt names the placebo's location.
+
+    This is the control that separates task relevance from screen position. The
+    scene is unchanged and both bowls stay exactly where they are; only the
+    language changes, so that the *other* bowl becomes the object the prompt
+    refers to. Every pixel is identical between the two runs.
+
+    In libero_spatial the suite is built by moving the same target object to
+    different regions, so some sibling task's target sits where our placebo
+    sits, and that task's language is the prompt we need.
+    """
+    bddl_path = getattr(harness.inner_env, "_task_bddl_file", None)
+    if not bddl_path or not Path(bddl_path).exists():
+        return None
+    here = Path(bddl_path)
+    text = here.read_text(errors="replace")
+    placebo_region = _init_region_of(text, placebo_body)
+    if not placebo_region:
+        return None
+
+    for sibling in sorted(here.parent.glob("*.bddl")):
+        if sibling == here:
+            continue
+        sibling_text = sibling.read_text(errors="replace")
+        interest = re.search(r"\(:obj_of_interest(.*?)\)", sibling_text, re.S)
+        language = re.search(r"\(:language ([^)]*)\)", sibling_text)
+        if not interest or not language:
+            continue
+        names = interest.group(1).split()
+        if not names:
+            continue
+        if _init_region_of(sibling_text, names[0]) == placebo_region:
+            return language.group(1).strip(), sibling.stem
+    return None
 
 
 def rerender_observation(harness: Harness) -> dict[str, Any]:
@@ -781,6 +835,29 @@ def main() -> None:
     if args.placebo_target:
         targets.append(("placebo", args.placebo_target))
 
+    prompt_variants: list[tuple[str, str]] = [("task", harness.prompt)]
+    alt_prompt_source = None
+    if args.use_alt_prompt:
+        if args.alt_prompt:
+            prompt_variants.append(("alt", args.alt_prompt))
+            alt_prompt_source = "user-supplied"
+        elif args.placebo_target:
+            placebo_bodies = [obj.body_name for obj in find_objects(mj_model, args.placebo_target)]
+            found = find_prompt_referring_to(harness, placebo_bodies[0]) if placebo_bodies else None
+            if found:
+                prompt_variants.append(("alt", found[0]))
+                alt_prompt_source = found[1]
+    if len(prompt_variants) > 1:
+        print(
+            f"\nalt prompt ({alt_prompt_source}): {prompt_variants[1][1]!r}\n"
+            "  Same pixels, same noise, only the language differs. If selectivity follows the\n"
+            "  prompt rather than the screen position, the response tracks task relevance.",
+            flush=True,
+        )
+    elif args.use_alt_prompt:
+        print("\nno alt prompt found; selectivity cannot be separated from screen position", flush=True)
+
+    last_baseline_actions = None
     latent_rows: list[dict[str, Any]] = []
     measurements: list[dict[str, Any]] = []
     image_dir = args.output_dir / "images"
@@ -793,98 +870,116 @@ def main() -> None:
         baseline_image = first_camera_image(baseline_obs)
         noise = sample_shared_noise(harness.policy, 1, device)
 
-        baseline_latents, baseline_actions = forward(baseline_obs, noise, label=f"s{state_index}/baseline")
-        null_latents, null_actions = forward(baseline_obs, noise, label=f"s{state_index}/null")
-
-        null_rows = latent_delta_rows(
-            baseline_latents, null_latents, condition="null", top_features=args.top_features
-        )
-        for row in null_rows:
-            row["state_index"] = state_index
-            row["dose"] = 0.0
-            row["target"] = "none"
-        latent_rows.extend(null_rows)
-        null_summary = summarize_latent_rows(null_rows)
-        print(
-            f"  null control  latent L2 mean={null_summary.get('l2_delta_mean'):.6g} "
-            f"action rel_l2={_rel_l2(baseline_actions, null_actions):.6g}",
-            flush=True,
-        )
-        measurements.append(
-            {
-                "state_index": state_index,
-                "kind": "null",
-                "target": "none",
-                "dose": 0.0,
-                "pixel": image_delta_stats(baseline_image, baseline_image),
-                "latent": null_summary,
-                "action_relative_l2": _rel_l2(baseline_actions, null_actions),
-            }
-        )
-
         if args.save_images:
             save_image(image_dir / f"state{state_index}_baseline.png", baseline_image)
 
-        for kind, target in targets:
-            for dose in doses:
-                perturbation = apply_perturbation(mj_model, args, target, dose)
-                try:
-                    perturbed_obs = rerender_observation(harness)
-                    perturbed_image = first_camera_image(perturbed_obs)
-                    pixel = image_delta_stats(baseline_image, perturbed_image)
-                    if pixel["changed_pixel_fraction"] == 0.0:
-                        raise RuntimeError(
-                            f"Perturbation {perturbation.label!r} changed no pixels. The object is "
-                            "probably occluded or outside this camera's view; pick another target."
-                        )
-                    perturbed_latents, perturbed_actions = forward(
-                        perturbed_obs, noise, label=f"s{state_index}/{kind}/{target}/dose{dose:g}"
-                    )
-                finally:
-                    perturbation.revert(mj_model)
+        # Every prompt variant sees pixel-identical images and the same noise,
+        # so the only thing that changes between variants is the language.
+        for prompt_label, prompt_text in prompt_variants:
+            harness.prompt = prompt_text
+            if len(prompt_variants) > 1:
+                print(f"  [prompt:{prompt_label}] {prompt_text!r}", flush=True)
+            tag = f"s{state_index}/{prompt_label}"
 
-                rows = latent_delta_rows(
-                    baseline_latents, perturbed_latents, condition=kind, top_features=args.top_features
-                )
-                for row in rows:
-                    row["state_index"] = state_index
-                    row["dose"] = dose
-                    row["target"] = target
-                latent_rows.extend(rows)
-                summary = summarize_latent_rows(rows)
-                action_rel = _rel_l2(baseline_actions, perturbed_actions)
-                print(
-                    f"  {kind:<8} {target:<28} dose={dose:<5g} "
-                    f"pixels={pixel['changed_pixel_fraction']:.4f} "
-                    f"latentL2={summary.get('l2_delta_mean'):.6g} "
-                    f"action_rel_l2={action_rel:.6g}",
-                    flush=True,
-                )
-                measurements.append(
-                    {
-                        "state_index": state_index,
-                        "kind": kind,
-                        "target": target,
-                        "dose": dose,
-                        "perturbation": perturbation.label,
-                        "pixel": pixel,
-                        "latent": summary,
-                        "action_relative_l2": action_rel,
-                    }
-                )
-                if args.save_images:
-                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}.png", perturbed_image)
-                    diff = np.abs(
-                        perturbed_image.astype(np.float64) - baseline_image.astype(np.float64)
+            baseline_latents, baseline_actions = forward(baseline_obs, noise, label=f"{tag}/baseline")
+            null_latents, null_actions = forward(baseline_obs, noise, label=f"{tag}/null")
+            if prompt_label == prompt_variants[0][0]:
+                last_baseline_actions = baseline_actions
+
+            null_rows = latent_delta_rows(
+                baseline_latents, null_latents, condition="null", top_features=args.top_features
+            )
+            for row in null_rows:
+                row["state_index"] = state_index
+                row["dose"] = 0.0
+                row["target"] = "none"
+                row["prompt"] = prompt_label
+            latent_rows.extend(null_rows)
+            null_summary = summarize_latent_rows(null_rows)
+            print(
+                f"    null control  latent L2 mean={null_summary.get('l2_delta_mean'):.6g} "
+                f"action rel_l2={_rel_l2(baseline_actions, null_actions):.6g}",
+                flush=True,
+            )
+            measurements.append(
+                {
+                    "state_index": state_index,
+                    "prompt": prompt_label,
+                    "kind": "null",
+                    "target": "none",
+                    "dose": 0.0,
+                    "pixel": image_delta_stats(baseline_image, baseline_image),
+                    "latent": null_summary,
+                    "action_relative_l2": _rel_l2(baseline_actions, null_actions),
+                }
+            )
+
+            for kind, target in targets:
+                for dose in doses:
+                    perturbation = apply_perturbation(mj_model, args, target, dose)
+                    try:
+                        perturbed_obs = rerender_observation(harness)
+                        perturbed_image = first_camera_image(perturbed_obs)
+                        pixel = image_delta_stats(baseline_image, perturbed_image)
+                        if pixel["changed_pixel_fraction"] == 0.0:
+                            raise RuntimeError(
+                                f"Perturbation {perturbation.label!r} changed no pixels. The object is "
+                                "probably occluded or outside this camera's view; pick another target."
+                            )
+                        perturbed_latents, perturbed_actions = forward(
+                            perturbed_obs, noise, label=f"{tag}/{kind}/dose{dose:g}"
+                        )
+                    finally:
+                        perturbation.revert(mj_model)
+
+                    rows = latent_delta_rows(
+                        baseline_latents, perturbed_latents, condition=kind, top_features=args.top_features
                     )
-                    if diff.max() > 0:
-                        diff = diff / diff.max() * 255.0
-                    save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_diff.png", diff)
+                    for row in rows:
+                        row["state_index"] = state_index
+                        row["dose"] = dose
+                        row["target"] = target
+                        row["prompt"] = prompt_label
+                    latent_rows.extend(rows)
+                    summary = summarize_latent_rows(rows)
+                    action_rel = _rel_l2(baseline_actions, perturbed_actions)
+                    print(
+                        f"    {kind:<8} {target:<28} dose={dose:<5g} "
+                        f"pixels={pixel['changed_pixel_fraction']:.4f} "
+                        f"latentL2={summary.get('l2_delta_mean'):.6g} "
+                        f"action_rel_l2={action_rel:.6g}",
+                        flush=True,
+                    )
+                    measurements.append(
+                        {
+                            "state_index": state_index,
+                            "prompt": prompt_label,
+                            "kind": kind,
+                            "target": target,
+                            "dose": dose,
+                            "perturbation": perturbation.label,
+                            "pixel": pixel,
+                            "latent": summary,
+                            "action_relative_l2": action_rel,
+                        }
+                    )
+                    if args.save_images and prompt_label == prompt_variants[0][0]:
+                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}.png", perturbed_image)
+                        diff = np.abs(
+                            perturbed_image.astype(np.float64) - baseline_image.astype(np.float64)
+                        )
+                        if diff.max() > 0:
+                            diff = diff / diff.max() * 255.0
+                        save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_diff.png", diff)
+
+        harness.prompt = prompt_variants[0][1]
 
         # Advance the (unperturbed) trajectory so the next measurement sits at a
         # genuinely different state. The perturbation is already reverted here.
+        # Always step with the primary prompt's action: an alternate prompt is a
+        # measurement condition, not something that should steer the rollout.
         for _ in range(args.state_stride):
-            step_action = np.asarray(baseline_actions[0], dtype=np.float32)[None, ...]
+            step_action = np.asarray(last_baseline_actions[0], dtype=np.float32)[None, ...]
             harness.vec_env.step(step_action)
 
     payload = {
@@ -893,6 +988,8 @@ def main() -> None:
             "task_id": args.task_id,
             "seed": args.seed,
             "prompt": harness.prompt,
+            "prompt_variants": {label: text for label, text in prompt_variants},
+            "alt_prompt_source": alt_prompt_source,
             "target": args.target,
             "placebo_target": args.placebo_target,
             "perturbation": args.perturbation,
@@ -976,6 +1073,46 @@ def _print_verdict(measurements: list[dict[str, Any]]) -> None:
         print("Forward passes are bit-deterministic, so the entire target delta is signal.", flush=True)
     else:
         print(f"signal-to-floor ratio: {signal / floor:.3g}", flush=True)
+    # Prompt-swap control: identical pixels, only the language differs.
+    prompts = {m.get("prompt") for m in measurements if m.get("prompt")}
+    if len(prompts) > 1:
+        def mean_for(prompt: str, kind: str) -> float:
+            vals = [
+                m["latent"].get("l2_delta_mean") or 0.0
+                for m in measurements
+                if m.get("prompt") == prompt and m["kind"] == kind
+            ]
+            return float(np.mean(vals)) if vals else 0.0
+
+        print("\nprompt-swap control (same pixels, different language):", flush=True)
+        print(f"  {'prompt':>6} {'target obj':>12} {'placebo obj':>13} {'selectivity':>12}", flush=True)
+        ratios = {}
+        for prompt in sorted(prompts):
+            t, p_ = mean_for(prompt, "target"), mean_for(prompt, "placebo")
+            ratios[prompt] = (t / p_) if p_ > 0 else None
+            shown = "n/a" if ratios[prompt] is None else f"{ratios[prompt]:.2f}x"
+            print(f"  {prompt:>6} {t:>12.4f} {p_:>13.4f} {shown:>12}", flush=True)
+        task_ratio, alt_ratio = ratios.get("task"), ratios.get("alt")
+        if task_ratio and alt_ratio:
+            if alt_ratio < 1.0 < task_ratio:
+                print(
+                    "  Selectivity FLIPS with the prompt: the response follows the object the "
+                    "language refers to, not its screen position.",
+                    flush=True,
+                )
+            elif alt_ratio >= task_ratio:
+                print(
+                    "  Selectivity does NOT follow the prompt. The response tracks screen "
+                    "position or visual salience rather than task relevance.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  Selectivity weakens under the alt prompt ({task_ratio:.2f}x -> {alt_ratio:.2f}x) "
+                    "but does not invert, so language and position both contribute.",
+                    flush=True,
+                )
+
     placebos = [m for m in measurements if m["kind"] == "placebo"]
     if placebos:
         placebo = float(np.mean([m["latent"].get("l2_delta_mean") or 0.0 for m in placebos]))

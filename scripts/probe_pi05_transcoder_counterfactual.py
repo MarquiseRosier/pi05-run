@@ -41,6 +41,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from pi05_mi.langfuse_tracing import make_langfuse_tracer, summarize_action_tensor  # noqa: E402
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers  # noqa: E402
 from pi05_mi.scene_perturbation import (  # noqa: E402
     blend_geom_color,
@@ -98,6 +99,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-dtype", default="bfloat16")
     parser.add_argument("--save-images", action="store_true", default=True)
     parser.add_argument("--no-save-images", dest="save_images", action="store_false")
+    parser.add_argument(
+        "--trace-langfuse",
+        action="store_true",
+        help=(
+            "Emit one Langfuse span per forward pass with the batch shapes and images. "
+            "Requires PI05_LANGFUSE_TRACE=1 plus credentials; degrades to a no-op otherwise. "
+            "The local observation_shapes.json is written either way."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -459,15 +469,52 @@ def main() -> None:
     )
     print(f"wrapped {len(wrapped)} action-expert MLPs", flush=True)
 
-    def forward(observation: dict[str, Any], noise: torch.Tensor) -> tuple[LatentAccumulator, np.ndarray]:
+    tracer = make_langfuse_tracer(feature="pi05-counterfactual-probe", output_root=args.output_dir)
+    shape_report: dict[str, Any] = {}
+
+    def forward(
+        observation: dict[str, Any], noise: torch.Tensor, *, label: str
+    ) -> tuple[LatentAccumulator, np.ndarray]:
         batch = observation_to_batch(harness, observation)
+
+        # Record exactly what is handed to the policy. This is written locally
+        # regardless of Langfuse so the shapes are always inspectable, and it
+        # doubles as a guard: every condition must send the same shapes, or the
+        # comparison is not measuring what it claims to.
+        trace_input = tracer.batch_input(batch)
+        shapes = trace_input["tensor_shapes"]
+        if not shape_report:
+            shape_report["batch_keys"] = trace_input["batch_keys"]
+            shape_report["task"] = trace_input["task"]
+            shape_report["tensor_shapes"] = shapes
+            shape_report["noise_shape"] = list(noise.shape)
+            shape_report["noise_dtype"] = str(noise.dtype).replace("torch.", "")
+            print("\nobservation shapes handed to the policy:", flush=True)
+            for key in sorted(shapes):
+                print(f"  {key:<44} {shapes[key]['shape']}  {shapes[key]['dtype']}", flush=True)
+            print(f"  {'noise':<44} {list(noise.shape)}  {shape_report['noise_dtype']}", flush=True)
+            print(f"  task: {trace_input['task']!r}\n", flush=True)
+        elif shapes != shape_report["tensor_shapes"]:
+            raise RuntimeError(
+                f"Batch shapes changed between conditions at {label!r}. Baseline sent "
+                f"{shape_report['tensor_shapes']}, this pass sent {shapes}. The paired "
+                "comparison would be invalid."
+            )
+
         accumulator.reset()
         accumulator.enabled = True
         try:
-            with torch.inference_mode():
-                actions = harness.policy.predict_action_chunk(
-                    batch, num_steps=args.num_inference_steps, noise=noise
-                )
+            with tracer.trace(
+                f"counterfactual/{label}",
+                input=trace_input if args.trace_langfuse else None,
+                metadata={"label": label, "num_inference_steps": args.num_inference_steps},
+            ) as span:
+                with torch.inference_mode():
+                    actions = harness.policy.predict_action_chunk(
+                        batch, num_steps=args.num_inference_steps, noise=noise
+                    )
+                if args.trace_langfuse:
+                    span.update(output=summarize_action_tensor(actions))
         finally:
             accumulator.enabled = False
         snapshot = LatentAccumulator()
@@ -492,8 +539,8 @@ def main() -> None:
         baseline_image = first_camera_image(baseline_obs)
         noise = sample_shared_noise(harness.policy, 1, device)
 
-        baseline_latents, baseline_actions = forward(baseline_obs, noise)
-        null_latents, null_actions = forward(baseline_obs, noise)
+        baseline_latents, baseline_actions = forward(baseline_obs, noise, label=f"s{state_index}/baseline")
+        null_latents, null_actions = forward(baseline_obs, noise, label=f"s{state_index}/null")
 
         null_rows = latent_delta_rows(
             baseline_latents, null_latents, condition="null", top_features=args.top_features
@@ -536,7 +583,9 @@ def main() -> None:
                             f"Perturbation {perturbation.label!r} changed no pixels. The object is "
                             "probably occluded or outside this camera's view; pick another target."
                         )
-                    perturbed_latents, perturbed_actions = forward(perturbed_obs, noise)
+                    perturbed_latents, perturbed_actions = forward(
+                        perturbed_obs, noise, label=f"s{state_index}/{kind}/{target}/dose{dose:g}"
+                    )
                 finally:
                     perturbation.revert(mj_model)
 
@@ -601,6 +650,7 @@ def main() -> None:
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,
+        "observation_shapes": shape_report,
         "measurements": measurements,
         "interpretation": (
             "latent deltas are per (layer, denoise step) differences in per-feature max activation, "
@@ -612,6 +662,10 @@ def main() -> None:
     (args.output_dir / "counterfactual_summary.json").write_text(
         json.dumps(payload, indent=2, default=_json_default), encoding="utf-8"
     )
+    (args.output_dir / "observation_shapes.json").write_text(
+        json.dumps(shape_report, indent=2, default=_json_default), encoding="utf-8"
+    )
+    tracer.flush()
     write_csv(args.output_dir / "latent_deltas.csv", latent_rows)
     write_csv(
         args.output_dir / "measurements.csv",

@@ -23,6 +23,8 @@ import argparse
 import csv
 import json
 import math
+
+import numpy as np
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -42,6 +44,12 @@ def parse_args() -> argparse.Namespace:
             "Fraction of a layer's measurement cells a feature must appear in to be nominated "
             "for tracing. Selectivity alone rewards features that fired once with a large delta."
         ),
+    )
+    parser.add_argument(
+        "--max-placebo-z",
+        type=float,
+        default=1.0,
+        help="Reject a candidate whose placebo response is this many layer SDs above its layer mean.",
     )
     parser.add_argument(
         "--min-cells",
@@ -185,6 +193,22 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
     positives += [value for values in target_hits.values() for value in values if value > 0]
     resolution = min(positives) if positives else 1e-9
 
+    # Per-layer response statistics, used to put features from different layers
+    # on one scale. Raw selectivity cannot do this: its denominator is the
+    # layer's own placebo floor, and those floors differ by an order of
+    # magnitude across depth, so an identical absolute response scores several
+    # times higher in a layer that happens to have a smaller floor.
+    layer_target_stats: dict[str, tuple[float, float]] = {}
+    layer_placebo_stats: dict[str, tuple[float, float]] = {}
+    for store, stats in ((target_hits, layer_target_stats), (placebo_hits, layer_placebo_stats)):
+        by_layer: dict[str, list[float]] = defaultdict(list)
+        for (layer, _feature), values in store.items():
+            by_layer[layer].append(float(np.mean(values)))
+        for layer, values in by_layer.items():
+            array = np.asarray(values, dtype=np.float64)
+            spread = float(array.std(ddof=1)) if array.size > 1 else 0.0
+            stats[layer] = (float(array.mean()), spread)
+
     results = []
     for (layer, feature), magnitudes in target_hits.items():
         if len(magnitudes) < min_cells:
@@ -209,12 +233,23 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
         # strongly-responding selective feature still outranks a weak one --
         # which ranking purely by "unbounded first" would get backwards.
         denominator = max(placebo_mean, resolution)
+
+        # Layer-standardised response: how far above this layer's own typical
+        # feature the response sits, in that layer's standard deviations. Free
+        # of the floor artefact, so it is comparable across depth.
+        t_mean, t_std = layer_target_stats.get(layer, (0.0, 0.0))
+        target_z = (target_mean - t_mean) / t_std if t_std > 0 else 0.0
+        p_mean, p_std = layer_placebo_stats.get(layer, (0.0, 0.0))
+        placebo_z = (placebo_mean - p_mean) / p_std if (measured and p_std > 0) else None
+
         results.append(
             {
                 "layer": layer,
                 "layer_index": _layer_index(layer),
                 "feature": feature,
                 "target_mean_abs_delta": target_mean,
+                "target_z": target_z,
+                "placebo_z": placebo_z,
                 "target_cells": len(magnitudes),
                 "layer_cells": len(cells_per_layer.get(layer, ())),
                 "consistency": (
@@ -311,8 +346,16 @@ def main() -> None:
     # placebo floor, and tracing it would chase a fluke.
     eligible = [
         row for row in features
-        if row.get("feature_key") and row["consistency"] >= args.min_consistency
+        if row.get("feature_key")
+        and row["consistency"] >= args.min_consistency
+        # Placebo must not itself be elevated for this layer. Unmeasured means
+        # it fell below the layer's top-K, which is the desired case.
+        and (row["placebo_z"] is None or row["placebo_z"] < args.max_placebo_z)
     ]
+    # Rank by the layer-standardised response so features from different depths
+    # compete fairly. Ranking by raw selectivity buries deep features, whose
+    # larger placebo floors shrink the ratio regardless of how they responded.
+    eligible.sort(key=lambda row: -row["target_z"])
     if not eligible:
         best = max((r["consistency"] for r in features), default=0.0)
         print(
@@ -324,11 +367,13 @@ def main() -> None:
     if nominated:
         print(
             "\nNominated targets for circuit tracing, filtered to features that fired "
-            f"consistently (>= {args.min_consistency:.0%} of their layer's cells). Selected by "
+            f"consistently (>= {args.min_consistency:.0%} of their layer's cells) and ranked by "
+            "layer-standardised response z, which is comparable across depth. Selected by "
             "controlled counterfactual response rather than activation statistics:"
         )
         for row in nominated:
-            print(f"  {row['feature_key']:<22} selectivity {row['selectivity']:.1f}x  "
+            print(f"  {row['feature_key']:<22} z={row['target_z']:+.2f}  "
+                  f"selectivity {row['selectivity']:.1f}x  "
                   f"cells {row['target_cells']}/{row['layer_cells']} ({row['consistency']:.0%})")
         print("\n  python scripts/trace_pi05_transcoder_circuit.py \\")
         print(f"    --target {nominated[0]['feature_key']} \\")

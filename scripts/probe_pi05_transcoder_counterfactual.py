@@ -212,7 +212,52 @@ class Harness:
     preprocess_observation: Callable[[dict], dict]
 
 
+def ensure_libero_config() -> Path | None:
+    """Write LIBERO's config.yaml so importing it cannot block on input().
+
+    ``libero/libero/__init__.py`` prompts interactively ("Do you want to specify
+    a custom path for the dataset folder?") the first time it is imported if
+    ``~/.libero/config.yaml`` is missing. In any non-interactive process that
+    raises ``EOFError`` before a single useful line runs.
+
+    Writing the same defaults LIBERO would have written makes the import silent.
+    The keys mirror ``get_default_path_dict`` in that module.
+    """
+    import importlib.util
+
+    config_dir = Path(os.environ.get("LIBERO_CONFIG_PATH") or (Path.home() / ".libero"))
+    config_file = config_dir / "config.yaml"
+    if config_file.exists():
+        return config_file
+
+    # find_spec on the top-level package does not execute the submodule that
+    # holds the prompt, so this is safe to call before the real import.
+    spec = importlib.util.find_spec("libero")
+    if spec is None or not spec.origin:
+        return None
+    benchmark_root = Path(spec.origin).parent / "libero"
+
+    try:
+        import yaml
+    except ImportError:
+        return None
+
+    payload = {
+        "benchmark_root": str(benchmark_root),
+        "bddl_files": str(benchmark_root / "bddl_files"),
+        "init_states": str(benchmark_root / "init_files"),
+        "datasets": str(benchmark_root.parent / "datasets"),
+        "assets": str(benchmark_root / "assets"),
+    }
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    print(f"wrote LIBERO config {config_file} (benchmark_root={benchmark_root})", flush=True)
+    return config_file
+
+
 def build_harness(args: argparse.Namespace) -> Harness:
+    ensure_libero_config()
+
     from lerobot.configs.policies import PreTrainedConfig
     from lerobot.envs.configs import LiberoEnv
     from lerobot.envs.factory import make_env, make_env_pre_post_processors

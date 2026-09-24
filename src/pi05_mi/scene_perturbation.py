@@ -400,7 +400,16 @@ def image_delta_stats(baseline: np.ndarray, perturbed: np.ndarray) -> dict[str, 
     pert = pert_raw.astype(np.float64)
     scale = 255.0 if is_byte or max(base.max(initial=0.0), pert.max(initial=0.0)) > 1.5 else 1.0
     diff = np.abs(pert - base) / scale
-    per_pixel = diff.max(axis=-1) if diff.ndim == 3 else diff
+
+    # Reduce over the channel axis so "changed pixels" counts pixels. A batched
+    # frame arrives as (1, H, W, C), and only checking for rank 3 silently left
+    # the channel axis in place -- turning the count into a fraction of changed
+    # channel *values*, which moves with how many channels crossed the
+    # threshold rather than how many pixels did.
+    squeezed = diff
+    while squeezed.ndim > 3 and squeezed.shape[0] == 1:
+        squeezed = squeezed[0]
+    per_pixel = squeezed.max(axis=-1) if squeezed.ndim >= 3 and squeezed.shape[-1] <= 4 else squeezed
     changed = per_pixel > (1.0 / 255.0)
     return {
         "mean_abs_delta": float(diff.mean()),

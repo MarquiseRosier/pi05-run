@@ -523,8 +523,17 @@ def save_image(path: Path, array: np.ndarray) -> None:
 
 
 def first_camera_image(observation: dict[str, Any]) -> np.ndarray:
+    """Return one camera frame as (H, W, C), without the batch axis.
+
+    Observations carry a leading batch dim for the policy; the image metrics
+    want a plain frame, and leaving the extra axis on made "changed pixels"
+    count channel values instead of pixels.
+    """
     pixels = observation["pixels"]
-    return np.asarray(next(iter(pixels.values())))
+    image = np.asarray(next(iter(pixels.values())))
+    while image.ndim > 3 and image.shape[0] == 1:
+        image = image[0]
+    return image
 
 
 def _json_default(value: Any) -> Any:
@@ -656,7 +665,7 @@ def main() -> None:
     # --- validity self-check: the re-render path must reproduce the env's own
     # observation, otherwise every measurement below compares the wrong images.
     rerendered = rerender_observation(harness)
-    env_image = np.asarray(next(iter(env_observation["pixels"].values())))
+    env_image = first_camera_image(env_observation)
     rerender_image = first_camera_image(rerendered)
     check = image_delta_stats(env_image, rerender_image)
     print(

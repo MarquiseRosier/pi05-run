@@ -71,6 +71,36 @@ def load_rows(csv_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def peak_timestep_by_feature(
+    rows: list[dict[str, Any]], *, condition: str, num_inference_steps: int
+) -> dict[tuple[int, int], float]:
+    """Flow time at which each feature responded most strongly.
+
+    ``euler_integrate`` walks ``time = 1.0 + step * (-1/num_steps)``, so denoise
+    step 0 is tau=1.0 and the last step is tau=1/num_steps. Recording tau lets a
+    candidate be named in the same key format the circuit tracer consumes.
+    """
+    best: dict[tuple[int, int], tuple[float, float]] = {}
+    for row in rows:
+        if row.get("condition") != condition:
+            continue
+        step = row.get("denoise_step")
+        if step is None:
+            continue
+        tau = 1.0 - (int(step) / max(1, num_inference_steps))
+        for feature, delta in zip(row.get("top_feature_ids") or [], row.get("top_feature_deltas") or []):
+            key = (_layer_index(row["layer"]), int(feature))
+            magnitude = abs(float(delta))
+            if key not in best or magnitude > best[key][1]:
+                best[key] = (tau, magnitude)
+    return {key: value[0] for key, value in best.items()}
+
+
+def feature_key(layer_index: int, tau: float, feature: int) -> str:
+    """The key format the circuit tracer expects, e.g. ``L11:tau0.7:F9970``."""
+    return f"L{layer_index}:tau{tau:g}:F{feature}"
+
+
 def layer_selectivity(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Mean response per layer, target versus placebo."""
     totals: dict[tuple[str, str], list[float]] = defaultdict(list)
@@ -177,6 +207,8 @@ def candidate_features(rows: list[dict[str, Any]], *, min_cells: int) -> list[di
                 "placebo_measured": measured,
                 "placebo_upper_bound": None if measured else bound,
                 "selectivity": target_mean / denominator,
+                "tau": None,
+                "feature_key": None,
                 "selectivity_is_lower_bound": not measured or placebo_mean <= 0.0,
             }
         )
@@ -205,6 +237,15 @@ def main() -> None:
     if not rows:
         raise SystemExit(f"{csv_path} is empty")
 
+    steps = 10
+    summary_path = csv_path.parent / "counterfactual_summary.json"
+    if summary_path.exists():
+        try:
+            steps = int(json.loads(summary_path.read_text())["config"]["num_inference_steps"])
+        except (KeyError, ValueError, TypeError):
+            pass
+    peak_tau = peak_timestep_by_feature(rows, condition="target", num_inference_steps=steps)
+
     conditions = sorted({row["condition"] for row in rows})
     print(f"loaded {len(rows)} rows from {csv_path} (conditions: {', '.join(conditions)})\n")
 
@@ -223,6 +264,10 @@ def main() -> None:
         print(f"\nmost selective layer: {ranked['layer_index']} at {ranked['selectivity']:.2f}x")
 
     features = candidate_features(rows, min_cells=args.min_cells)
+    for row in features:
+        tau = peak_tau.get((row["layer_index"], row["feature"]))
+        row["tau"] = tau
+        row["feature_key"] = None if tau is None else feature_key(row["layer_index"], tau, row["feature"])
     print(
         f"\ncandidate features (>= {args.min_cells} cells, ranked by selectivity) "
         f"- {len(features)} found, showing {min(args.top, len(features))}"
@@ -242,6 +287,20 @@ def main() -> None:
     write_csv(out_dir / "layer_selectivity.csv", layers)
     write_csv(out_dir / "candidate_features.csv", features)
     print(f"\nWrote {out_dir / 'layer_selectivity.csv'} and {out_dir / 'candidate_features.csv'}")
+
+    nominated = [row for row in features if row.get("feature_key")][:5]
+    if nominated:
+        print(
+            "\nNominated targets for circuit tracing. These are selected by controlled "
+            "counterfactual selectivity rather than by activation statistics, so they are a "
+            "different nomination route into the same tracer:"
+        )
+        for row in nominated:
+            print(f"  {row['feature_key']:<22} selectivity {row['selectivity']:.1f}x  "
+                  f"cells {row['target_cells']}")
+        print("\n  python scripts/trace_pi05_transcoder_circuit.py \\")
+        print(f"    --target {nominated[0]['feature_key']} \\")
+        print("    --checkpoint <transcoder.pt> --feature-dir <feature discovery dir>")
     print(
         "\nA feature marked 'placebo below top-K' was not recorded for the placebo, so its "
         "placebo response is an upper bound, not zero. Its true selectivity is at least the "

@@ -1,173 +1,168 @@
 #!/usr/bin/env python
-"""Smoke test for transcoder circuit tracing.
-
-Checked against planted wiring: two transcoders are built with a known
-connection between specific features, and the tracer must recover exactly that
-edge and not invent others.
-"""
+"""Smoke test sparse-feature circuit tracing math on synthetic tensors."""
 
 from __future__ import annotations
 
-import sys
+import tempfile
 from pathlib import Path
 
-import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from pi05_mi.circuit_tracing import (  # noqa: E402
-    CircuitNode,
-    build_graph,
-    layer_index_of,
-    name_nodes,
-    select_nodes,
-    wiring_matrix,
+from pi05_mi.circuit_tracing import (
+    FeatureNode,
+    TraceForwardCache,
+    aggregate_parent_contributions,
+    node_influence_scores,
+    parent_summary_to_edge,
+    prune_edges_by_cumulative_influence,
+    prune_nodes_by_cumulative_influence,
+    source_contributions_to_layers,
+    source_contributions_to_target,
+    write_trace_outputs,
 )
 
-D_MODEL, N_FEATURES = 6, 5
-L0, L1, L2 = "m.layers.0.mlp", "m.layers.1.mlp", "m.layers.2.mlp"
 
+def _make_cache(source_value_a: float, source_value_b: float) -> TraceForwardCache:
+    source_latent = torch.zeros(1, 4, 8, requires_grad=True)
+    source_latent.data[0, 1, 3] = source_value_a
+    source_latent.data[0, 2, 6] = source_value_b
 
-def _planted():
-    """Feature 1 of layer 0 writes a direction that feature 3 of layer 1 reads."""
-    torch.manual_seed(0)
-    decoder0 = torch.zeros(D_MODEL, N_FEATURES)
-    direction = torch.zeros(D_MODEL)
-    direction[2] = 1.0
-    decoder0[:, 1] = direction
+    target_scalar = 2.0 * source_latent[0, 1, 3] - 1.5 * source_latent[0, 2, 6]
+    target_mask = torch.zeros(1, 3, 8)
+    target_mask[0, 0, 5] = 1.0
+    target_preactivation = target_mask * target_scalar
 
-    encoder1 = torch.zeros(N_FEATURES, D_MODEL)
-    encoder1[3] = direction * 2.0  # reads it with gain 2
-
-    decoder1 = torch.zeros(D_MODEL, N_FEATURES)
-    second = torch.zeros(D_MODEL)
-    second[4] = 1.0
-    decoder1[:, 3] = second
-    encoder2 = torch.zeros(N_FEATURES, D_MODEL)
-    encoder2[0] = second * 3.0  # layer1 f3 -> layer2 f0, gain 3
-
-    return (
-        {L0: decoder0, L1: decoder1},
-        {L1: encoder1, L2: encoder2},
+    cache = TraceForwardCache()
+    cache.add(
+        "paligemma_with_expert.gemma_expert.model.layers.0.mlp",
+        0,
+        torch.zeros_like(source_latent),
+        source_latent,
+        torch.tensor([1.0]),
     )
-
-
-def test_layer_index_parsing() -> None:
-    assert layer_index_of("paligemma_with_expert.gemma_expert.model.layers.17.mlp") == 17
-    assert layer_index_of("no_digits") == -1
-
-
-def test_wiring_matrix_recovers_the_planted_connection() -> None:
-    decoders, encoders = _planted()
-    matrix = wiring_matrix(
-        decoders[L0], encoders[L1], source_features=[0, 1, 2], target_features=[3, 4]
-    ).numpy()
-    assert matrix.shape == (3, 2)
-    assert abs(matrix[1, 0] - 2.0) < 1e-6, "source feature 1 -> target feature 3 with gain 2"
-    assert abs(matrix[0, 0]) < 1e-6 and abs(matrix[2, 0]) < 1e-6, "unconnected features must be zero"
-
-
-def test_input_scale_modulates_the_wiring() -> None:
-    decoders, encoders = _planted()
-    scale = torch.ones(D_MODEL)
-    scale[2] = 5.0
-    plain = wiring_matrix(decoders[L0], encoders[L1], source_features=[1], target_features=[3]).numpy()
-    scaled = wiring_matrix(
-        decoders[L0], encoders[L1], source_features=[1], target_features=[3], input_scale=scale
-    ).numpy()
-    assert abs(scaled[0, 0] - 5.0 * plain[0, 0]) < 1e-6
-
-
-def test_select_nodes_takes_the_largest_movers_per_layer() -> None:
-    deltas = {L0: np.array([0.0, 3.0, -5.0, 0.1, 0.0]), L1: np.array([2.0, 0.0, 0.0, 0.0, 0.0])}
-    nodes = select_nodes(deltas, top_per_layer=2, min_abs_delta=0.05)
-    picked = {(n.layer_index, n.feature) for n in nodes}
-    assert picked == {(0, 2), (0, 1), (1, 0)}, picked
-    # Sign is preserved: a feature that went down must record a negative delta.
-    assert next(n for n in nodes if n.feature == 2).delta == -5.0
-
-
-def test_select_nodes_drops_everything_below_the_threshold() -> None:
-    assert select_nodes({L0: np.array([0.001, 0.002])}, top_per_layer=5, min_abs_delta=0.01) == []
-
-
-def test_graph_builds_only_forward_edges_and_finds_the_planted_path() -> None:
-    decoders, encoders = _planted()
-    deltas = {
-        L0: np.array([0.0, 1.0, 0.0, 0.0, 0.0]),
-        L1: np.array([0.0, 0.0, 0.0, 1.0, 0.0]),
-        L2: np.array([1.0, 0.0, 0.0, 0.0, 0.0]),
-    }
-    nodes = select_nodes(deltas, top_per_layer=1)
-    graph = build_graph(nodes, decoders=decoders, encoders=encoders, top_edges=50)
-
-    names = {edge.name for edge in graph.edges}
-    assert "L0/F1 -> L1/F3" in names, names
-    assert "L1/F3 -> L2/F0" in names, names
-    for edge in graph.edges:
-        assert edge.source.layer_index < edge.target.layer_index, "edges must point forward only"
-
-    strongest = max(graph.edges, key=lambda e: abs(e.weight))
-    assert abs(strongest.weight - 3.0) < 1e-6 or abs(strongest.weight - 2.0) < 1e-6
-
-
-def test_max_layer_gap_restricts_skip_connections() -> None:
-    decoders, encoders = _planted()
-    # Give layer 0 a direct route to layer 2 as well.
-    decoders[L0] = decoders[L0].clone()
-    encoders[L2] = encoders[L2].clone()
-    deltas = {L0: np.array([0.0, 1.0, 0, 0, 0]), L2: np.array([1.0, 0, 0, 0, 0])}
-    nodes = select_nodes(deltas, top_per_layer=1)
-    near = build_graph(nodes, decoders=decoders, encoders=encoders, max_layer_gap=1, top_edges=50)
-    assert near.edges == [], "a gap of 2 must be excluded when max_layer_gap=1"
-    far = build_graph(nodes, decoders=decoders, encoders=encoders, max_layer_gap=2, top_edges=50)
-    assert len(far.edges) >= 0  # allowed through; weight may be zero if unconnected
-
-
-def test_edge_weight_scales_with_the_source_activation() -> None:
-    decoders, encoders = _planted()
-    def weight_for(delta: float) -> float:
-        nodes = [
-            CircuitNode(layer=L0, layer_index=0, feature=1, activation=0.0, delta=delta),
-            CircuitNode(layer=L1, layer_index=1, feature=3, activation=0.0, delta=1.0),
-        ]
-        graph = build_graph(nodes, decoders=decoders, encoders=encoders, top_edges=10)
-        return next(e.weight for e in graph.edges if e.name == "L0/F1 -> L1/F3")
-
-    assert abs(weight_for(2.0) - 2 * weight_for(1.0)) < 1e-6, "attribution is linear in the source"
-
-
-def test_names_follow_the_layer_feature_convention() -> None:
-    nodes = [CircuitNode(layer=L1, layer_index=1, feature=7145, activation=1.0, delta=-2.0)]
-    named = name_nodes(
-        nodes, peak_timestep={(1, 7145): 0.8}, selectivity={(1, 7145): 130.0}
+    cache.add(
+        "paligemma_with_expert.gemma_expert.model.layers.1.mlp",
+        1,
+        target_preactivation,
+        torch.relu(target_preactivation),
+        torch.tensor([1.0]),
     )
-    assert named[0].name == "L1/F7145"
-    assert "tau0.80" in named[0].label and "sel130x" in named[0].label
-    assert "down" in named[0].label, "the sign of the response should be legible"
-
-    overridden = name_nodes(nodes, labels={"L1/F7145": "bowl colour"})
-    assert overridden[0].label == "bowl colour"
-    assert overridden[0].display() == "L1/F7145 bowl colour"
+    return cache
 
 
-def test_graph_serialises_for_the_report() -> None:
-    decoders, encoders = _planted()
-    deltas = {L0: np.array([0, 1.0, 0, 0, 0]), L1: np.array([0, 0, 0, 1.0, 0])}
-    graph = build_graph(select_nodes(deltas, top_per_layer=1), decoders=decoders, encoders=encoders)
-    payload = graph.to_dict()
-    assert {"metadata", "nodes", "edges"} <= payload.keys()
-    assert payload["nodes"][0]["name"].startswith("L")
-    assert "omits" in payload["metadata"], "the report must carry the method's caveats"
+def _make_multilayer_cache() -> TraceForwardCache:
+    source0 = torch.zeros(1, 3, 8, requires_grad=True)
+    source1 = torch.zeros(1, 3, 8, requires_grad=True)
+    source0.data[0, 0, 2] = 4.0
+    source0.data[0, 2, 4] = 2.0
+    source1.data[0, 1, 6] = 3.0
+
+    target_scalar = 0.5 * source0[0, 0, 2] + 2.0 * source1[0, 1, 6] - source0[0, 2, 4]
+    target_mask = torch.zeros(1, 2, 8)
+    target_mask[0, 1, 7] = 1.0
+    target_preactivation = target_mask * target_scalar
+
+    cache = TraceForwardCache()
+    cache.add("layer0", 0, torch.zeros_like(source0), source0, torch.tensor([0.7]))
+    cache.add("layer1", 1, torch.zeros_like(source1), source1, torch.tensor([0.7]))
+    cache.add("layer2", 2, target_preactivation, torch.relu(target_preactivation), torch.tensor([0.7]))
+    return cache
 
 
 def main() -> None:
-    tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
-    for test in tests:
-        test()
-        print(f"ok {test.__name__}")
-    print(f"\n{len(tests)} checks passed")
+    target = FeatureNode(layer=1, timestep=1.0, feature=5)
+    per_example = [
+        source_contributions_to_target(
+            cache=_make_cache(3.0, 1.0),
+            source_layer=0,
+            target=target,
+            target_position=0,
+            top_m_per_example=2,
+        ),
+        source_contributions_to_target(
+            cache=_make_cache(2.0, 4.0),
+            source_layer=0,
+            target=target,
+            target_position=0,
+            top_m_per_example=2,
+        ),
+    ]
+    parents, _positions = aggregate_parent_contributions(
+        source_layer=0,
+        target=target,
+        collapsed_abs_values=[row["collapsed_abs"] for row in per_example],
+        signed_values=[row["signed_contribution"] for row in per_example],
+        source_positions=[row["source_positions"] for row in per_example],
+        per_example_top=[row["per_example_top"] for row in per_example],
+        parents_per_node=2,
+    )
+    assert [parent.source.feature for parent in parents] == [3, 6]
+    assert parents[0].source.layer == 0
+    assert parents[0].target == target
+
+    multilayer_target = FeatureNode(layer=2, timestep=0.7, feature=7)
+    layer_contrib = source_contributions_to_layers(
+        cache=_make_multilayer_cache(),
+        source_layers=range(0, 2),
+        target=multilayer_target,
+        target_position=1,
+    )
+    assert set(layer_contrib) == {0, 1}
+    assert torch.isclose(layer_contrib[0]["signed_contribution"][2], torch.tensor(2.0))
+    assert torch.isclose(layer_contrib[0]["signed_contribution"][4], torch.tensor(-2.0))
+    assert torch.isclose(layer_contrib[1]["signed_contribution"][6], torch.tensor(6.0))
+
+    root = Path(tempfile.mkdtemp(prefix="pi05_circuit_trace_"))
+    nodes = {
+        target.key: {
+            "node_key": target.key,
+            "layer": target.layer,
+            "timestep": target.timestep,
+            "feature": target.feature,
+            "depth": 0,
+            "kind": "target",
+            "label": "",
+        }
+    }
+    edges = []
+    for rank, parent in enumerate(parents, start=1):
+        nodes[parent.source.key] = {
+            "node_key": parent.source.key,
+            "layer": parent.source.layer,
+            "timestep": parent.source.timestep,
+            "feature": parent.source.feature,
+            "depth": 1,
+            "kind": "parent",
+            "label": "",
+        }
+        edges.append(parent_summary_to_edge(parent, depth=1, rank=rank))
+    write_trace_outputs(
+        output_dir=root,
+        config={"target": target.key, "parents_per_node": 2, "max_depth": 1},
+        nodes=nodes,
+        edges=edges,
+    )
+    assert (root / "graph.json").exists()
+    assert (root / "edges_summary.csv").exists()
+
+    graph_nodes = {
+        "T": {"node_key": "T", "layer": 2, "timestep": 1.0, "feature": 0},
+        "A": {"node_key": "A", "layer": 1, "timestep": 1.0, "feature": 1},
+        "B": {"node_key": "B", "layer": 1, "timestep": 1.0, "feature": 2},
+    }
+    graph_edges = [
+        {"source_key": "A", "target_key": "T", "edge_mass": 0.9},
+        {"source_key": "B", "target_key": "T", "edge_mass": 0.1},
+    ]
+    influence = node_influence_scores(graph_nodes, graph_edges, target_key="T")
+    assert influence["T"] == 1.0
+    assert influence["A"] > influence["B"]
+    kept_nodes = prune_nodes_by_cumulative_influence(graph_nodes, graph_edges, target_key="T", threshold=0.8)
+    assert kept_nodes == {"T", "A"}
+    kept_edges = prune_edges_by_cumulative_influence(graph_nodes, graph_edges, target_key="T", threshold=0.8)
+    assert len(kept_edges) == 1
+    assert kept_edges[0]["source_key"] == "A"
+    print(f"circuit tracing smoke test passed: {root}")
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ class Pi05TranscoderContext:
         save_full_latents: bool = False,
         latent_callback: Callable[[str, int, Tensor, Tensor], None] | None = None,
         trace_callback: Callable[[str, int, Tensor, Tensor, Tensor], None] | None = None,
+        latent_intervention: Callable[[str, int, Tensor, Tensor], Tensor] | None = None,
         store_latent_summaries: bool = True,
     ):
         self.mode = mode
@@ -96,6 +97,7 @@ class Pi05TranscoderContext:
         self.save_full_latents = save_full_latents
         self.latent_callback = latent_callback
         self.trace_callback = trace_callback
+        self.latent_intervention = latent_intervention
         self.store_latent_summaries = store_latent_summaries
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
@@ -218,6 +220,11 @@ class Pi05TranscoderContext:
                 )
             )
 
+    def intervene_latent(self, name: str, layer_index: int, latent: Tensor, timestep: Tensor) -> Tensor:
+        if self.latent_intervention is None:
+            return latent
+        return self.latent_intervention(name, layer_index, latent, timestep)
+
 
 class WrappedActionExpertMLP(nn.Module):
     """Wrapper that preserves, observes, or replaces one Pi0.5 action-expert MLP."""
@@ -244,7 +251,9 @@ class WrappedActionExpertMLP(nn.Module):
         if self.context.mode == "replace":
             if self.transcoder is None:
                 raise RuntimeError(f"Cannot run {self.name} in replace mode without a transcoder")
-            y_hat, latent, preactivation = self.transcoder(x, timestep, return_preactivation=True)
+            preactivation, latent = self.transcoder.encode(x, timestep)
+            latent = self.context.intervene_latent(self.name, self.layer_index, latent, timestep)
+            y_hat = self.transcoder.decoder(latent)
             self.context.record_trace(self.name, self.layer_index, preactivation, latent, timestep)
             self.context.record_latent(self.name, self.layer_index, latent, timestep)
             return y_hat.to(dtype=x.dtype)

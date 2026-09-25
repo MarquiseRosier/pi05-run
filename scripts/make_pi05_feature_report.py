@@ -85,6 +85,9 @@ def _timesteps_for_feature(topk_payload: dict[str, Any], name: str, timestep: st
         return timesteps
     if timestep in topk_payload["topk"][name]:
         return [timestep]
+    closest = min(timesteps, key=lambda item: abs(float(item) - float(timestep)))
+    if abs(float(closest) - float(timestep)) <= 1e-4:
+        return [closest]
     raise KeyError(f"No timestep {float(timestep):.4g} for {name}")
 
 

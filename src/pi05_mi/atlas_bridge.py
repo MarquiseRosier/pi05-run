@@ -245,13 +245,21 @@ class TranscoderDictionary:
         ablate_features: Iterable[int] | None = None,
         steer_features: Iterable[int] | None = None,
         steer_strength: float = 0.0,
+        latent_delta: Tensor | None = None,
+        latent_delta_scale: float = 1.0,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """Return ``(y_hat, y_intervened, z)``."""
+        """Return ``(y_hat, y_intervened, z)``.
+
+        ``latent_delta`` is an optional additive direction. When ``latent_delta_scale``
+        is non-zero the steered latent is ``z + latent_delta_scale * latent_delta``.
+        Omitting the delta preserves the existing feature-scale and ablation path.
+        """
         y_hat, latent = self.transcoder(x, timesteps)
         modified = latent
         ablate = list(ablate_features or [])
         steer = list(steer_features or [])
-        if ablate or (steer and steer_strength != 0.0):
+        use_delta = latent_delta is not None and float(latent_delta_scale) != 0.0
+        if ablate or (steer and steer_strength != 0.0) or use_delta:
             modified = latent.clone()
             for feature in ablate:
                 if feature < modified.shape[-1]:
@@ -260,6 +268,11 @@ class TranscoderDictionary:
                 for feature in steer:
                     if feature < modified.shape[-1]:
                         modified[..., feature] = modified[..., feature] * (1.0 + float(steer_strength))
+            if use_delta:
+                delta = latent_delta.to(device=modified.device, dtype=modified.dtype)
+                while delta.ndim < modified.ndim:
+                    delta = delta.unsqueeze(0)
+                modified = modified + float(latent_delta_scale) * delta
         y_intervened = self.decode(modified) if modified is not latent else y_hat
         return y_hat, y_intervened, latent
 

@@ -12,6 +12,7 @@ timestep. The module also supports batched token tensors shaped
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -206,3 +207,35 @@ class TimeConditionedTranscoder(nn.Module):
         weight = self.decoder.weight
         column_norms = weight.norm(dim=0, keepdim=True).clamp_min(epsilon)
         weight.div_(column_norms)
+
+
+def load_time_conditioned_transcoders(
+    checkpoint_path: str | Path,
+    *,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+) -> dict[str, TimeConditionedTranscoder]:
+    """Load one trained STC per action-expert MLP from a checkpoint.
+
+    The checkpoint stores ``configs`` and ``state_dicts`` keyed by the wrapped
+    MLP module name. This is the same layout written by transcoder training.
+    """
+    path = Path(checkpoint_path)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    transcoders: dict[str, TimeConditionedTranscoder] = {}
+    for name, raw_config in checkpoint["configs"].items():
+        config = TimeConditionedTranscoderConfig(**raw_config)
+        transcoder = TimeConditionedTranscoder(config)
+        transcoder.load_state_dict(checkpoint["state_dicts"][name])
+        if device is not None or dtype is not None:
+            kwargs = {}
+            if device is not None:
+                kwargs["device"] = device
+            if dtype is not None:
+                kwargs["dtype"] = dtype
+            transcoder.to(**kwargs)
+        transcoder.eval()
+        for parameter in transcoder.parameters():
+            parameter.requires_grad_(False)
+        transcoders[name] = transcoder
+    return transcoders

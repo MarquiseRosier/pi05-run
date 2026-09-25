@@ -28,7 +28,7 @@ from pi05_mi.atlas_bridge import (
 )
 from pi05_mi.atlas_concepts import task_id_from_prompt
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
-from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
+from pi05_mi.transcoders import load_time_conditioned_transcoders
 
 
 def _mode() -> str:
@@ -77,19 +77,8 @@ def _device_for_policy(policy: Any) -> torch.device:
     return torch.device(str(raw_device))
 
 
-def _load_transcoders(checkpoint_path: Path, *, device: torch.device, dtype: torch.dtype) -> dict[str, TimeConditionedTranscoder]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    transcoders: dict[str, TimeConditionedTranscoder] = {}
-    for name, raw_config in checkpoint["configs"].items():
-        config = TimeConditionedTranscoderConfig(**raw_config)
-        transcoder = TimeConditionedTranscoder(config)
-        transcoder.load_state_dict(checkpoint["state_dicts"][name])
-        transcoder.to(device=device, dtype=dtype)
-        transcoder.eval()
-        for parameter in transcoder.parameters():
-            parameter.requires_grad_(False)
-        transcoders[name] = transcoder
-    return transcoders
+def _load_transcoders(checkpoint_path: Path, *, device: torch.device, dtype: torch.dtype):
+    return load_time_conditioned_transcoders(checkpoint_path, device=device, dtype=dtype)
 
 
 def _batch_task_text(batch: dict[str, Any]) -> str:

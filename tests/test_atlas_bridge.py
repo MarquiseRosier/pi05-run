@@ -109,5 +109,100 @@ class SparseFeatureTests(unittest.TestCase):
         self.assertEqual(results["object"]["cookie_box"]["tasks_out"], [0])
 
 
+@unittest.skipIf(torch is None, "torch is not installed in this interpreter")
+class AdditiveSteerTests(unittest.TestCase):
+    def _dictionary(self):
+        from pi05_mi.atlas_bridge import TranscoderDictionary
+        from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
+
+        config = TimeConditionedTranscoderConfig(d_model=4, d_features=3, time_embedding_dim=4, time_hidden_dim=4)
+        transcoder = TimeConditionedTranscoder(config)
+        with torch.no_grad():
+            transcoder.decoder.weight.copy_(torch.eye(4, 3))
+            transcoder.decoder.bias.zero_()
+            transcoder.encoder.bias.fill_(1.0)
+        transcoder.eval()
+        return TranscoderDictionary(transcoder)
+
+    def test_additive_delta_changes_decode_without_replacing_multiplicative_steer(self) -> None:
+        dictionary = self._dictionary()
+        x = torch.zeros(1, 2, 4)
+        timestep = torch.tensor([0.4])
+        y_hat, y_same, latent = dictionary.intervene(x, timestep)
+        self.assertTrue(torch.allclose(y_hat, y_same))
+
+        delta = torch.tensor([1.0, 0.0, 0.0])
+        _y_hat, steered, returned = dictionary.intervene(x, timestep, latent_delta=delta, latent_delta_scale=2.0)
+        self.assertTrue(torch.allclose(returned, latent))
+        self.assertTrue(torch.allclose(steered, dictionary.decode(latent + 2.0 * delta)))
+
+        _y_hat, scaled, latent_scaled = dictionary.intervene(x, timestep, steer_features=[0], steer_strength=1.0)
+        modified = latent_scaled.clone()
+        modified[..., 0] = modified[..., 0] * 2.0
+        self.assertTrue(torch.allclose(scaled, dictionary.decode(modified)))
+
+        _y_hat, ablated, latent_ablated = dictionary.intervene(x, timestep, ablate_features=[1])
+        modified = latent_ablated.clone()
+        modified[..., 1] = 0
+        self.assertTrue(torch.allclose(ablated, dictionary.decode(modified)))
+
+    def test_context_gates_layer_and_tau_without_disabling_feature_edits(self) -> None:
+        from torch import nn
+
+        from pi05_mi.patch_pi05 import Pi05TranscoderContext, WrappedActionExpertMLP
+        from pi05_mi.transcoders import TimeConditionedTranscoder, TimeConditionedTranscoderConfig
+
+        context = Pi05TranscoderContext(mode="probe", capture_records=False, capture_latents=False)
+        context.set_intervention(steer_features=[0], steer_strength=0.5, ablate_layers=[1])
+        self.assertTrue(context.wants_intervention(1))
+        self.assertFalse(context.wants_intervention(0))
+
+        context.set_intervention()
+        context.set_latent_delta(torch.ones(3), scale=1.0, layers=[3], timesteps=[0.3])
+        self.assertFalse(context.wants_intervention(3))
+        with context.use_timestep(torch.tensor(0.9)):
+            self.assertFalse(context.wants_intervention(3))
+        with context.use_timestep(torch.tensor(0.3004)):
+            self.assertTrue(context.wants_intervention(3))
+            self.assertFalse(context.wants_intervention(2))
+        context.set_latent_delta(torch.ones(3), scale=0.0, layers=[3], timesteps=[0.3])
+        with context.use_timestep(torch.tensor(0.3)):
+            self.assertFalse(context.wants_intervention(3))
+
+        class TinyMLP(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.linear = nn.Linear(4, 4)
+
+            def forward(self, value):
+                return self.linear(value)
+
+        transcoder = TimeConditionedTranscoder(
+            TimeConditionedTranscoderConfig(d_model=4, d_features=3, time_embedding_dim=4, time_hidden_dim=4)
+        )
+        with torch.no_grad():
+            transcoder.decoder.weight.copy_(torch.eye(4, 3))
+            transcoder.decoder.bias.zero_()
+            transcoder.encoder.bias.fill_(1.0)
+        wrapped = WrappedActionExpertMLP(
+            name="expert.mlp",
+            layer_index=3,
+            original_mlp=TinyMLP(),
+            context=context,
+            transcoder=transcoder,
+        )
+        context.set_latent_delta(None)
+        sample = torch.randn(1, 2, 4)
+        with context.use_timestep(torch.tensor([0.3])):
+            baseline = wrapped(sample)
+        context.set_latent_delta(torch.tensor([1.0, 0.0, 0.0]), scale=3.0, layers=[3], timesteps=[0.3])
+        with context.use_timestep(torch.tensor([0.3])):
+            steered = wrapped(sample)
+        with context.use_timestep(torch.tensor([0.9])):
+            other_tau = wrapped(sample)
+        self.assertFalse(torch.allclose(baseline, steered))
+        self.assertTrue(torch.allclose(baseline, other_tau))
+
+
 if __name__ == "__main__":
     unittest.main()

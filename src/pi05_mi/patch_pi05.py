@@ -85,6 +85,11 @@ class Pi05TranscoderContext:
         self.ablate_layers: set[int] | None = None
         self.steer_features: list[int] = []
         self.steer_strength: float = 0.0
+        self.latent_delta: Tensor | None = None
+        self.latent_delta_scale: float = 0.0
+        self.latent_delta_layers: set[int] | None = None
+        self.intervene_timesteps: list[float] | None = None
+        self.intervene_timestep_atol: float = 1e-3
         self.current_timestep: Tensor | None = None
         self.records: dict[str, list[MLPActivationRecord]] = defaultdict(list)
         self.latents: dict[str, list[MLPTranscoderLatentRecord]] = defaultdict(list)
@@ -103,10 +108,48 @@ class Pi05TranscoderContext:
         self.steer_features = parse_int_list(steer_features)
         self.steer_strength = float(steer_strength)
 
-    def wants_intervention(self, layer_index: int) -> bool:
-        if self.ablate_layers is not None and layer_index not in self.ablate_layers:
+    def set_latent_delta(
+        self,
+        latent_delta: Tensor | None,
+        *,
+        scale: float = 1.0,
+        layers: list[int] | set[int] | None = None,
+        timesteps: list[float] | None = None,
+        atol: float = 1e-3,
+    ) -> None:
+        """Add ``scale * latent_delta`` inside selected STCs.
+
+        ``layers`` and ``timesteps`` restrict the residual to one transcoder.
+        ``scale=0`` or ``latent_delta=None`` turns the additive path off.
+        Feature ablation and multiplicative steering are left unchanged.
+        """
+        self.latent_delta = None if latent_delta is None else latent_delta.detach()
+        self.latent_delta_scale = float(scale)
+        self.latent_delta_layers = None if layers is None else {int(layer) for layer in layers}
+        self.intervene_timesteps = None if timesteps is None else [float(step) for step in timesteps]
+        self.intervene_timestep_atol = float(atol)
+
+    def timestep_allowed(self, timestep: Tensor | None = None) -> bool:
+        if not self.intervene_timesteps:
+            return True
+        source = self.current_timestep if timestep is None else timestep
+        if source is None:
             return False
-        return bool(self.ablate_features) or bool(self.steer_features and self.steer_strength)
+        value = float(source.detach().float().reshape(-1)[0].item())
+        return any(abs(value - target) <= self.intervene_timestep_atol for target in self.intervene_timesteps)
+
+    def latent_delta_applies(self, layer_index: int, timestep: Tensor | None = None) -> bool:
+        if self.latent_delta is None or self.latent_delta_scale == 0.0:
+            return False
+        if self.latent_delta_layers is not None and layer_index not in self.latent_delta_layers:
+            return False
+        return self.timestep_allowed(timestep)
+
+    def wants_intervention(self, layer_index: int) -> bool:
+        feature_edit = bool(self.ablate_features) or bool(self.steer_features and self.steer_strength)
+        if feature_edit and (self.ablate_layers is None or layer_index in self.ablate_layers):
+            return True
+        return self.latent_delta_applies(layer_index)
 
     @contextmanager
     def use_timestep(self, timestep: Tensor) -> Iterator[None]:
@@ -224,12 +267,19 @@ class WrappedActionExpertMLP(nn.Module):
             raise RuntimeError(f"Cannot run {self.name} without a transcoder")
         dictionary = TranscoderDictionary(self.transcoder)
         if self.context.wants_intervention(self.layer_index):
+            delta = None
+            delta_scale = 0.0
+            if self.context.latent_delta_applies(self.layer_index, timestep):
+                delta = self.context.latent_delta
+                delta_scale = self.context.latent_delta_scale
             return dictionary.intervene(
                 x,
                 timestep,
                 ablate_features=self.context.ablate_features,
                 steer_features=self.context.steer_features,
                 steer_strength=self.context.steer_strength,
+                latent_delta=delta,
+                latent_delta_scale=delta_scale,
             )
         y_hat, latent = self.transcoder(x, timestep)
         return y_hat, y_hat, latent

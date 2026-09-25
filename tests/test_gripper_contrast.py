@@ -30,6 +30,7 @@ mean_over_tokens = gripper_contrast.mean_over_tokens
 pair_records = gripper_contrast.pair_records
 permute_direction = gripper_contrast.permute_direction
 progress_bin = gripper_contrast.progress_bin
+latent_relative_scale = gripper_contrast.latent_relative_scale
 save_figures = gripper_contrast.save_figures
 sparsify_direction = gripper_contrast.sparsify_direction
 split_episode_ids = gripper_contrast.split_episode_ids
@@ -121,6 +122,13 @@ class DirectionTests(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(sparse)), float(np.linalg.norm(stats["direction"])))
         shuffled = permute_direction(stats["direction"], seed=1)
         self.assertEqual(sorted(np.round(shuffled, 6)), sorted(np.round(stats["direction"], 6)))
+
+    def test_latent_relative_scale_matches_rms(self) -> None:
+        direction = np.array([3.0, 0.0, 0.0, 0.0])
+        scale = latent_relative_scale(direction, latent_rms=2.0)
+        added = 1.5 * scale * direction
+        added_rms = float(np.sqrt(np.mean(np.square(added))))
+        self.assertAlmostEqual(added_rms, 3.0)
 
     def test_token_mean_and_action_effect(self) -> None:
         latent = np.arange(12, dtype=np.float32).reshape(1, 3, 4)

@@ -37,6 +37,7 @@ from pi05_mi.gripper_contrast import (
     contrastive_direction,
     feature_rows,
     infer_gripper_convention,
+    latent_relative_scale,
     mean_over_tokens,
     pair_records,
     permute_direction,
@@ -281,6 +282,34 @@ def _rank(bank: LatentBank, train_records: list[FrameRecord], pairs: list[tuple[
     )
 
 
+def _pool_layer(bank: LatentBank, layer: int, example_ids: list[int], taus: list[float]) -> np.ndarray:
+    rows = []
+    for example_id in example_ids:
+        stacked = np.stack([bank.stack([example_id], layer, tau)[0] for tau in taus], axis=0)
+        rows.append(stacked.mean(axis=0))
+    return np.stack(rows, axis=0)
+
+
+def _layer_rms(bank: LatentBank, layer: int, example_ids: list[int], taus: list[float]) -> float:
+    chunks = [bank.stack(example_ids, layer, tau) for tau in taus]
+    values = np.concatenate(chunks, axis=0).astype(np.float64)
+    return float(np.sqrt(np.mean(np.square(values))))
+
+
+def _balanced_ids(records: list[FrameRecord], seed: int) -> tuple[list[int], list[int]]:
+    rng = np.random.default_rng(seed)
+    opens = [record.index for record in records if record.label == "open"]
+    closes = [record.index for record in records if record.label == "close"]
+    count = min(len(opens), len(closes))
+    if count == 0:
+        raise RuntimeError(
+            f"Agreement frames do not contain both gripper states (open={len(opens)}, close={len(closes)})"
+        )
+    open_ids = rng.choice(np.asarray(opens), size=count, replace=False)
+    close_ids = rng.choice(np.asarray(closes), size=count, replace=False)
+    return [int(item) for item in open_ids], [int(item) for item in close_ids]
+
+
 def _steering_rows(
     *,
     policy,
@@ -292,16 +321,20 @@ def _steering_rows(
     context,
     holdout: list[FrameRecord],
     layer: int,
-    tau: float,
+    tau: float | None,
+    timesteps: list[float] | None,
     directions: dict[str, np.ndarray],
     alphas: list[float],
+    scale_per_alpha: float,
     horizon: int,
     num_steps: int | None,
 ) -> list[dict[str, Any]]:
     import torch
 
     rows: list[dict[str, Any]] = []
+    tau_label: float | str = "all" if timesteps is None else float(tau)
     for record in holdout:
+        print(f"steering example {record.index} label={record.label}", flush=True)
         context.capture_latents = False
         context.save_full_latents = False
         context.set_latent_delta(None)
@@ -317,15 +350,16 @@ def _steering_rows(
                     controls = [("plus", alpha), ("minus", -alpha), ("random", alpha)]
                 for control, scale in controls:
                     used = directions["random_full" if kind == "full" else "random_topk"] if control == "random" else vector
-                    if scale == 0.0:
+                    applied = float(scale) * float(scale_per_alpha)
+                    if applied == 0.0:
                         context.set_latent_delta(None)
                         steered = baseline
                     else:
                         context.set_latent_delta(
                             torch.from_numpy(np.asarray(used, dtype=np.float32)),
-                            scale=float(scale),
+                            scale=applied,
                             layers=[layer],
-                            timesteps=[tau],
+                            timesteps=timesteps,
                         )
                         steered = _predict(
                             policy,
@@ -345,10 +379,11 @@ def _steering_rows(
                             "task_id": record.task_id,
                             "label": record.label,
                             "layer": layer,
-                            "tau": tau,
+                            "tau": tau_label,
                             "direction_kind": "baseline" if control == "baseline" else kind,
                             "control": control,
                             "alpha": 0.0 if control == "baseline" else alpha,
+                            "applied_scale": 0.0 if control == "baseline" else applied,
                             **effect,
                         }
                     )
@@ -515,9 +550,77 @@ def run(args: argparse.Namespace) -> None:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    ranking_rows, selected_rows, layer, tau, direction, consistency = _rank(
-        bank, train_records, pairs, args.ranking_limit
-    )
+    if args.agreement_only:
+        if args.steer_layer is None:
+            raise RuntimeError("--agreement-only requires --steer-layer")
+        agree_ids = {int(row["example_id"]) for row in agreements if row["agree"]}
+        agree_records = [record for record in train_records if record.index in agree_ids]
+        n_agree_open = sum(record.label == "open" for record in agree_records)
+        n_agree_close = sum(record.label == "close" for record in agree_records)
+        print(
+            f"agreement frames open={n_agree_open} close={n_agree_close} of {len(train_records)}",
+            flush=True,
+        )
+        if n_agree_open == 0 or n_agree_close == 0:
+            raise RuntimeError(
+                f"Need both gripper states among agreement frames (open={n_agree_open}, close={n_agree_close})"
+            )
+        layer = int(args.steer_layer)
+        taus = [item_tau for item_layer, item_tau in bank.cells() if item_layer == layer]
+        if not taus:
+            raise RuntimeError(f"Probe stored no latents at layer {layer}")
+        agree_pairs = pair_records(agree_records, seed=args.seed)
+        if agree_pairs:
+            pair_open = [open_record.index for open_record, _close_record in agree_pairs]
+            pair_close = [close_record.index for _open_record, close_record in agree_pairs]
+            direction_source = "paired"
+        else:
+            pair_open, pair_close = _balanced_ids(agree_records, args.seed)
+            direction_source = "balanced"
+        open_ids = [record.index for record in agree_records if record.label == "open"]
+        close_ids = [record.index for record in agree_records if record.label == "close"]
+        pooled_stats = cell_statistics(
+            _pool_layer(bank, layer, open_ids, taus),
+            _pool_layer(bank, layer, close_ids, taus),
+            _pool_layer(bank, layer, pair_open, taus),
+            _pool_layer(bank, layer, pair_close, taus),
+        )
+        direction = np.asarray(pooled_stats["direction"])
+        consistency = np.asarray(pooled_stats["sign_consistency"])
+        ranking_rows: list[dict[str, Any]] = []
+        for item_tau in taus:
+            stats = cell_statistics(
+                bank.stack(open_ids, layer, item_tau),
+                bank.stack(close_ids, layer, item_tau),
+                bank.stack(pair_open, layer, item_tau),
+                bank.stack(pair_close, layer, item_tau),
+            )
+            top_index = np.argsort(-stats["score"])[:50]
+            ranking_rows.extend(feature_rows(layer, item_tau, stats, top_index))
+        ranking_rows.sort(key=lambda row: float(row["score"]), reverse=True)
+        ranking_rows = ranking_rows[: int(args.ranking_limit)]
+        selected_rows = feature_rows(layer, float(np.mean(taus)), pooled_stats)
+        selected_rows.sort(key=lambda row: float(row["score"]), reverse=True)
+        latent_rms = _layer_rms(bank, layer, open_ids + close_ids, taus)
+        tau = None
+        summary["direction_source"] = direction_source
+        summary["n_agreement_open"] = n_agree_open
+        summary["n_agreement_close"] = n_agree_close
+        summary["n_direction_examples"] = len(pair_open)
+        summary["steer_taus"] = taus
+        print(
+            f"direction source={direction_source} pairs={len(pair_open)} layer={layer} taus={len(taus)}",
+            flush=True,
+        )
+    else:
+        ranking_rows, selected_rows, layer, tau, direction, consistency = _rank(
+            bank, train_records, pairs, args.ranking_limit
+        )
+        latent_rms = None
+        if args.alpha_unit == "latent-rms" or args.all_timesteps:
+            taus = [item_tau for item_layer, item_tau in bank.cells() if item_layer == layer]
+            latent_rms = _layer_rms(bank, layer, [record.index for record in train_records], taus)
+
     sparse, kept = sparsify_direction(
         direction,
         consistency,
@@ -541,8 +644,22 @@ def run(args: argparse.Namespace) -> None:
     )
     write_csv(output_dir / "feature_ranking.csv", ranking_rows)
     write_csv(output_dir / "selected_cell_features.csv", selected_rows)
+    timesteps = None if args.all_timesteps else [float(tau)]
+    scale_per_alpha = 1.0
+    if args.alpha_unit == "latent-rms":
+        scale_per_alpha = latent_relative_scale(direction, float(latent_rms))
+    alpha_label = "alpha (x latent RMS)" if args.alpha_unit == "latent-rms" else "alpha"
+    print(
+        f"alpha unit={args.alpha_unit} latent_rms={latent_rms} scale_per_alpha={scale_per_alpha:.6g} "
+        f"timesteps={'all' if timesteps is None else timesteps}",
+        flush=True,
+    )
     summary["selected_layer"] = layer
-    summary["selected_tau"] = tau
+    summary["selected_tau"] = "all" if timesteps is None else tau
+    summary["steer_timesteps"] = "all" if timesteps is None else timesteps
+    summary["alpha_unit"] = args.alpha_unit
+    summary["latent_rms"] = latent_rms
+    summary["scale_per_alpha"] = scale_per_alpha
     summary["top_k"] = int(args.top_k)
     summary["n_topk_features"] = int(kept.size)
     summary["probe_agreement"] = {
@@ -563,7 +680,8 @@ def run(args: argparse.Namespace) -> None:
         context=context,
         holdout=holdout_records,
         layer=layer,
-        tau=tau,
+        tau=None if timesteps is None else float(tau),
+        timesteps=timesteps,
         directions={
             "full": direction,
             "topk": sparse,
@@ -571,6 +689,7 @@ def run(args: argparse.Namespace) -> None:
             "random_topk": random_sparse,
         },
         alphas=alphas,
+        scale_per_alpha=scale_per_alpha,
         horizon=args.horizon,
         num_steps=args.num_inference_steps,
     )
@@ -582,6 +701,7 @@ def run(args: argparse.Namespace) -> None:
         grip_values=grip_values,
         grip_labels=grip_labels,
         convention=convention,
+        alpha_label=alpha_label,
     )
     print(f"wrote {output_dir}", flush=True)
     for figure in figures:
@@ -604,6 +724,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alphas", default="0,0.5,1,2,4")
     parser.add_argument("--ranking-limit", type=int, default=2000)
     parser.add_argument("--num-inference-steps", type=int, default=10)
+    parser.add_argument("--agreement-only", action="store_true")
+    parser.add_argument("--steer-layer", type=int, default=None)
+    parser.add_argument("--all-timesteps", action="store_true")
+    parser.add_argument("--alpha-unit", choices=("raw", "latent-rms"), default="raw")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--policy-dtype", default="auto")
     parser.add_argument("--local-files-only", action="store_true")

@@ -319,6 +319,18 @@ def sign_consistency(open_vectors: np.ndarray, close_vectors: np.ndarray) -> np.
     return agree.mean(axis=0).astype(np.float64)
 
 
+def latent_relative_scale(direction: np.ndarray, latent_rms: float) -> float:
+    """Scale that makes ``alpha * scale * direction`` have RMS ``alpha * latent_rms``."""
+    vector = np.asarray(direction, dtype=np.float64).reshape(-1)
+    feature_rms = float(np.sqrt(np.mean(np.square(vector))))
+    if not np.isfinite(feature_rms) or feature_rms == 0.0:
+        raise ValueError("Direction has zero RMS")
+    rms = float(latent_rms)
+    if not np.isfinite(rms) or rms < 0.0:
+        raise ValueError(f"latent_rms must be non-negative, got {latent_rms}")
+    return rms / feature_rms
+
+
 def contrastive_direction(open_vectors: np.ndarray, close_vectors: np.ndarray) -> np.ndarray:
     if open_vectors.shape != close_vectors.shape:
         raise ValueError(f"Pair shapes differ: {open_vectors.shape} vs {close_vectors.shape}")
@@ -509,6 +521,7 @@ def save_figures(
     grip_values: np.ndarray,
     grip_labels: Sequence[str | None],
     convention: GripperConvention,
+    alpha_label: str = "alpha",
 ) -> list[Path]:
     """Write the five comparison figures used to read the experiment."""
     import matplotlib
@@ -520,8 +533,8 @@ def save_figures(
     written = [
         _plot_histogram(output_dir / "gripper_action_histogram.png", grip_values, grip_labels, convention, plt),
         _plot_top_features(output_dir / "top_feature_deltas.png", ranking_rows, plt),
-        _plot_alpha(output_dir / "gripper_effect_vs_alpha.png", steering_rows, plt),
-        _plot_controls(output_dir / "gripper_vs_random.png", steering_rows, plt),
+        _plot_alpha(output_dir / "gripper_effect_vs_alpha.png", steering_rows, plt, alpha_label),
+        _plot_controls(output_dir / "gripper_vs_random.png", steering_rows, plt, alpha_label),
         _plot_dimensions(output_dir / "action_dimension_effects.png", steering_rows, plt),
     ]
     return written
@@ -579,7 +592,7 @@ def _mean_by(rows: Sequence[dict[str, Any]], *, kind: str, control: str) -> tupl
     return alphas, means
 
 
-def _plot_alpha(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any) -> Path:
+def _plot_alpha(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any, alpha_label: str = "alpha") -> Path:
     fig, ax = plt.subplots(figsize=(8, 4))
     for kind, control, style, label in (
         ("full", "plus", "-", "+v full"),
@@ -591,7 +604,7 @@ def _plot_alpha(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any) -
         if alphas:
             ax.plot(alphas, means, linestyle=style, marker="o", label=label)
     ax.axhline(0.0, color="black", linewidth=0.8)
-    ax.set_xlabel("alpha")
+    ax.set_xlabel(alpha_label)
     ax.set_ylabel("mean delta gripper")
     ax.set_title("Gripper steering versus alpha")
     ax.legend()
@@ -601,14 +614,14 @@ def _plot_alpha(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any) -
     return path
 
 
-def _plot_controls(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any) -> Path:
+def _plot_controls(path: Path, steering_rows: Sequence[dict[str, Any]], plt: Any, alpha_label: str = "alpha") -> Path:
     fig, ax = plt.subplots(figsize=(8, 4))
     for control, label in (("plus", "+v"), ("minus", "-v"), ("random", "random")):
         alphas, means = _mean_by(steering_rows, kind="full", control=control)
         if alphas:
             ax.plot(alphas, means, marker="o", label=label)
     ax.axhline(0.0, color="black", linewidth=0.8)
-    ax.set_xlabel("alpha")
+    ax.set_xlabel(alpha_label)
     ax.set_ylabel("mean delta gripper")
     ax.set_title("Full direction versus matched random features")
     ax.legend()

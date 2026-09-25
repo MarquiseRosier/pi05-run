@@ -11,10 +11,17 @@ from __future__ import annotations
 import argparse
 import gc
 import importlib.util
+import os
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
+
+# The Xet CDN returns 429 when LeRobot snapshots LIBERO in parallel. Use the
+# regular Hub downloader, which retries, before huggingface_hub is imported.
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
 print("gripper-contrast: process started", flush=True)
 
@@ -54,6 +61,24 @@ from pi05_mi.gripper_contrast import (
 )
 from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
 from pi05_mi.transcoders import load_time_conditioned_transcoders
+
+
+def _make_dataset_with_retry(train_mod: Any, cfg: Any, attempts: int = 5) -> Any:
+    delay_s = 30
+    for attempt in range(1, attempts + 1):
+        try:
+            return train_mod.make_dataset(cfg)
+        except Exception as exc:
+            failed = "429" in str(exc) or "Too Many Requests" in str(exc)
+            if not failed or attempt == attempts:
+                raise
+            print(
+                f"dataset download was rate-limited ({attempt}/{attempts}); retrying in {delay_s}s",
+                flush=True,
+            )
+            time.sleep(delay_s)
+            delay_s *= 2
+    raise RuntimeError("dataset download failed")
 
 
 def _load_train_module():
@@ -421,7 +446,7 @@ def run(args: argparse.Namespace) -> None:
     if hasattr(cfg.dataset, "video_backend"):
         cfg.dataset.video_backend = "pyav"
     print(f"loading dataset {cfg.dataset.repo_id}", flush=True)
-    dataset = train_mod.make_dataset(cfg)
+    dataset = _make_dataset_with_retry(train_mod, cfg)
     convention, records, grip_values, grip_labels = scan_demonstrations(dataset, suite=args.suite, horizon=args.horizon)
     print(
         "gripper convention "

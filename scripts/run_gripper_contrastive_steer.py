@@ -12,8 +12,11 @@ import argparse
 import gc
 import importlib.util
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
+
+print("gripper-contrast: process started", flush=True)
 
 import numpy as np
 
@@ -58,6 +61,7 @@ def _load_train_module():
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot import {path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules["train_pi05_transcoders"] = module
     spec.loader.exec_module(module)
     return module
 
@@ -357,20 +361,30 @@ def _steering_rows(
 def run(args: argparse.Namespace) -> None:
     import torch
 
-    train_mod = _load_train_module()
-    train_mod.patch_transformers_causal_mask_compat()
-    train_mod.patch_pi05_checkpoint_key_compat()
-    device = train_mod.resolve_device(args.device)
-    policy_dtype = train_mod.resolve_policy_dtype(args.policy_dtype, device)
-    namespace = argparse.Namespace(
-        policy_path=args.policy_path,
-        local_files_only=args.local_files_only,
-        batch_size=1,
-        num_workers=0,
-        resolved_device=device,
-        resolved_policy_dtype=policy_dtype,
-    )
-    cfg = train_mod._configure_train_config(namespace, episodes=None)
+    print("gripper-contrast: importing LeRobot helpers", flush=True)
+    # draccus.parse reads sys.argv when args is omitted. Keep this script's
+    # flags out of TrainPipelineConfig decoding.
+    saved_argv = sys.argv
+    sys.argv = [saved_argv[0]]
+    try:
+        train_mod = _load_train_module()
+        train_mod.patch_transformers_causal_mask_compat()
+        train_mod.patch_pi05_checkpoint_key_compat()
+        device = train_mod.resolve_device(args.device)
+        policy_dtype = train_mod.resolve_policy_dtype(args.policy_dtype, device)
+        namespace = argparse.Namespace(
+            policy_path=args.policy_path,
+            local_files_only=args.local_files_only,
+            batch_size=1,
+            num_workers=0,
+            resolved_device=device,
+            resolved_policy_dtype=policy_dtype,
+        )
+        cfg = train_mod._configure_train_config(namespace, episodes=None)
+    finally:
+        sys.argv = saved_argv
+    if hasattr(cfg.dataset, "video_backend"):
+        cfg.dataset.video_backend = "pyav"
     print(f"loading dataset {cfg.dataset.repo_id}", flush=True)
     dataset = train_mod.make_dataset(cfg)
     convention, records, grip_values, grip_labels = scan_demonstrations(dataset, suite=args.suite, horizon=args.horizon)
@@ -597,4 +611,11 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    run(parse_args())
+    try:
+        run(parse_args())
+    except SystemExit as exc:
+        print(f"gripper-contrast: SystemExit {exc.code}", flush=True)
+        raise
+    except Exception:
+        traceback.print_exc()
+        raise

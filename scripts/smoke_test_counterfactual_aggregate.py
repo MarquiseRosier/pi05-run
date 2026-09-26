@@ -93,6 +93,36 @@ def test_a_split_population_is_weak_not_supported() -> None:
     assert ci["high"] / max(ci["low"], 1e-9) > 2.0, (ci, "task disagreement must widen the interval")
 
 
+def test_tasks_above_one_counts_tasks_and_not_runs() -> None:
+    """Two seeds of one task are one task.
+
+    The first multi-seed run reported "8 of 6", because the count walked the
+    per-run rows while the denominator counted task clusters. A reader cannot
+    tell a wrong count from a surprising one, so it is locked here.
+    """
+    runs = []
+    for task in range(3):                       # three tasks, two seeds each
+        for seed in (1000, 1001):
+            run = _run(task, [_cell(8.0, 2.0)] * 4)
+            run["seed"] = seed
+            runs.append(run)
+    s = aggregate(runs, draws=500, seed=0)["summary"]
+    assert s["runs"] == 6 and s["tasks"] == 3
+    assert s["tasks_above_one"] == 3, s["tasks_above_one"]
+    assert len(s["per_task_pooled"]) == 3
+
+    # A task whose two seeds straddle 1 counts once, on its pooled value.
+    mixed = []
+    for seed, cell in ((1000, _cell(20.0, 2.0)), (1001, _cell(1.0, 2.0))):
+        run = _run(9, [cell] * 4)
+        run["seed"] = seed
+        mixed.append(run)
+    s = aggregate(mixed, draws=200, seed=0)["summary"]
+    assert s["tasks"] == 1 and s["runs"] == 2
+    assert s["tasks_above_one"] == 1, "pooled 21/4 = 5.25 is above 1"
+    assert abs(s["per_task_pooled"]["libero_spatial:9"]["sel_adj_l2"] - 2.625) < 1e-9
+
+
 def test_uniformly_null_tasks_are_falsified() -> None:
     runs = [_run(i, [_cell(2.0, 2.0)] * 4) for i in range(10)]
     s = aggregate(runs, draws=1000, seed=0)["summary"]

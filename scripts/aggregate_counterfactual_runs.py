@@ -143,7 +143,12 @@ def aggregate(runs: list[dict[str, Any]], *, draws: int, seed: int) -> dict[str,
     pooled = _pool(all_cells)
     ci = {key: cluster_bootstrap(cells_by_task, key, draws=draws, seed=seed)
           for key in ("sel_raw", "sel_adj_l2", "sel_adj_px")}
-    above = [r for r in per_task if r["sel_adj_l2"] is not None and r["sel_adj_l2"] > 1.0]
+    # Per task, pooling its seeds: per_task above holds one row per *run*, and
+    # counting those would report eight of six when two seeds of the same task
+    # both clear the bar. The task is the unit, so a task counts once.
+    task_pooled = {key: _pool(cells) for key, cells in cells_by_task.items()}
+    above = [key for key, value in task_pooled.items()
+             if value.get("sel_adj_l2") is not None and value["sel_adj_l2"] > 1.0]
 
     primary = pooled.get("sel_adj_l2")
     low = (ci["sel_adj_l2"] or {}).get("low")
@@ -208,6 +213,12 @@ def aggregate(runs: list[dict[str, Any]], *, draws: int, seed: int) -> dict[str,
             "pooled": pooled,
             "bootstrap_ci_95": ci,
             "tasks_above_one": len(above),
+            "tasks_above_one_keys": sorted(above),
+            "per_task_pooled": {
+                key: {"n_cells": value["n_cells"], "sel_raw": value["sel_raw"],
+                      "sel_adj_l2": value["sel_adj_l2"], "sel_adj_px": value["sel_adj_px"]}
+                for key, value in sorted(task_pooled.items())
+            },
             "null_floor_violations": floor_violations,
             "decision_rule": (
                 "the task is the resampling unit; H1 is supported when the task-cluster 95% CI on the "
@@ -252,7 +263,8 @@ def main() -> None:
           f"[{f(ci['sel_raw'].get('low'))}, {f(ci['sel_raw'].get('high'))}]")
     print(f"pooled Sel adj     {f(p['sel_adj_l2'])}   task-cluster 95% CI "
           f"[{f(ci['sel_adj_l2'].get('low'))}, {f(ci['sel_adj_l2'].get('high'))}]")
-    print(f"tasks with adjusted selectivity above 1: {s['tasks_above_one']} of {s['tasks']}")
+    print(f"tasks with adjusted selectivity above 1: {s['tasks_above_one']} of {s['tasks']} "
+          f"(pooling each task's seeds; {s['runs']} runs contributed)")
     print(f"\nH1 rule: {s['decision_rule']}")
     print(f"H1 verdict: {s['verdict']}")
 

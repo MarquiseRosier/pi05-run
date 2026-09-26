@@ -32,6 +32,20 @@ WORKS_HALF_THE_TIME = 0.5
 NOMINAL_FALSE_POSITIVE = 0.05
 
 
+def normalize_feature_key(key: str) -> str:
+    """Canonicalise ``L4:tau0.1:F735`` and ``L04:tau0.1:F735`` to one spelling.
+
+    The nominator writes the layer unpadded and the tracer writes it padded to
+    two digits, so a table that joins the two on the raw string silently loses
+    every single-digit layer. Padding is the canonical form because that is
+    what the audit artefacts record.
+    """
+    parts = str(key).split(":")
+    if parts and parts[0][:1].upper() == "L" and parts[0][1:].isdigit():
+        parts[0] = f"L{int(parts[0][1:]):02d}"
+    return ":".join(parts)
+
+
 def _log_binom_pmf(i: int, n: int, p: float) -> float:
     if p <= 0.0:
         return 0.0 if i == 0 else -math.inf
@@ -101,7 +115,7 @@ def load_audits(paths: Sequence[Path]) -> list[dict]:
             "status": "read",
             # The validator names it traced_target; accept either spelling so a
             # rename upstream shows as a missing name, not a silent None column.
-            "target": v.get("traced_target") or v.get("target"),
+            "target": normalize_feature_key(v.get("traced_target") or v.get("target") or ""),
             "parents": v.get("parent_nodes"),
             "exercised": v.get("exercised_fraction"),
             "head_nodes": v.get("decision_stratum_nodes"),

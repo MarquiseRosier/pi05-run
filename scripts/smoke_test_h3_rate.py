@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from summarize_h3_rate import (  # noqa: E402
     binomial_tail,
+    normalize_feature_key,
     clopper_pearson,
     load_audits,
     load_calibrations,
@@ -172,15 +173,31 @@ def test_failed_traces_are_counted_not_silently_dropped() -> None:
     assert s["audited"] == 1 and s["failed"] == 1
 
 
+def test_layer_padding_is_canonicalised() -> None:
+    """The nominator writes L4 and the tracer writes L04.
+
+    Joining the two tables on the raw string dropped every single-digit layer
+    from the results table, which showed as a blank task and a missing
+    selectivity rather than as an error.
+    """
+    assert normalize_feature_key("L4:tau0.1:F735") == "L04:tau0.1:F735"
+    assert normalize_feature_key("L04:tau0.1:F735") == "L04:tau0.1:F735"
+    assert normalize_feature_key("L14:tau0.7:F3807") == "L14:tau0.7:F3807"
+    # Already-canonical and unrecognised inputs pass through unharmed.
+    assert normalize_feature_key("") == ""
+    assert normalize_feature_key("weird") == "weird"
+
+
 def test_the_target_name_survives_either_spelling() -> None:
     tmp = Path(tempfile.mkdtemp())
     d = tmp / "c" / "counterfactual_validation"
     d.mkdir(parents=True)
     (d / "validation.json").write_text(json.dumps(
         {"target": "L5:tau0.1:F735", "h3_verdict": "falsified"}))
-    assert load_audits([tmp / "c"])[0]["target"] == "L5:tau0.1:F735"
+    # Either spelling is accepted, and both come back canonicalised.
+    assert load_audits([tmp / "c"])[0]["target"] == "L05:tau0.1:F735"
     planted = _audit(tmp, "L9:tau0.1:F42", supported=False)
-    assert load_audits([planted])[0]["target"] == "L9:tau0.1:F42"
+    assert load_audits([planted])[0]["target"] == "L09:tau0.1:F42"
 
 
 def test_no_audit_is_untestable_not_falsified() -> None:

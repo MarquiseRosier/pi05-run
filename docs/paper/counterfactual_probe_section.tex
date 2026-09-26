@@ -64,11 +64,23 @@ action rather than assumed.
 \paragraph{H3, circuit corroboration.}
 The parents of a circuit traced upstream of a target are more selective for the
 perturbed object than random features matched in layer and flow time and drawn
-from those the scene exercises. Falsified if the selectivity enrichment at the
-head of the influence ranking is at or below one. Whether the parents are also
-enriched for a manipulation of a different kind qualifies a supported verdict
-but does not overturn it. The target node is excluded from the test because it
-was nominated for responding.
+from those the scene exercises. A single circuit can only ever produce a single
+anecdote, and H3 is a claim about the tracer rather than about one of its
+outputs, so the decision quantity is the fraction $k/N$ of nominated targets
+whose circuits clear that bar, over targets pooled across tasks. Supported if
+the exact interval on $k/N$ excludes the audit's own false-positive rate;
+falsified if its upper end falls below a half, so that the tracer fails more
+often than it works; inconclusive otherwise. Per target the bar is a
+selectivity enrichment above one at the head of the influence ranking. Whether
+the parents are also enriched for a manipulation of a different kind qualifies
+a supported verdict but does not overturn it, and the target node is excluded
+from the test because it was nominated for responding.
+
+A null result here is a claim about absence, and absence is only readable
+against what the instrument could have seen. The audit's sensitivity is
+therefore measured rather than assumed (Sec.~\ref{sec:calibration}), and the
+size of $N$ is chosen so that a null result excludes something
+(Sec.~\ref{sec:rate}).
 
 H1 and H2 are claims about the model. H3 is a claim about the method: it uses a
 known cause to ask whether attribution-based tracing recovers the features that
@@ -318,6 +330,58 @@ probe's data and excluded from the test; the parents are chosen by the tracer
 from dataset observations it never sees; nothing is both selected on and tested
 with.
 
+\subsubsection{Calibrating the audit}
+\label{sec:calibration}
+
+The audit of Eq.~\ref{eq:sel-enrich} has a negative control and no positive
+one. A flat reading is therefore ambiguous between \emph{this circuit carries
+nothing} and \emph{this test cannot see what it is looking for}, and the second
+reading would void every negative verdict the audit has produced. The fix is to
+run the audit on circuits whose content is known by construction.
+
+Let $\mathcal{P}$ be the exercised features below the target's layer at its
+flow time, each with the measured selectivity $\mathrm{sel}(f)=
+\bar{\delta}_f(\mathrm{target})/\bar{\delta}_f(\mathrm{placebo})$ the probe
+already recorded for it. For a contamination level $c\in[0,1]$ and a set size
+$K$ matching the circuit under audit, build
+\begin{equation}
+\mathcal{S}(c)=\underbrace{\{f_1,\dots,f_{\lceil cK\rfloor}\}}
+_{\text{sampled from the top of }\mathrm{sel}}
+\;\cup\;
+\underbrace{\{g_1,\dots,g_{K-\lceil cK\rfloor}\}}_{\text{uniform on }\mathcal{P}},
+\label{eq:contamination}
+\end{equation}
+and run the audit's own statistic on it. At $c=0$ the set is random and the
+audit must not call it; at $c=1$ it is maximally content-carrying and the audit
+must. Repeating $R$ times per level, with the selective part drawn from a
+widened head so that repeats differ, gives a detection rate per level, and the
+smallest level detected at $80\%$ or better is the \emph{detection floor}
+$c^{\star}$. A negative verdict then reads ``this circuit is less than
+$c^{\star}$ content-carrying'' instead of ``this circuit was not enriched''.
+Three outcomes are distinguished and named: an audit that misses $c=1$ is
+blind and its negatives are void; one that calls $c=0$ more than $20\%$ of the
+time over-calls and its positives are void; otherwise $c^{\star}$ is reported.
+Selection uses the target condition's own measurements, so this calibrates the
+instrument and is not itself a test of the model.
+
+\subsubsection{From one circuit to a rate}
+\label{sec:rate}
+
+With $k$ of $N$ audited circuits corroborated, the interval on the underlying
+rate is Clopper-Pearson, obtained by inverting the exact binomial tail. The
+choice matters at the endpoint that decides a null H3: a Wald interval at $k=0$
+has zero width and would certify a rate of exactly zero from a handful of
+targets, whereas the exact one-sided bound is
+\begin{equation}
+p_{\max}=1-\alpha^{1/N},
+\label{eq:cp-zero}
+\end{equation}
+which is $45\%$ at $N=5$, $26\%$ at $N=10$ and $14\%$ at $N=20$ with
+$\alpha=0.05$. Five targets cannot falsify H3 however flat they are, because
+the bound still straddles a half; twenty can. $N$ is therefore fixed at twenty
+before the run, and targets are pooled across tasks so that the rate is a
+property of the tracer rather than of one scene.
+
 \subsection{Experimental setup}
 
 % Filled from counterfactual_summary.json -> config, and observation_shapes.json.
@@ -330,22 +394,28 @@ steps and are the denominator of the reproducibility filter.}
 \small
 \begin{tabular}{p{1.35in}p{3.75in}}
 \hline
-Suite and task & \texttt{libero\_spatial}, task 0: ``pick up the black bowl between the plate and the ramekin and place it on the plate'' \\
-Target, placebo & \texttt{akita\_black\_bowl\_1}, \texttt{akita\_black\_bowl\_2} (same mesh) \\
-Sibling prompt & ``pick the akita black bowl next to the ramekin and place it on the plate'' \\
-Seed; states; draws; doses & $1000$; $2$ (five plan actions apart); $2$; $0.5$, $1.0$ (blend toward red) \\
-Cells per condition; per layer & $8$; $80$ ($n=10$ denoise steps) \\
+Suite and tasks & \texttt{libero\_spatial}, all ten tasks. Every task in this suite instantiates two identical \texttt{akita\_black\_bowl} meshes, which is what makes a matched placebo possible; \texttt{libero\_object} and \texttt{libero\_goal} contain no duplicated object and admit none \\
+Target, placebo & each task's own first object of interest, and the other instance of the same mesh, read from the task's problem definition \\
+Sibling prompt & the task's phrasing with the referent replaced by the placebo's description \\
+Seeds; states; draws; doses & $1000$, $1001$; $12$ per run (four plan actions apart); $2$; $0.5$, $1.0$ (blend toward red) \\
+Cells per condition; per layer & $96$ per task; $960$ ($n=10$ denoise steps) \\
+Task clusters & $10$, the unit the confidence interval resamples \\
 Nomination & top-$K$ with $K=25$; $25\%$ consistency; $\ell\ge4$; exact selectivity $\ge2$ \\
-Circuit audit & $M=2000$ matched draws; decision at the top $10$ by influence; $\alpha=0.05$ \\
+Circuit audit & $N=20$ targets pooled across tasks; sources restricted to the previous layer; $M=2000$ matched draws; decision at the top $10$ by influence; $\alpha=0.05$ \\
+Audit calibration & sets of $16$ from the exercised pool; $c\in\{0,\tfrac18,\tfrac14,\tfrac12,\tfrac34,1\}$; $R=20$ repeats \\
 Shapes per pass & images $(1,3,360,360)\times2$; tokens $(1,200)$; state $(1,8)$; noise $(1,50,32)$; code $(1,50,16384)\times18\times10$; action $(50,7)$ \\
 \hline
 \end{tabular}
 \end{center}
 \end{table}
 
-Table~\ref{tab:cf-config} records the run. Objects and the sibling prompt are
-read from the task's own problem definition, so none of these choices is the
-experimenter's. Every stage records its configuration, the tensor shapes handed
+Table~\ref{tab:cf-config} records the design. Objects and the sibling prompt
+are read from each task's own problem definition, so none of these choices is
+the experimenter's. The task, not the cell, is the unit: cells within a task
+share a scene, a camera geometry and a referent, so they are replicates of one
+measurement rather than independent measurements, and the interval on H1 is a
+cluster bootstrap that resamples whole tasks. Ten is the suite's ceiling rather
+than a budget, and it is the reason H1 can carry an interval at all. Every stage records its configuration, the tensor shapes handed
 to the policy, the git commit, library versions, device and a content hash of
 the transcoder checkpoint; the language tokens carry the discretised
 proprioceptive state and so differ between states while identical within a
@@ -353,13 +423,23 @@ cell.
 
 \subsection{Results}
 
+Two runs are reported and kept apart. The \emph{pilot} is a single task at a
+single seed, and every number in Tables~\ref{tab:cf-main}
+to~\ref{tab:cf-validation} comes from it. It established the design and
+produced one falsification, and it cannot support an interval: four clusters
+and one scene. The \emph{reported run} is the design of
+Table~\ref{tab:cf-config}, ten tasks at two seeds with twenty audited
+circuits, and fills Tables~\ref{tab:cf-pooled} and~\ref{tab:cf-rate}. The
+audit calibration of Table~\ref{tab:cf-calibration} was run on the pilot's own
+delta store and so applies to the pilot's negative directly.
+
 \subsubsection{Object selectivity}
 
 % Filled from decision_metrics.json -> h1 (pooled, spread, cluster_spread, bootstrap_ci_95,
 % robustness, positive_control, dose_response, null_floor). Cells marked \RESULT depend on the
 % perturbation size measured over both cameras.
 \begin{table}[t]
-\caption{Selectivity under the task prompt. $D$ is the pooled layer response of
+\caption{Pilot, one task at one seed. Selectivity under the task prompt. $D$ is the pooled layer response of
 Eq.~\ref{eq:layer-response}; $S$ the perturbation size over both cameras; the
 null row is the nondeterminism floor. Eight cells; four (state, draw)
 clusters.}
@@ -416,11 +496,14 @@ Layer & Target & Placebo & Sel. & Layer & Target & Placebo & Sel. \\
 
 % Filled from decision_metrics.json -> h1.cells (D, S, Sel) and measurements.csv (A).
 \begin{table}[t]
-\caption{Every cell of the run under the task prompt. $D$ is the layer
-response of Eq.~\ref{eq:layer-response} pooled over layers and flow times;
-$S$ the image-difference norm over both cameras; $\mathrm{Sel}_{\mathrm{adj}}$
-divides the $D$ ratio by the $S$ ratio; $A$ the relative change in the
-predicted action chunk. State 1 is five plan actions after state 0.}
+\caption{Pilot, every cell under the task prompt. $D$ is the layer response of
+Eq.~\ref{eq:layer-response} pooled over layers and flow times; $S$ the
+image-difference norm over both cameras; $\mathrm{Sel}_{\mathrm{adj}}$ divides
+the $D$ ratio by the $S$ ratio; $A$ the relative change in the predicted action
+chunk. State 1 is five plan actions after state 0. The table is shown in full
+because the gap between its two states is the reason the reported run samples
+twelve: the reported run has $960$ such cells and they are released as a table
+rather than printed.}
 \label{tab:cf-cells}
 \begin{center}
 \footnotesize
@@ -524,7 +607,7 @@ steering results should be read.
 
 % Filled from validation.json (conditions, selectivity, specificity, strata) and nominated_targets.json.
 \begin{table}[t]
-\caption{Circuit audit for the nominated target $\mathtt{L5}\!:\!0.1\!:\!\mathtt{F735}$
+\caption{Pilot, one traced circuit. Circuit audit for the nominated target $\mathtt{L5}\!:\!0.1\!:\!\mathtt{F735}$
 ($z^{\mathrm{std}}=+4.86$, exact selectivity $58\times$, active in $39\%$ of
 cells). Top: response enrichment of the full circuit, $1681$ parents of which
 $99.7\%$ are exercised, over $2000$ matched draws. Bottom: selectivity
@@ -596,6 +679,117 @@ whether the object selectivity those layers show in aggregate is routed to the
 target through edges a first-order attribution can see is precisely what this
 test says it is not.
 
+\subsubsection{Pooled over tasks}
+
+% Filled from aggregate/aggregate.json -> summary (pooled, bootstrap_ci_95,
+% tasks_above_one, null_floor_violations, verdict, h2_verdict) and per_task.
+\begin{table}[t]
+\caption{Reported run, pooled over the suite's ten tasks at two seeds. Each
+pooled figure is a ratio of means over all cells, not a mean of per-cell
+ratios, so a task with more usable cells carries more weight. The interval is a
+cluster bootstrap that resamples whole tasks, because cells within a task share
+a scene and are replicates rather than independent measurements. H2 is gated
+per task and never averaged: a task counts as testable only when the anchor of
+Eq.~\ref{eq:anchor} exceeds one under the task prompt and falls below one under
+the sibling, and a task that fails that gate is untestable, not negative.}
+\label{tab:cf-pooled}
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\hline
+Quantity & Pooled & Task-cluster 95\% CI & Tasks above $1$ \\
+\hline
+$\mathrm{Sel}$, raw                          & \RESULT{val} & [\RESULT{lo}, \RESULT{hi}] & \RESULT{k}/10 \\
+$\mathrm{Sel}_{\mathrm{adj}}$, $\lVert\Delta I\rVert_2$ (decides) & \RESULT{val} & [\RESULT{lo}, \RESULT{hi}] & \RESULT{k}/10 \\
+$\mathrm{Sel}_{\mathrm{adj}}$, $|P|$          & \RESULT{val} & [\RESULT{lo}, \RESULT{hi}] & \RESULT{k}/10 \\
+Action selectivity $A_t/A_p$                  & \RESULT{val} & [\RESULT{lo}, \RESULT{hi}] & \RESULT{k}/10 \\
+\hline
+Null floor, worst task                        & \RESULT{val} & --- & --- \\
+Cells contributing                            & \RESULT{n}   & --- & --- \\
+\hline
+\multicolumn{4}{l}{\emph{H2, gated per task}} \\
+Referent moved, so H2 is testable  & \RESULT{k}/10 & --- & --- \\
+Of those, selectivity inverted      & \RESULT{k}/\RESULT{m} & --- & --- \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsubsection{What the audit can detect}
+
+% Filled from h3/calibration_*/audit_calibration.json -> levels, summary.
+\begin{table}[t]
+\caption{Audit sensitivity, measured on the pilot's own delta store: sets of
+$K=16$ drawn from the $25{,}032$ features exercised below layer $5$ at
+$\tau=0.1$, with a fraction $c$ taken from the top of the measured selectivity
+ranking (Eq.~\ref{eq:contamination}) and the remainder at random, $R=20$
+repeats and $M=2000$ matched draws per repeat. A level counts as detected when
+the selectivity enrichment exceeds one at $p<0.05$.}
+\label{tab:cf-calibration}
+\begin{center}
+\small
+\begin{tabular}{lccc}
+\hline
+Content $c$ & Selective members & $\mathrm{SelEnrich}$, median & Detected \\
+\hline
+$0$            & $0$  & $0.95$   & $5\%$   \\
+$1/8$          & $2$  & $1.46$   & $40\%$  \\
+$1/4$          & $4$  & $2.05$   & $85\%$  \\
+$1/2$          & $8$  & $3.42$   & $100\%$ \\
+$3/4$          & $12$ & $7.37$   & $100\%$ \\
+$1$            & $16$ & unbounded & $100\%$ \\
+\hline
+\multicolumn{4}{l}{Detection floor $c^{\star}=1/4$; same floor at $K=10$ and $K=50$} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
+The audit is neither blind nor over-calling. A fully content-carrying set is
+always detected, and at $c=1$ the set has no placebo response at all, so its
+selectivity is unbounded rather than merely large. A purely random set is
+called $5\%$ of the time, which is the nominal level and not above it. Between
+those, detection rises monotonically and crosses the $80\%$ bar at $c=1/4$:
+four genuinely selective members out of sixteen are enough. The floor is
+insensitive to set size, at $80\%$ for $K=10$ and $95\%$ for $K=50$ at the same
+$c$, so it is a property of the statistic rather than of the circuit's size.
+
+This is what makes the pilot's negative say something. The traced circuit was
+not merely unenriched: it is less than a quarter content-carrying, since a
+circuit of which a quarter were selective would have been detected at $85\%$
+and this one was read at $0.92$ with $p=0.57$. The same calibration is run for
+every target layer the reported run traces, and a pool on which even $c=1$ goes
+undetected voids the verdicts drawn from it rather than supporting them.
+
+\subsubsection{H3 as a rate}
+
+% Filled from h3/h3_rate.json -> summary (corroborated, audited, rate,
+% clopper_pearson_95, detection_floor, verdict, reading) and audits.
+\begin{table}[t]
+\caption{Reported run, twenty circuits traced from targets nominated across the
+suite's ten tasks with sources restricted to the previous layer. Each row is
+one target; the head is the top ten parents by traced influence, where the
+Monte-Carlo $p$ is still informative. The rate at the foot is the decision
+quantity, with an exact binomial interval.}
+\label{tab:cf-rate}
+\begin{center}
+\small
+\begin{tabular}{lccccc}
+\hline
+Target & Feature $\mathrm{sel}$ & Parents & Head $\mathrm{SelEnrich}$ & $p$ & $\mathrm{Spec}$ \\
+\hline
+\RESULT{key} & \RESULT{val} & \RESULT{n} & \RESULT{val} & \RESULT{p} & \RESULT{val} \\
+\multicolumn{6}{c}{\emph{$\cdots$ eighteen further rows $\cdots$}} \\
+\RESULT{key} & \RESULT{val} & \RESULT{n} & \RESULT{val} & \RESULT{p} & \RESULT{val} \\
+\hline
+\multicolumn{6}{l}{Corroborated: \RESULT{k} of $20$, Clopper-Pearson 95\% CI [\RESULT{lo}, \RESULT{hi}]} \\
+\multicolumn{6}{l}{Detection floor over the pools audited: \RESULT{val}} \\
+\multicolumn{6}{l}{Verdict: \RESULT{supported / falsified / inconclusive / invalid}} \\
+\hline
+\end{tabular}
+\end{center}
+\end{table}
+
 \subsubsection{Verdicts}
 \label{sec:verdicts}
 
@@ -629,12 +823,24 @@ falsified if it is unchanged or larger, partial in between. Here $g=0.73$ but
 the anchor is $17$ under the task prompt and $9.7$ under the sibling prompt:
 the referent did not move.
 
-\paragraph{H3.} Falsified. The rule is: inconclusive if fewer than half the
-parents are exercised; falsified if the selectivity enrichment of the top $10$
-parents by influence is at most one or has $p\ge0.05$, or if the full circuit's
-is at most one; otherwise supported, qualified as object-specific if
-specificity exceeds one at the head. Here $99.7\%$ are exercised, the head is
-$0.92$ at $p=0.57$, and the full circuit is $1.07$.
+\paragraph{H3.} The rule has two levels. Per circuit: inconclusive if fewer
+than half the parents are exercised; corroborated if the selectivity enrichment
+of the top $10$ parents by influence exceeds one at $p<0.05$ and the full
+circuit agrees in direction; not corroborated otherwise; qualified as
+object-specific if specificity also exceeds one at the head. Over circuits:
+invalid if any audited pool failed its calibration, so that a flat reading
+carries no information; supported if the Clopper-Pearson interval on $k/N$
+excludes $5\%$; falsified if its upper end falls below $50\%$; inconclusive
+otherwise.
+
+For the pilot's single circuit the per-circuit reading is \emph{not
+corroborated}: $99.7\%$ of parents are exercised, the head is $0.92$ at
+$p=0.57$, and the full circuit is $1.07$. Its calibration passes, so the
+reading stands, and Table~\ref{tab:cf-calibration} sharpens it: the circuit is
+less than a quarter content-carrying. At $N=1$ the rate is untestable, because
+Eq.~\ref{eq:cp-zero} gives a bound of $95\%$ and excludes nothing. The reported
+run's verdict is \RESULT{supported / falsified / inconclusive / invalid} at
+$k=\RESULT{k}$ of $N=20$.
 
 \subsection{Relation to the rest of the paper}
 \label{sec:relation}
@@ -750,8 +956,18 @@ the flat influence profile is what shows the negative here is about the
 attribution and not the pruning. All claims are about transcoder features, not
 the MLP basis. Colour is load-bearing in this suite because the prompt names
 it; in a task whose prompt did not, the same recolour would be expected to move
-behaviour little. The design samples narrowly: one task, one seed, two states,
-two draws, two doses.
+behaviour little.
+
+Three limits of the reported run bound what the rate can claim. Ten tasks is
+the suite's ceiling and not a budget, since a matched placebo needs a duplicated
+mesh and only \texttt{libero\_spatial} has one throughout; the interval on H1
+rests on ten clusters and will be wide. The twenty audited targets are the
+probe's own nominees, so they are the features most likely to have a
+content-carrying circuit and the rate is an upper bound on the tracer's
+performance rather than an average over features. And the nominations sit near
+layer five while the paper's case study is at layer eleven, so a comparison
+between the two is confounded with depth until depth-matched nominations are
+run.
 
 \subsection{Limitations and open directions}
 \label{sec:gaps}
@@ -762,10 +978,16 @@ paper's central example and has been shown load-bearing, not content-carrying.
 The same audit applies to it unchanged, on a scene containing the bowl and
 drawer, with the bowl recolour as the manipulation. This is the single
 experiment that most changes how Sections~B and~C should be read.
-\item \textbf{A layered retrace.} Restricting sources to the previous layer
-would test whether the frontier's collapse into layer $1$ caused the flat
-profile or merely accompanied it. The profile predicts the verdict will not
-change; the prediction is worth recording either way.
+\item \textbf{The tracer as a factor.} The reported run restricts sources to
+the previous layer, because in the pilot forty-five of sixty expansions
+collapsed into layer $1$ and the graph reached $1681$ parents. Running the same
+twenty targets under both source policies would separate a property of the
+circuits from a property of the frontier. The flat influence profile predicts
+the verdict will not change; the prediction is worth recording either way.
+\item \textbf{Depth-matched nominations.} The probe nominates near layer five
+and the case study's circuit sits at layer eleven. Raising the depth bound
+until the nominated targets match it would remove the one confound between the
+two results that the audit cannot adjust for.
 \item \textbf{An unambiguous sibling prompt.} H2 was untestable because the
 sibling phrase was true of both bowls. A prompt override that names only the
 placebo's region, with the anchor check as the gate, would make H2 decidable.
@@ -778,10 +1000,14 @@ the position where the target responds on the audited scene, rather than at
 the dataset position; second-order or integrated-gradient edges; and pruning by
 content rather than by cumulative influence are all testable against the same
 known cause.
-\item \textbf{Breadth.} A second task, ideally the drawer task of the case
-study, more states so the (state, draw) clusters number more than four, a
-second object type, and a non-colour perturbation such as texture would each
-widen what the design can claim.
+\item \textbf{Breadth beyond one suite.} Ten tasks is
+\texttt{libero\_spatial}'s ceiling, because a matched placebo needs a duplicated
+mesh. \texttt{libero\_10} adds two more through its \texttt{moka\_pot} pairs,
+which is the only way to raise the cluster count without weakening the match.
+Beyond that the placebo has to be a different object, as it would be on the
+drawer task of the case study, and the footprint adjustment carries more of the
+weight. A second object type and a non-colour perturbation such as texture
+would each widen what the design can claim.
 \item \textbf{Units.} Section~C and this section measure the action in
 different normalisations of the same quantity; one column in the same unit
 would let the positive control calibrate Section~C's effect sizes directly.
@@ -798,14 +1024,21 @@ Each run writes its full per-feature deltas and baselines for every condition,
 every measurement including the controls, the decision quantities and verdicts
 with the rules they were decided under, the tensor shapes handed to the policy,
 and a provenance record with the git commit, library versions, device and a
-content hash of the transcoder checkpoint. Runs execute on an ephemeral
-notebook machine and each stage copies its directory to shared storage when it
-completes. The reported run was produced at commit \texttt{758b7c9} of the
+content hash of the transcoder checkpoint. Runs execute on an ephemeral notebook machine, so each probe run is copied
+to shared storage the moment it finishes rather than at the end of the loop,
+and the copy is verified by byte count because a full quota returns success on
+write. Each batch also carries a manifest listing every run, its verdicts, its
+commit and where each quantity is read from, so the analysis can be repeated
+from the stored directory alone without the session that produced it. The reported run was produced at commit \texttt{758b7c9} of the
 repository with a clean tree, on an NVIDIA L4 with Python 3.12, LeRobot 0.6.1,
 PyTorch 2.11, MuJoCo 3.8.1 and robosuite 1.4.0, against a transcoder
 checkpoint of SHA-256 prefix \texttt{b75ee195bbe11ede}. The pipeline is probe, report, discovery, trace, validate; the
 notebook orchestrates these and displays their artefacts without computing any
-decision itself. A guard aborts the run rather than continuing on a stale
-render, an unrestored baseline, a perturbation that changed no pixels, drifting
-tensor shapes, a policy whose weights did not fully load, a nomination with no
-eligible feature, or a prompt swap that did not move the behavioural referent.
+decision itself. A guard aborts the run rather than continuing on a stale render, an
+unrestored baseline, drifting tensor shapes, a policy whose weights did not
+fully load, a nomination with no eligible feature, or a prompt swap that did
+not move the behavioural referent. A perturbation that changed no pixels skips
+that state and is counted, since over ten tasks one occluded object should not
+discard nine good ones. Every decision quantity in this section is computed by
+a script that carries its own tests and is read back from the artefact it
+writes; the notebook displays verdicts and computes none.

@@ -37,12 +37,26 @@ in this order:
      (e.g. "non-referent", not "irrelevant");
    - **positive control** — a manipulation *known* to matter, fixing the scale of the outcome;
    - **dose response** — the doses, the normaliser, the linearity statistic (elasticity);
+   - **detector calibration** — a positive control for the *test*, not the outcome. Any design
+     that can return a null needs one: run the decision statistic on inputs whose answer is known
+     by construction (contaminate a random set with a known fraction of genuine signal and sweep
+     it), and report the smallest effect detected at 80 %. Without it a null is ambiguous between
+     "the effect is absent" and "this test is blind", and the second reading voids every negative
+     the test has produced. With it, "not enriched" becomes "less than a quarter content-carrying",
+     which is a claim. Check both ends: a test that misses a fully-signal input is blind, and one
+     that calls a pure-noise input more than α of the time over-calls and its *positives* are void.
    - **manipulation check** for every *gated* manipulation (a prompt swap, a mode switch): a
      quantity independent of the decision quantity that shows the manipulation did what it claims,
      not merely that it was processed. "The action changed" is processing; "the action re-anchored
      on the other object" is the manipulation. Without it the gate passes on words.
 5. **Replication unit.** What a *cell* is; what cells share (render, noise draw, pose); the *cluster*
    that is independent; which spreads and intervals are reported and at which level; n for each.
+   If the hypothesis is about a *method* rather than about one of its outputs, the unit is the
+   output and the decision quantity is a rate `k/N`, never a verdict on one instance. Pick N from
+   what a null must exclude, before the run: at k=0 the exact one-sided bound is `1 - α^(1/N)`,
+   so N=5 leaves the rate possibly above a half and excludes nothing, N=10 caps it at 26 % and
+   N=20 at 14 %. Use Clopper-Pearson, not Wald: at k=0 a Wald interval has zero width and would
+   certify a rate of exactly zero from five tries.
 6. **Outcome measure and alternatives.** The primary summary and why; at least two scale-free
    alternatives; the agreement rule ("robust only if all fall on the same side of 1").
 7. **Selection versus test.** Everything that is *selected* (targets, features, examples): on which
@@ -162,12 +176,12 @@ stage`. Rules:
 |---|---|---|
 | 1 | Falsifiable hypotheses; rules and thresholds fixed and justified before data | every threshold is a numeric field in the artefact **and** has a written data-independent reason |
 | 2 | Isolated manipulation, verified at run time | identity / revert / restore / shape checks exist and abort; diff images written |
-| 3 | Complete control set | null floor with a bound, matched placebo with an honest name, **positive control**, dose response with elasticity, a **manipulation check** on every gated manipulation |
+| 3 | Complete control set | null floor with a bound, matched placebo with an honest name, **positive control**, dose response with elasticity, a **manipulation check** on every gated manipulation, and a **detector calibration** wherever a null is a possible verdict |
 | 4 | Correct replication unit, honest uncertainty | cell and cluster defined; dependence stated; spread at both levels; n next to every interval; the decision rule does not assume independence |
 | 5 | Construct validity, robustness across summaries | primary summary justified; ≥ 2 scale-free alternatives; `agree_in_direction` flag |
 | 6 | No circularity | the thing selected on data A is excluded from the test on data A; downstream selectors never read the test data |
 | 7 | Guards abort, not warn | each guard has a failing-path test |
-| 8 | Every outcome has a meaning | closed verdict set; gates for `untestable` / `inconclusive`; threats name the residual ambiguity of a null |
+| 8 | Every outcome has a meaning | closed verdict set; gates for `untestable` / `inconclusive` / `invalid`; a null is quantified against the calibrated detection floor rather than reported as absence; threats name the residual ambiguity |
 | 9 | Provenance | commit, dirty, versions, device, checkpoint hash, per-cell seeds, full config |
 | 10 | Scope honesty | what is not claimed; first extension named |
 
@@ -214,6 +228,13 @@ A `partial` on 1, 3, 4, 5 or 9 is a Phase 0 defect. A `gap` on 6 or 7 invalidate
 - **Fixing the statistic but not the saturation** — the corrected ratio-of-ratios still had p at
   its floor over 1721 nodes. Where n is large, decide on a pre-registered head of the ranking
   where p is informative, and report the rest.
+- **A null from an uncalibrated test** — "the traced parents are not enriched" was reported as a
+  falsification with nothing establishing that the test could detect enrichment if it were there.
+  Calibrating it turned the same data into "the circuit is less than 25 % content-carrying", which
+  is the claim the section can actually defend. Every design that can return a null owes this.
+- **One instance reported as a property of a method** — one traced circuit, one falsification, and
+  a conclusion about tracing. At N=1 the exact bound on the rate is 95 %, so the result excluded
+  nothing it claimed to. If the hypothesis has the word "the method" in it, the answer is a rate.
 - **A saturated p-value read as strong evidence** — with 1721 nodes every p hit its floor of
   1/(M+1) regardless of effect size. Past a few hundred units, significance stops discriminating
   and only the effect size carries the verdict; say so next to the number.

@@ -1014,6 +1014,7 @@ def main() -> None:
     elif args.use_alt_prompt:
         print("\nno alt prompt found; selectivity cannot be separated from screen position", flush=True)
 
+    skipped_states: list[dict[str, Any]] = []
     noise_seed = args.seed if args.noise_seed is None else args.noise_seed
     if args.noise_samples < 1:
         raise SystemExit("--noise-samples must be at least 1")
@@ -1061,6 +1062,8 @@ def main() -> None:
         # so render each once per state and reuse it across every replicate.
         perturbed_renders: dict[tuple[str, float], tuple[dict[str, Any], np.ndarray, dict[str, float], str]] = {}
         for kind, target in targets:
+            if not perturbed_renders and skipped_states and skipped_states[-1]["state_index"] == state_index:
+                break
             for dose in doses:
                 perturbation = apply_perturbation(mj_model, args, target, dose)
                 try:
@@ -1071,10 +1074,17 @@ def main() -> None:
                 perturbed_image = first_camera_image(perturbed_obs)
                 pixel = image_delta_stats_all(baseline_images, perturbed_images)
                 if pixel["changed_pixel_fraction"] == 0.0:
-                    raise RuntimeError(
-                        f"Perturbation {perturbation.label!r} changed no pixels on any camera. The object "
-                        "is probably occluded or outside every camera's view; pick another target."
+                    # Invisible here, not broken. Sampling many states along the
+                    # plan eventually hides an object behind the gripper, and the
+                    # states already measured are still valid.
+                    print(
+                        f"  skipping state {state_index}: {perturbation.label!r} changed no pixels on any "
+                        "camera, so the object is occluded or out of view at this state",
+                        flush=True,
                     )
+                    skipped_states.append({"state_index": state_index, "condition": kind, "dose": dose})
+                    perturbed_renders.clear()
+                    break
                 perturbed_renders[(kind, dose)] = (perturbed_obs, perturbed_image, pixel, perturbation.label)
                 if args.save_images:
                     for cam_name, frame in perturbed_images.items():
@@ -1083,6 +1093,12 @@ def main() -> None:
                         if diff.max() > 0:
                             diff = diff / diff.max() * 255.0
                         save_image(image_dir / f"state{state_index}_{kind}_dose{dose:g}_{cam_name}_diff.png", diff)
+        if not perturbed_renders:
+            # Nothing measurable at this state. Advance and try the next one.
+            for step_action in actions_to_step(last_baseline_actions, args.state_stride):
+                harness.vec_env.step(step_action)
+            continue
+
         # The baseline must be intact after every revert, or the pairs below
         # would be measured against a contaminated reference.
         residual = image_delta_stats_all(baseline_images, camera_images(rerender_observation(harness)))
@@ -1283,6 +1299,8 @@ def main() -> None:
             "num_inference_steps": args.num_inference_steps,
             "top_features": args.top_features,
             "full_delta_store": None if store is None else str(store.root),
+            "states_skipped": skipped_states,
+            "states_measured": args.states - len({s["state_index"] for s in skipped_states}),
             "checkpoint": str(args.checkpoint),
         },
         "rerender_self_check": check,
@@ -1334,6 +1352,17 @@ def main() -> None:
     _print_verdict(
         measurements, baseline_by_prompt=baseline_by_prompt, states=args.states, noise_samples=args.noise_samples
     )
+    if not measurements:
+        raise SystemExit(
+            f"No state produced a measurable perturbation ({len(skipped_states)} skipped). The target "
+            "is never visible on this task; check --target or the camera set."
+        )
+    if skipped_states:
+        print(
+            f"\n{len({s['state_index'] for s in skipped_states})} of {args.states} states skipped as "
+            "the object was not visible there.",
+            flush=True,
+        )
     decision = compute_decision_metrics(measurements, baseline_by_prompt=baseline_by_prompt)
     _print_decision_metrics(decision)
     payload["decision_metrics"] = decision

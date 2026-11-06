@@ -1,5 +1,6 @@
 """Scientific validity checks; GPU integration remains a separate acceptance gate."""
 import json
+import ast
 from pathlib import Path
 import sys
 
@@ -11,6 +12,25 @@ sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'src'),
 from pi05_mi.occlusion_pilot import (PilotConfig, ImageOccluder, assert_split_isolation,
                                     labels_at_steps, stable_indices)
 from fit_pi05_occlusion_monitor import threshold_from_good_episodes, operating_metrics
+
+
+def test_notebook_token_path_defined_and_mount_cell_has_standalone_fallback(tmp_path):
+    notebook = json.loads((Path(__file__).resolve().parents[1] /
+                          'notebooks/pi05_occlusion_monitor_pilot.ipynb').read_text())
+    code = [''.join(c['source']) for c in notebook['cells'] if c['cell_type'] == 'code']
+    for source in code:
+        ast.parse(source)
+    controls = next(s for s in code if s.startswith('# @title Controls'))
+    scope = {}
+    exec(compile(controls, '<controls>', 'exec'), scope)
+    assert scope['SHARED_HF_TOKEN_FILE'] == 'secrets/HF_TOKEN.txt'
+    mount = ast.parse(next(s for s in code if s.startswith('# @title Mount Drive')))
+    assignment = next(n for n in mount.body if isinstance(n, ast.Assign) and
+                      any(isinstance(t, ast.Name) and t.id == 'DRIVE_HF_TOKEN_FILE' for t in n.targets))
+    # A user rerunning just the mount cell must not hit the old NameError.
+    isolated = {'DRIVE_ROOT': tmp_path}
+    exec(compile(ast.Module(body=[assignment], type_ignores=[]), '<mount path>', 'exec'), isolated)
+    assert isolated['DRIVE_HF_TOKEN_FILE'] == tmp_path / 'secrets/HF_TOKEN.txt'
 
 
 def test_plans_do_not_leak_pairs_or_screen():

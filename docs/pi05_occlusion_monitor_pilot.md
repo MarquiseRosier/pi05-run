@@ -6,6 +6,11 @@ and an unseen occluder condition. Actual stopping / collision prevention is a su
 
 ## Run in Colab on the A100
 
+For the current matched linear-probe/transcoder experiment, see
+[the comparison protocol](pi05_matched_monitor_comparison.md). The notebook now defaults to
+requiring a trained action-expert checkpoint and saving matched input/output/sparse features.
+Set `REQUIRE_MATCHED_COMPARISON=False` only for an intentional dense-only legacy pilot.
+
 Open `notebooks/pi05_occlusion_monitor_pilot.ipynb` and run all. Setup installs/restores the existing
 LIBERO environment first. **The 15-minute budget starts after setup**, includes policy loading, and
 reserves about two minutes for analysis. Cold downloads/installations have no 15-minute guarantee.

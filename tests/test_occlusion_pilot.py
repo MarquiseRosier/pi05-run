@@ -140,7 +140,9 @@ def test_fitter_runs_end_to_end_and_resumes_without_refitting(tmp_path):
             array += 1000  # Deliberate test-only shift must not enter the fitted scaler.
         if job['split'] == 'train':
             train.append(array[:3] if harm else array[:4])
-        np.savez_compressed(folder / 'features.npz', state=array)
+        np.savez_compressed(folder / 'features.npz', state=array,
+                            expert_input_l00=array * 2, expert_output_l00=array * 3,
+                            expert_transcoder_l00=array * 4)
         ep = {**job, 'success': not harm, 'steps': 56, 'first_harm_step': 24 if harm else None,
               'initial_state_sha256': job['group_id'], 'observations': [{'step': t} for t in range(0, 48, 8)]}
         (folder / 'episode.json').write_text(json.dumps(ep))
@@ -150,6 +152,10 @@ def test_fitter_runs_end_to_end_and_resumes_without_refitting(tmp_path):
     pointer = json.loads((tmp_path / 'latest_future_harm.json').read_text())
     model_file = Path(pointer['report']).parent / 'state.joblib'
     saved = joblib.load(model_file)
+    report = json.loads(Path(pointer['data']).read_text())
+    comparison = report['matched_comparisons']['expert_transcoder_l00_minus_expert_output_l00']
+    assert comparison['seen_occluders']['harm_preceded_fraction']['difference'] == 0
+    assert comparison['seen_occluders']['harm_preceded_fraction']['paired_group_bootstrap_95ci'] is None
     assert np.max(np.abs(saved['pipeline']['standardscaler'].mean_)) < 10
     mtime = model_file.stat().st_mtime_ns
     evaluate(args)
@@ -169,3 +175,15 @@ def test_partial_loader_excludes_incomplete_paired_groups(tmp_path):
     (folder / 'episode.json').write_text(json.dumps({**job, 'observations': [{'step': 0}],
                                                    'initial_state_sha256': 'same'}))
     assert load_episodes(tmp_path, allow_partial=True) == []
+
+
+def test_paired_monitor_difference_preserves_direction_and_pairing():
+    from fit_pi05_occlusion_monitor import paired_monitor_difference
+    episodes = [dict(episode_id=str(i), group_id=str(i), success=False, steps=40,
+                     first_harm_step=18, sample_steps=np.array([0, 8, 16])) for i in range(4)]
+    early = {str(i): np.array([.1, .8, .9]) for i in range(4)}
+    missed = {str(i): np.zeros(3) for i in range(4)}
+    result = paired_monitor_difference(episodes, early, .5, missed, .5, draws=30)
+    assert result['harm_preceded_fraction']['difference'] == 1
+    assert result['harm_preceded_fraction']['paired_group_bootstrap_95ci'] == [1, 1]
+    assert result['false_stop_fraction']['difference'] is None

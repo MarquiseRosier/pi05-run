@@ -56,6 +56,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=4)
     parser.add_argument('--preset', choices=['smoke', 'pilot', 'a100'], default='a100')
     parser.add_argument('--checkpoint', type=Path)
+    parser.add_argument('--comparison-width', type=int, default=256)
     args = parser.parse_args()
     if args.minutes < 3:
         raise ValueError('Reserve at least three minutes including loading and reporting')
@@ -69,7 +70,7 @@ def main():
     command = [sys.executable, str(scripts / 'run_pi05_occlusion_pilot.py'), '--output-dir', str(root),
                '--preset', args.preset, '--batch-size', str(args.batch_size), '--wall-seconds', str(collection_seconds)]
     if args.checkpoint:
-        command += ['--checkpoint', str(args.checkpoint)]
+        command += ['--checkpoint', str(args.checkpoint), '--comparison-width', str(args.comparison_width)]
     print(f'Collecting in GPU batches of {args.batch_size}; log: {root / "collection.log"}', flush=True)
     collection = run_phase(command, root / 'collection.log', collection_seconds)
     # Stop hooks have at most 5 seconds to flush. Keep the remaining budget for fitting/reporting.

@@ -40,6 +40,8 @@ def arguments():
     p.add_argument("--monitor-stride", type=int, default=8)
     p.add_argument("--policy-path", default="lerobot/pi05_libero_finetuned")
     p.add_argument("--checkpoint", type=Path, help="Optional ACTION EXPERT transcoder checkpoint")
+    p.add_argument("--comparison-width", type=int, default=256,
+                   help="Matched expert input/output/sparse probe width; 0 saves native widths (more RAM/fit time)")
     p.add_argument("--device", default="cuda")
     p.add_argument("--policy-dtype", default="bfloat16")
     p.add_argument("--image-stride", type=int, default=32)
@@ -286,7 +288,8 @@ def collect(args, config, jobs):
     from lerobot.envs.configs import LiberoEnv
     from lerobot.envs.factory import make_env_pre_post_processors
     from lerobot.policies.factory import make_pre_post_processors
-    from pi05_mi.patch_pi05 import Pi05TranscoderContext, install_pi05_action_expert_wrappers
+    from pi05_mi.patch_pi05 import (Pi05TranscoderContext, install_pi05_action_expert_wrappers,
+                                    list_pi05_action_expert_mlp_targets)
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("GPU collection requested but CUDA is unavailable; --plan-only works on CPU")
     namespace = SimpleNamespace(suite="libero_spatial", task_id=jobs[0]["task_id"], prompt="",
@@ -298,10 +301,20 @@ def collect(args, config, jobs):
     policy.config.n_action_steps = config.action_steps
     tap = FeatureTap(policy, config)
     context = None
+    matched = None
     if args.checkpoint:
         tc = load_transcoders(args.checkpoint, torch.device(args.device))
+        from pi05_mi.monitor_features import MatchedExpertTap
+        targets = list_pi05_action_expert_mlp_targets(policy)
+        missing = [t.name for t in targets if t.layer_index in config.layers and t.name not in tc]
+        if missing:
+            raise ValueError(f'Checkpoint lacks matched layers: {missing}')
+        matched = MatchedExpertTap(targets, layers=config.layers, width=args.comparison_width)
+        def record_latents(name, layer, latent, timestep):
+            tap.latent(name, layer, latent, timestep)
+            matched.latent(name, layer, latent, timestep)
         context = Pi05TranscoderContext(mode="probe", capture_records=False, capture_latents=True,
-                                       latent_callback=tap.latent, store_latent_summaries=False)
+                                       latent_callback=record_latents, store_latent_summaries=False)
         install_pi05_action_expert_wrappers(policy, context=context, transcoders=tc, mode="probe")
     _, postprocessor = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=args.policy_path,
         preprocessor_overrides={"device_processor": {"device": args.device},
@@ -339,10 +352,14 @@ def collect(args, config, jobs):
                             seed=s.job["seed"] + 100003 * s.job["task_id"] + 1009 * step)
                             for s in inference])
                         tap.reset()
+                        if matched:
+                            matched.reset()
                         started = time.perf_counter()
                         with torch.inference_mode():
                             actions = policy.predict_action_chunk(batch, noise=noise, num_steps=config.inference_steps)
                         arrays = tap.arrays()  # CPU transfer synchronizes CUDA before recording latency.
+                        if matched:
+                            arrays.update(matched.arrays())
                         elapsed = time.perf_counter() - started
                         if context:
                             context.clear_records()
@@ -363,6 +380,8 @@ def collect(args, config, jobs):
                                     futures.append(writer.submit(write_images, path, images))
                                 slot.save_partial()
                         (args.output_dir / "feature_schema.json").write_text(json.dumps(tap.schema, indent=2))
+                        if matched:
+                            atomic_json(args.output_dir / 'matched_feature_schema.json', matched.schema)
                     with torch.inference_mode():
                         normalized = torch.stack([s.queue.pop(0) for s in active])
                         processed = env_post({"action": postprocessor(normalized)})["action"]
@@ -401,6 +420,8 @@ def main():
     signal.signal(signal.SIGINT, request_stop)
     if args.image_stride < 1:
         raise ValueError("image-stride must be positive")
+    if args.comparison_width < 0:
+        raise ValueError('comparison-width must be >= 0')
     presets = {"smoke": ((0,), 1, 1, 1), "pilot": ((0, 1), 3, 1, 2),
                "a100": (tuple(range(10)), 14, 5, 5)}
     tasks, train, cal, test = presets[args.preset]
@@ -413,6 +434,8 @@ def main():
     payload.update(policy_path=args.policy_path, policy_dtype=args.policy_dtype,
                    checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
                    image_stride=args.image_stride,
+                   matched_comparison=dict(version=1, width=args.comparison_width,
+                       component='action_expert', mode='probe', layers=list(config.layers)) if args.checkpoint else None,
                    git_commit=subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip())
     if args.checkpoint:
         digest = hashlib.sha256()

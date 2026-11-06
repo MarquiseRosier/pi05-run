@@ -14,23 +14,35 @@ from pi05_mi.occlusion_pilot import (PilotConfig, ImageOccluder, assert_split_is
 from fit_pi05_occlusion_monitor import threshold_from_good_episodes, operating_metrics
 
 
-def test_notebook_token_path_defined_and_mount_cell_has_standalone_fallback(tmp_path):
+def test_notebook_token_loader_uses_environment_without_shared_file(monkeypatch):
     notebook = json.loads((Path(__file__).resolve().parents[1] /
                           'notebooks/pi05_occlusion_monitor_pilot.ipynb').read_text())
     code = [''.join(c['source']) for c in notebook['cells'] if c['cell_type'] == 'code']
     for source in code:
         ast.parse(source)
-    controls = next(s for s in code if s.startswith('# @title Controls'))
-    scope = {}
-    exec(compile(controls, '<controls>', 'exec'), scope)
-    assert scope['SHARED_HF_TOKEN_FILE'] == 'secrets/HF_TOKEN.txt'
-    mount = ast.parse(next(s for s in code if s.startswith('# @title Mount Drive')))
-    assignment = next(n for n in mount.body if isinstance(n, ast.Assign) and
-                      any(isinstance(t, ast.Name) and t.id == 'DRIVE_HF_TOKEN_FILE' for t in n.targets))
-    # A user rerunning just the mount cell must not hit the old NameError.
-    isolated = {'DRIVE_ROOT': tmp_path}
-    exec(compile(ast.Module(body=[assignment], type_ignores=[]), '<mount path>', 'exec'), isolated)
-    assert isolated['DRIVE_HF_TOKEN_FILE'] == tmp_path / 'secrets/HF_TOKEN.txt'
+    assert 'SHARED_HF_TOKEN_FILE' not in '\n'.join(code)
+    assert 'DRIVE_HF_TOKEN_FILE' not in '\n'.join(code)
+    cache = ast.parse(next(s for s in code if s.startswith('# @title Prepare')))
+    loader = next(n for n in cache.body if isinstance(n, ast.FunctionDef) and n.name == 'get_hf_token')
+    import os
+    from types import ModuleType, SimpleNamespace
+    scope = {'os': os}
+    exec(compile(ast.Module(body=[loader], type_ignores=[]), '<token loader>', 'exec'), scope)
+    monkeypatch.setenv('HF_TOKEN', 'test-environment-value')
+    assert scope['get_hf_token'](required=True) == 'test-environment-value'
+    monkeypatch.delenv('HF_TOKEN')
+    google = ModuleType('google'); colab = ModuleType('google.colab')
+    colab.userdata = SimpleNamespace(get=lambda name: 'test-colab-value')
+    google.colab = colab
+    monkeypatch.setitem(sys.modules, 'google', google)
+    monkeypatch.setitem(sys.modules, 'google.colab', colab)
+    assert scope['get_hf_token'](required=True) == 'test-colab-value'
+    assert os.environ['HF_TOKEN'] == 'test-colab-value'
+    monkeypatch.delenv('HF_TOKEN')
+    colab.userdata = SimpleNamespace(get=lambda name: '')
+    assert scope['get_hf_token']() == ''
+    with pytest.raises(RuntimeError, match='HF_TOKEN environment variable'):
+        scope['get_hf_token'](required=True)
 
 
 def test_plans_do_not_leak_pairs_or_screen():

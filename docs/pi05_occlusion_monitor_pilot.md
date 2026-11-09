@@ -6,6 +6,31 @@ and an unseen occluder condition. Actual stopping / collision prevention is a su
 
 ## Run in Colab on the A100
 
+The collector uses `lerobot[libero]==0.4.4`. Later LeRobot versions changed both the
+LIBERO config class and simulator integration; importing `LiberoEnvConfig` under the
+old name is not sufficient for this collector's raw observations and simulator access.
+The notebook verifies the installed version, repairs an existing virtual environment
+without clearing it, and checks imports before restoring large caches. This pins LeRobot,
+not every transitive dependency; `runtime.json` records actual versions for each run.
+
+If an older open notebook fails with `cannot import name 'LiberoEnv'`, update the pilot
+branch and run the following with its existing environment. Model caches/Drive outputs
+are preserved; the command changes Python packages, not cached model data:
+
+```bash
+/content/lerobot-venv/bin/python /content/groot-run/scripts/pi05_monitor_runtime.py \
+  --repair --uv /content/uv-bin/uv --python /content/lerobot-venv/bin/python --require-cuda
+```
+
+Use a new `RUN_NAME` after changing runtime/protocol; do not mix versions under an old
+manifest. Then rerun only collection/reporting in the already-prepared session. Open
+the latest notebook separately to pick up changed cells: git pull cannot replace cells
+already loaded in a browser. A blank checkpoint yields no transcoder comparison.
+
+When collection produces no complete paired groups for any required split, the runner
+skips fitting and reports the collection failure. It does not attach a previous report
+as a new successful result. Full simulator/GPU validation must still occur on Colab.
+
 For the current matched linear-probe/transcoder experiment, see
 [the comparison protocol](pi05_matched_monitor_comparison.md). The notebook now defaults to
 requiring a trained action-expert checkpoint and saving matched input/output/sparse features.

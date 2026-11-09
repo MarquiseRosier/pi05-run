@@ -16,6 +16,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from pi05_mi.occlusion_pilot import RunJournal, atomic_json
 
 
+def analysis_readiness(root):
+    """Only complete paired groups in all splits can reach the fitter."""
+    manifest_path = root / 'manifest.json'
+    if not manifest_path.exists():
+        return False, 'Collection did not produce a manifest.'
+    planned = json.loads(manifest_path.read_text())['episodes']
+    groups = {}
+    for job in planned:
+        groups.setdefault(job['group_id'], []).append(job)
+    complete = [group for group in groups.values() if all(
+        (root / 'episodes' / job['episode_id'] / 'episode.json').exists()
+        and (root / 'episodes' / job['episode_id'] / 'features.npz').exists() for job in group)]
+    splits = {group[0]['split'] for group in complete}
+    missing = sorted({'train', 'calibration', 'test'} - splits)
+    if missing:
+        return False, 'No complete paired groups for: ' + ', '.join(missing) + '. See collection.log.'
+    return True, None
+
+
 def run_phase(command, log, seconds):
     if seconds <= 0:
         return {'status': 'budget_exhausted'}
@@ -64,7 +83,7 @@ def main():
     deadline = started + args.minutes * 60
     root = args.output_dir.resolve(); root.mkdir(parents=True, exist_ok=True)
     journal = RunJournal(root)
-    journal.update('planning', budget_seconds=args.minutes * 60)
+    journal.update('planning', budget_seconds=args.minutes * 60, error=None)
     scripts = Path(__file__).resolve().parent
     collection_seconds = max(1, args.minutes * 60 - 125)
     command = [sys.executable, str(scripts / 'run_pi05_occlusion_pilot.py'), '--output-dir', str(root),
@@ -74,11 +93,19 @@ def main():
     print(f'Collecting in GPU batches of {args.batch_size}; log: {root / "collection.log"}', flush=True)
     collection = run_phase(command, root / 'collection.log', collection_seconds)
     # Stop hooks have at most 5 seconds to flush. Keep the remaining budget for fitting/reporting.
-    journal.update('monitor_fitting', collection_result=collection)
-    print('Fitting held-out risk monitors; log:', root / 'analysis.log', flush=True)
-    analysis = run_phase([sys.executable, str(scripts / 'fit_pi05_occlusion_monitor.py'),
+    ready, reason = analysis_readiness(root)
+    if ready:
+        journal.update('monitor_fitting', collection_result=collection)
+        print('Fitting held-out risk monitors; log:', root / 'analysis.log', flush=True)
+        analysis = run_phase([sys.executable, str(scripts / 'fit_pi05_occlusion_monitor.py'),
                           '--run-dir', str(root), '--allow-partial'], root / 'analysis.log',
                          max(0, deadline - time.monotonic() - 6))
+    else:
+        analysis = dict(status='skipped', reason=reason)
+        journal.update('monitor_fitting', 'skipped', collection_result=collection, skip_reason=reason)
+        with (root / 'analysis.log').open('a') as handle:
+            handle.write('Analysis skipped: ' + reason + '\n')
+        print('Analysis skipped:', reason, flush=True)
     episodes = []
     for file in sorted((root / 'episodes').glob('*/episode.json')):
         ep = json.loads(file.read_text())
@@ -98,17 +125,22 @@ def main():
     for split, c in counts.items():
         lines.append(f"| {split} | {c['episodes']} | {c['harmful']} | {c['successful']} |")
     pointer = root / 'latest_future_harm.json'
-    if pointer.exists():
+    if analysis['status'] == 'complete' and pointer.exists():
         report = Path(json.loads(pointer.read_text())['report'])
         lines.extend(['', report.read_text()])
     else:
         lines.extend(['', '**No validated monitor result is available from this attempt.**',
-                      'Check analysis.log: there may be too few complete split groups, no outcome variation, or an integration error.'])
+                      analysis.get('reason', 'Check collection.log and analysis.log for the failing phase.')])
+    state = json.loads(journal.path.read_text())
+    if collection['status'] == 'failed':
+        lines.extend(['', '**Collection failed.**', str(state.get('error') or 'Inspect collection.log.')])
     (root / 'budget_summary.md').write_text('\n'.join(lines) + '\n')
-    journal.update('report', 'complete' if analysis['status'] == 'complete' else 'partial',
+    journal.update('report', 'complete' if analysis['status'] == 'complete' and collection['status'] != 'failed' else 'partial',
                    summary=str(root / 'budget_summary.md'), completed_episodes=len(episodes),
                    elapsed_seconds=summary['elapsed_seconds'], collection_result=collection, analysis_result=analysis)
     print('\n'.join(lines), flush=True)
+    if collection['status'] == 'failed' or analysis['status'] == 'failed':
+        raise SystemExit(1)
 
 
 if __name__ == '__main__':

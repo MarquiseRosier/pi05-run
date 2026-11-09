@@ -283,6 +283,8 @@ def combine(observations):
 
 def collect(args, config, jobs):
     # Heavy imports only after --plan-only returns. Reuse the repository's hardened loader.
+    from pi05_monitor_runtime import validate_runtime
+    atomic_json(args.output_dir / 'runtime.json', validate_runtime(args.device.startswith('cuda')))
     import torch
     from probe_pi05_transcoder_counterfactual import build_harness, load_transcoders, sample_shared_noise
     from lerobot.envs.configs import LiberoEnv
@@ -319,7 +321,7 @@ def collect(args, config, jobs):
     _, postprocessor = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=args.policy_path,
         preprocessor_overrides={"device_processor": {"device": args.device},
                                 "rename_observations_processor": {"rename_map": {}}})
-    env_cfg = LiberoEnv(task="libero_spatial", task_ids=[namespace.task_id])
+    env_cfg = LiberoEnv(task="libero_spatial", task_ids=[namespace.task_id], fps=20)
     _, env_post = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy.config)
     base.vec_env.close()
     futures = []

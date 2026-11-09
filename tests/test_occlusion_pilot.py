@@ -187,3 +187,70 @@ def test_paired_monitor_difference_preserves_direction_and_pairing():
     assert result['harm_preceded_fraction']['difference'] == 1
     assert result['harm_preceded_fraction']['paired_group_bootstrap_95ci'] == [1, 1]
     assert result['false_stop_fraction']['difference'] is None
+
+
+def test_analysis_requires_completed_pairs_in_each_split(tmp_path):
+    from run_pi05_monitor_budget import analysis_readiness
+    from pi05_mi.occlusion_pilot import manifest, write_manifest
+    assert not analysis_readiness(tmp_path)[0]
+    config = PilotConfig(tasks=(0,), train_starts=1, calibration_starts=1, test_starts=1)
+    write_manifest(tmp_path, manifest(config))
+    assert not analysis_readiness(tmp_path)[0]
+    jobs = config.plan()
+    for job in jobs[:-1]:
+        folder = tmp_path / 'episodes' / job['episode_id']; folder.mkdir(parents=True)
+        (folder / 'episode.json').write_text('{}')
+        np.savez(folder / 'features.npz', state=np.zeros((1, 3)))
+    ready, reason = analysis_readiness(tmp_path)
+    assert not ready and 'test' in reason
+    folder = tmp_path / 'episodes' / jobs[-1]['episode_id']; folder.mkdir(parents=True)
+    (folder / 'episode.json').write_text('{}')
+    assert not analysis_readiness(tmp_path)[0]  # Completed marker alone is insufficient.
+    np.savez(folder / 'features.npz', state=np.zeros((1, 3)))
+    assert analysis_readiness(tmp_path) == (True, None)
+
+
+def test_failed_collection_skips_fit_preserves_error_and_rejects_stale_report(tmp_path, monkeypatch):
+    import run_pi05_monitor_budget as budget
+    calls = []
+    (tmp_path / 'old.md').write_text('STALE SUCCESS MUST NOT APPEAR')
+    (tmp_path / 'latest_future_harm.json').write_text(json.dumps({'report': str(tmp_path / 'old.md')}))
+    def failed_collection(command, log, seconds):
+        calls.append(command)
+        budget.RunJournal(tmp_path).update('collection', 'failed', error='ImportError: wrong LeRobot')
+        return dict(status='failed', exit_code=1)
+    monkeypatch.setattr(budget, 'run_phase', failed_collection)
+    monkeypatch.setattr(sys, 'argv', ['budget', '--output-dir', str(tmp_path), '--minutes', '3'])
+    with pytest.raises(SystemExit) as error:
+        budget.main()
+    assert error.value.code == 1
+    assert len(calls) == 1
+    result = json.loads((tmp_path / 'budget_summary.json').read_text())
+    assert result['analysis']['status'] == 'skipped'
+    text = (tmp_path / 'budget_summary.md').read_text()
+    assert 'ImportError: wrong LeRobot' in text
+    assert 'STALE SUCCESS' not in text
+    assert json.loads((tmp_path / 'run_state.json').read_text())['status'] == 'partial'
+
+
+def test_runtime_guard_explains_pin_before_importing_new_api(monkeypatch):
+    import importlib.metadata
+    from pi05_monitor_runtime import validate_runtime
+    monkeypatch.setattr(importlib.metadata, 'version', lambda _: '0.7.0')
+    with pytest.raises(RuntimeError, match='requires lerobot==0.4.4'):
+        validate_runtime()
+
+
+def test_notebook_runtime_pin_and_preservation():
+    from pi05_monitor_runtime import REQUIREMENT
+    notebook = json.loads((Path(__file__).resolve().parents[1] /
+                          'notebooks/pi05_occlusion_monitor_pilot.ipynb').read_text())
+    code = [''.join(c['source']) for c in notebook['cells'] if c['cell_type'] == 'code']
+    for source in code:
+        ast.parse(source)
+    install = next(s for s in code if s.startswith('# @title Install Pinned'))
+    assert REQUIREMENT in install
+    assert '"--clear"' not in install
+    assert "version('lerobot') == '0.4.4'" in install
+    clone = next(s for s in code if s.startswith('# @title Clone'))
+    assert 'pi05_monitor_runtime.py' in clone

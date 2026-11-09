@@ -355,7 +355,7 @@ def build_harness(args: argparse.Namespace, *, load_policy: bool = True) -> Harn
     from lerobot.policies.factory import make_policy, make_pre_post_processors
     from lerobot.scripts.lerobot_eval import preprocess_observation
 
-    env_cfg = LiberoEnv(task=args.suite, task_ids=[args.task_id])
+    env_cfg = LiberoEnv(task=args.suite, task_ids=[args.task_id], fps=20)
     print(f"building LIBERO env {args.suite} task {args.task_id}", flush=True)
     envs = make_env(env_cfg, n_envs=1, use_async_envs=False)
     vec_env = envs[args.suite][args.task_id]

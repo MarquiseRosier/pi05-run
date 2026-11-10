@@ -305,7 +305,9 @@ def collect(args, config, jobs):
     context = None
     matched = None
     if args.checkpoint:
-        tc = load_transcoders(args.checkpoint, torch.device(args.device))
+        # Probe mode leaves all original MLPs intact. Only selected dictionaries
+        # need GPU residency; the full training checkpoint is read on CPU.
+        tc = load_transcoders(args.checkpoint, torch.device(args.device), layers=config.layers)
         from pi05_mi.monitor_features import MatchedExpertTap
         targets = list_pi05_action_expert_mlp_targets(policy)
         missing = [t.name for t in targets if t.layer_index in config.layers and t.name not in tc]

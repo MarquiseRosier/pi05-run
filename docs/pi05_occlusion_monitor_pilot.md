@@ -4,7 +4,27 @@ This is new experimental infrastructure, **not a reproduction of the paper's mis
 The first question is whether a small logistic monitor predicts future harm on unseen starting scenes
 and an unseen occluder condition. Actual stopping / collision prevention is a subsequent experiment.
 
-## Run in Colab on the A100
+## Run in Colab on A100 or L4
+
+`REQUIRED_GPU="Auto"` accepts A100 or L4; the VRAM check is 22 GiB minimum to
+accommodate the memory reported by an L4. `INFERENCE_BATCH_SIZE=0` automatically
+uses batch 1 on L4 and batch 4 on A100. Explicit positive values override the batch.
+The large `a100` preset still describes the episode plan, independent of GPU type.
+L4 throughput and end-to-end memory fit require a real GPU smoke run; a 15-minute
+cap does not promise completed analysis. Changing the effective batch requires a new run folder.
+
+With matched comparison enabled, leave `CHECKPOINT` blank to use the checkpoint
+referenced across Ahmed's, Jayden's and Marquise's feature/sanity branches:
+
+```
+DRIVE_ROOT/transcoders/pi05_libero/allframes_80-10-10_epoch1_b8_exp16_latest_lambda1e-4/step_027233.pt
+```
+
+If that path is absent, discovery searches the Drive/local transcoder and checkpoint
+folders for the same filename. It rejects ambiguous fallback matches. An explicit
+path is respected and never silently substituted. The binary weights are not in Git.
+Only the selected three layer dictionaries are loaded to GPU; the full checkpoint is
+read on CPU. This preserves the original MLP outputs and selected-layer measurements.
 
 The collector uses `lerobot[libero]==0.4.4`. Later LeRobot versions changed both the
 LIBERO config class and simulator integration; importing `LiberoEnvConfig` under the
@@ -25,7 +45,8 @@ are preserved; the command changes Python packages, not cached model data:
 Use a new `RUN_NAME` after changing runtime/protocol; do not mix versions under an old
 manifest. Then rerun only collection/reporting in the already-prepared session. Open
 the latest notebook separately to pick up changed cells: git pull cannot replace cells
-already loaded in a browser. A blank checkpoint yields no transcoder comparison.
+already loaded in a browser. The updated notebook resolves a blank checkpoint when
+matched comparison is enabled; older notebook cells do not have this discovery step.
 
 When collection produces no complete paired groups for any required split, the runner
 skips fitting and reports the collection failure. It does not attach a previous report

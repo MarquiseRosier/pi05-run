@@ -256,7 +256,7 @@ def test_notebook_runtime_pin_and_preservation():
     assert 'pi05_monitor_runtime.py' in clone
 
 
-@pytest.mark.parametrize('mode', ['missing', 'empty', 'driver_error', 'fallback'])
+@pytest.mark.parametrize('mode', ['missing', 'empty', 'driver_error', 'fallback', 'l4', 't4'])
 def test_notebook_gpu_check_handles_unavailable_tools(monkeypatch, mode):
     import shutil
     from types import SimpleNamespace
@@ -270,16 +270,22 @@ def test_notebook_gpu_check_handles_unavailable_tools(monkeypatch, mode):
     calls = []
     def run(command, **kwargs):
         calls.append(command)
+        outputs = {'fallback': 'NVIDIA A100, 580, 81920\n', 'l4': 'NVIDIA L4, 580, 23034\n',
+                   't4': 'NVIDIA T4, 580, 15360\n'}
         return SimpleNamespace(returncode=1 if mode == 'driver_error' else 0, stderr='',
-                               stdout='NVIDIA A100, 580, 81920\n' if mode == 'fallback' else '')
-    scope = dict(Path=lambda _: SimpleNamespace(is_file=lambda: mode == 'fallback'),
+                               stdout=outputs.get(mode, ''))
+    scope = dict(Path=lambda _: SimpleNamespace(is_file=lambda: mode in ('fallback', 'l4', 't4')),
                  os=SimpleNamespace(access=lambda *_: True, X_OK=1),
-                 subprocess=SimpleNamespace(run=run), REQUIRED_GPU='A100',
-                 MIN_GPU_MEMORY_GB=35, MIN_SYSTEM_RAM_GB=24, parse_gib_from_meminfo=lambda: 168)
+                 subprocess=SimpleNamespace(run=run), REQUIRED_GPU='Auto',
+                 MIN_GPU_MEMORY_GB=22, MIN_SYSTEM_RAM_GB=24, parse_gib_from_meminfo=lambda: 168)
     exec(compile(ast.Module(body=[function], type_ignores=[]), '<gpu check>', 'exec'), scope)
-    if mode == 'fallback':
-        scope['validate_colab_runtime']()
+    if mode in ('fallback', 'l4'):
+        profile = scope['validate_colab_runtime']()
         assert calls[0][0] == '/usr/bin/nvidia-smi'
+        assert profile['batch_size'] == (1 if mode == 'l4' else 4)
+    elif mode == 't4':
+        with pytest.raises(RuntimeError, match='Auto mode supports'):
+            scope['validate_colab_runtime']()
     else:
         with pytest.raises(RuntimeError, match='Change runtime type'):
             scope['validate_colab_runtime']()

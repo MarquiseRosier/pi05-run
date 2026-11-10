@@ -55,3 +55,26 @@ def test_projection_is_reproducible_and_call_mismatch_fails():
         taps[0].arrays()
     for tap in taps:
         tap.close()
+
+
+def test_loader_limits_dictionary_residency_to_selected_layers(tmp_path):
+    import ast
+    import re
+    source = (Path(__file__).resolve().parents[1] / 'scripts/probe_pi05_transcoder_counterfactual.py').read_text()
+    function = next(n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef) and n.name == 'load_transcoders')
+    cfg = TimeConditionedTranscoderConfig(d_model=8, d_features=16)
+    from dataclasses import asdict
+    names = [f'paligemma_with_expert.gemma_expert.model.layers.{i}.mlp' for i in (0, 1)]
+    original = TimeConditionedTranscoder(cfg)
+    checkpoint = tmp_path / 'small.pt'
+    torch.save({'configs': {name: asdict(cfg) for name in names},
+                'state_dicts': {name: original.state_dict() for name in names}}, checkpoint)
+    scope = dict(torch=torch, re=re, Path=Path, TimeConditionedTranscoder=TimeConditionedTranscoder,
+                 TimeConditionedTranscoderConfig=TimeConditionedTranscoderConfig)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<loader>', 'exec'), scope)
+    loaded = scope['load_transcoders'](checkpoint, torch.device('cpu'), layers=(1,))
+    assert list(loaded) == [names[1]]
+    assert not loaded[names[1]].training
+    assert not any(p.requires_grad for p in loaded[names[1]].parameters())
+    torch.testing.assert_close(loaded[names[1]].encoder.weight, original.encoder.weight)
+    assert set(scope['load_transcoders'](checkpoint, torch.device('cpu'))) == set(names)

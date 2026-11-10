@@ -567,10 +567,14 @@ def observation_to_batch(harness: Harness, observation: dict[str, Any]) -> dict[
     return harness.preprocessor(batch)
 
 
-def load_transcoders(checkpoint_path: Path, device: torch.device) -> dict[str, TimeConditionedTranscoder]:
+def load_transcoders(checkpoint_path: Path, device: torch.device, *, layers=None) -> dict[str, TimeConditionedTranscoder]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     transcoders: dict[str, TimeConditionedTranscoder] = {}
     for name, raw_config in checkpoint["configs"].items():
+        if layers is not None:
+            match = re.search(r'\.layers\.(\d+)\.mlp$', name)
+            if match is None or int(match.group(1)) not in layers:
+                continue
         transcoder = TimeConditionedTranscoder(TimeConditionedTranscoderConfig(**raw_config))
         transcoder.load_state_dict(checkpoint["state_dicts"][name])
         transcoder.to(device=device, dtype=torch.float32).eval()

@@ -253,7 +253,7 @@ def test_notebook_runtime_pin_and_preservation():
     assert '"--clear"' not in install
     assert "version('lerobot') == '0.4.4'" in install
     clone = next(s for s in code if s.startswith('# @title Clone'))
-    assert 'pi05_monitor_runtime.py' in clone
+    assert 'from pi05_monitor_runtime import validate_runtime' in clone
 
 
 @pytest.mark.parametrize('mode', ['missing', 'empty', 'driver_error', 'fallback', 'l4', 't4'])

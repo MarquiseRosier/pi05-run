@@ -87,6 +87,44 @@ def test_recorder_targets_lerobot_pi05_by_default() -> None:
     assert getattr(modeling_pi05.PI05Policy.load_state_dict, "_pi05_mi_recorder", False)
 
 
+class _TiedPolicy(torch.nn.Module):
+    def __init__(self, tied=True):
+        super().__init__()
+        self.embed_tokens = torch.nn.Embedding(8, 4)
+        self.lm_head = torch.nn.Linear(4, 8, bias=False)
+        if tied:
+            self.lm_head.weight = self.embed_tokens.weight
+
+
+def test_safetensors_omitted_tied_embedding_loads_strictly():
+    install_load_recorder(_TiedPolicy)
+    model = _TiedPolicy()
+    tensor = torch.randn(8, 4)
+    state = {'lm_head.weight': tensor}
+    model.load_state_dict(state, strict=True)
+    report = assert_weights_loaded(model)
+    assert report['restored_tied_aliases'] == {'embed_tokens.weight': 'lm_head.weight'}
+    assert torch.equal(model.embed_tokens.weight, tensor)
+    assert model.embed_tokens.weight is model.lm_head.weight
+    assert list(state) == ['lm_head.weight']  # Do not mutate the caller's checkpoint.
+
+
+def test_same_shape_untied_embedding_is_still_refused():
+    install_load_recorder(_TiedPolicy)
+    model = _TiedPolicy(tied=False)
+    _raises(lambda: model.load_state_dict({'lm_head.weight': torch.randn(8, 4)}), 'embed_tokens.weight')
+    _raises(lambda: assert_weights_loaded(model), 'embed_tokens.weight')
+
+
+def test_failed_reload_cannot_reuse_successful_load_report():
+    install_load_recorder(_Policy)
+    model = _Policy()
+    model.load_state_dict(_Policy().state_dict())
+    assert_weights_loaded(model)
+    _raises(lambda: model.load_state_dict({}), 'Missing key')
+    _raises(lambda: assert_weights_loaded(model), 'checkpoint loading failed')
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

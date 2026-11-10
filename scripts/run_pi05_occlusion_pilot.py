@@ -27,7 +27,7 @@ def request_stop(*_):
     STOP_REQUESTED = True
 
 
-def arguments():
+def arguments(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--preset", choices=["smoke", "pilot", "a100"], default="pilot")
     p.add_argument("--output-dir", type=Path, required=True)
@@ -47,7 +47,7 @@ def arguments():
     p.add_argument("--image-stride", type=int, default=32)
     p.add_argument("--plan-only", action="store_true")
     p.add_argument("--wall-seconds", type=float, default=0, help="Collection wall-clock cap; 0 is unlimited")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 class FeatureTap:
@@ -299,6 +299,7 @@ def collect(args, config, jobs):
     journal = RunJournal(args.output_dir)
     journal.update('model_loading', pending_episodes=len(jobs))
     base = build_harness(namespace)
+    base.vec_env.close()  # Subsequent slots own their simulators; release this bootstrap env now.
     policy, preprocessor = base.policy, base.preprocessor
     policy.config.n_action_steps = config.action_steps
     tap = FeatureTap(policy, config)
@@ -325,7 +326,6 @@ def collect(args, config, jobs):
                                 "rename_observations_processor": {"rename_map": {}}})
     env_cfg = LiberoEnv(task="libero_spatial", task_ids=[namespace.task_id], fps=20)
     _, env_post = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy.config)
-    base.vec_env.close()
     futures = []
     with ThreadPoolExecutor(max_workers=4) as writer:
         for offset in range(0, len(jobs), config.batch_size):
@@ -417,11 +417,11 @@ def collect(args, config, jobs):
                     harness.vec_env.close()
 
 
-def main():
-    args = arguments()
+def main(argv=None):
+    global STOP_REQUESTED
+    STOP_REQUESTED = False
+    args = arguments(argv)
     args.deadline = time.monotonic() + args.wall_seconds if args.wall_seconds > 0 else float('inf')
-    signal.signal(signal.SIGTERM, request_stop)
-    signal.signal(signal.SIGINT, request_stop)
     if args.image_stride < 1:
         raise ValueError("image-stride must be positive")
     if args.comparison_width < 0:
@@ -480,4 +480,6 @@ def main():
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
     main()

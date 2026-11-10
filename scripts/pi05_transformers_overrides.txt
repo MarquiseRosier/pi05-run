@@ -1,0 +1,4 @@
+# LeRobot 0.4.4's PyPI wheel omits the pi extra and libero requests stock
+# Transformers >=4.57.1. Its PI05 implementation instead needs the 4.53.3
+# fix/lerobot_openpi fork. This override applies only to the monitor runtime.
+transformers @ git+https://github.com/huggingface/transformers.git@dcddb970176382c0fcf4521b0c0e6fc15894dfe0

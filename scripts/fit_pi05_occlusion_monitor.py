@@ -301,7 +301,7 @@ def evaluate(args):
     print('\n'.join(lines))
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--run-dir', type=Path, required=True)
     p.add_argument('--target', choices=['future_harm', 'bad_episode'], default='future_harm')
@@ -309,7 +309,7 @@ def main():
     p.add_argument('--false-stop-rate', type=float, default=.1)
     p.add_argument('--C', type=float, default=.1)
     p.add_argument('--allow-partial', action='store_true', help='Exploratory debugging only; missing runs may bias results')
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.future_steps < 1 or args.C <= 0 or not 0 <= args.false_stop_rate < 1:
         raise ValueError('Invalid horizon, regularization, or false-stop rate')
     evaluate(args)

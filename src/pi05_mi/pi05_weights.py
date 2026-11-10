@@ -14,9 +14,35 @@ missing keys is not the checkpoint.
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 LOAD_REPORT_ATTR = "_pi05_mi_load_report"
+
+
+def restore_tied_parameter_aliases(model, state_dict):
+    """Restore omitted safetensors keys only for parameters the model actually shares.
+
+    PaliGemma ties its token embedding to lm_head. Safetensors may save only
+    one name; nn.Module.load_state_dict(strict=True) still requires both.
+    Never invent a tensor or infer a tie from matching names or shapes.
+    """
+    groups = {}
+    for name, parameter in model.named_parameters(remove_duplicate=False):
+        groups.setdefault(id(parameter), []).append(name)
+    restored = {}
+    result = state_dict
+    for names in groups.values():
+        present = [name for name in names if name in state_dict]
+        if not present:
+            continue
+        for name in names:
+            if name not in state_dict:
+                if result is state_dict:
+                    result = copy.copy(state_dict)
+                result[name] = state_dict[present[0]]
+                restored[name] = present[0]
+    return result, restored
 
 
 def install_load_recorder(cls: type | None = None) -> None:
@@ -33,7 +59,14 @@ def install_load_recorder(cls: type | None = None) -> None:
         return
 
     def load_state_dict_recording(self, state_dict, strict: bool = True, assign: bool = False):
-        result = original(self, state_dict, strict=strict, assign=assign)
+        state_dict, restored = restore_tied_parameter_aliases(self, state_dict)
+        # Clear any previous successful report before a later load can fail.
+        setattr(self, LOAD_REPORT_ATTR, None)
+        try:
+            result = original(self, state_dict, strict=strict, assign=assign)
+        except Exception as exc:
+            setattr(self, LOAD_REPORT_ATTR, {'error': f'{type(exc).__name__}: {exc}'})
+            raise
         setattr(
             self,
             LOAD_REPORT_ATTR,
@@ -42,6 +75,7 @@ def install_load_recorder(cls: type | None = None) -> None:
                 "unexpected": list(getattr(result, "unexpected_keys", [])),
                 "provided": len(state_dict),
                 "strict": bool(strict),
+                "restored_tied_aliases": restored,
             },
         )
         return result
@@ -68,6 +102,11 @@ def assert_weights_loaded(policy: Any, *, source: str = "", max_listed: int = 5)
             f"Pi0.5 weights were never loaded{where}. LeRobot swallowed the failure and returned a "
             "randomly initialised model; look for 'Could not load state dict' in the log above. "
             "Refusing to run: every measurement would be about random weights."
+        )
+    if report.get('error'):
+        raise RuntimeError(
+            f"Pi0.5 checkpoint loading failed{where}:\n{report['error']}\n"
+            "Refusing to run with incomplete weights."
         )
     missing = report["missing"]
     if missing:

@@ -26,20 +26,38 @@ path is respected and never silently substituted. The binary weights are not in 
 Only the selected three layer dictionaries are loaded to GPU; the full checkpoint is
 read on CPU. This preserves the original MLP outputs and selected-layer measurements.
 
-The collector uses `lerobot[libero]==0.4.4`. Later LeRobot versions changed both the
+The collector uses `lerobot[libero]==0.4.4` with an explicit Transformers override in
+[`scripts/pi05_transformers_overrides.txt`](../scripts/pi05_transformers_overrides.txt).
+The published [PyPI 0.4.4 wheel](https://pypi.org/pypi/lerobot/0.4.4/json) omits the
+`pi` extra present in the GitHub source. Its `libero` extra requests stock Transformers
+>=4.57.1, but its Pi0.5 code requires the `fix/lerobot_openpi` fork (version 4.53.3).
+Adding `[pi]` or reinstalling stock Transformers does not fix that mismatch.
+The uv override selects fork commit `dcddb970176382c0fcf4521b0c0e6fc15894dfe0`
+while still resolving the fork's dependencies, including tokenizers.
+Later LeRobot versions changed both the
 LIBERO config class and simulator integration; importing `LiberoEnvConfig` under the
 old name is not sufficient for this collector's raw observations and simulator access.
-The notebook verifies the installed version, repairs an existing virtual environment
-without clearing it, and checks imports before restoring large caches. This pins LeRobot,
-not every transitive dependency; `runtime.json` records actual versions for each run.
+The notebook installs into `sys.executable`, the active notebook kernel, and runs
+collection and fitting directly in that kernel's main thread. It does not launch
+Python worker processes for either phase. Output is live in the cell and copied to
+phase logs; old logs are archived separately on reruns. Exceptions keep their original
+tracebacks. The kernel's interrupt handlers remain intact.
 
-If an older open notebook fails with `cannot import name 'LiberoEnv'`, update the pilot
-branch and run the following with its existing environment. Model caches/Drive outputs
-are preserved; the command changes Python packages, not cached model data:
+If setup replaces already-imported packages, restart the Colab session once and rerun
+from the top. The old `/content/lerobot-venv` is not used: Python 3.12 extension modules
+cannot be imported safely into a Python 3.13 notebook kernel. Cache/rendering variables
+are set before model-library imports. Setup and collection validate Pi0.5 compatibility
+in the actual kernel. LeRobot and the Transformers fork commit are pinned;
+`runtime.json` records the actual dependency versions.
+
+If an older open notebook fails with `cannot import name 'LiberoEnv'` or
+`An incorrect transformer version is used`, update the pilot
+branch and reopen the updated notebook. Run setup, restart the session if prompted,
+then run all cells. Model caches/Drive outputs are preserved. For a standalone CLI
+environment, the repair helper remains available:
 
 ```bash
-/content/lerobot-venv/bin/python /content/groot-run/scripts/pi05_monitor_runtime.py \
-  --repair --uv /content/uv-bin/uv --python /content/lerobot-venv/bin/python --require-cuda
+python scripts/pi05_monitor_runtime.py --repair --uv /content/uv-bin/uv --require-cuda
 ```
 
 Use a new `RUN_NAME` after changing runtime/protocol; do not mix versions under an old
@@ -49,8 +67,14 @@ already loaded in a browser. The updated notebook resolves a blank checkpoint wh
 matched comparison is enabled; older notebook cells do not have this discovery step.
 
 When collection produces no complete paired groups for any required split, the runner
-skips fitting and reports the collection failure. It does not attach a previous report
-as a new successful result. Full simulator/GPU validation must still occur on Colab.
+skips fitting. On exceptions, it records the failure in `run_state.json` and the phase
+log and raises the original exception directly; the cell does not display an old summary.
+Full simulator/GPU validation must still occur on Colab.
+
+The pretrained PaliGemma checkpoint stores its tied token-embedding tensor under
+`lm_head.weight`, omitting the duplicate `embed_tokens.weight` key. The loader restores
+missing aliases only for parameters that are actually shared in the instantiated model.
+Strict loading remains enabled; unrelated missing weights still stop the run.
 
 For the current matched linear-probe/transcoder experiment, see
 [the comparison protocol](pi05_matched_monitor_comparison.md). The notebook now defaults to
@@ -60,6 +84,9 @@ Set `REQUIRE_MATCHED_COMPARISON=False` only for an intentional dense-only legacy
 Open `notebooks/pi05_occlusion_monitor_pilot.ipynb` and run all. Setup installs/restores the existing
 LIBERO environment first. **The 15-minute budget starts after setup**, includes policy loading, and
 reserves about two minutes for analysis. Cold downloads/installations have no 15-minute guarantee.
+The deadline is cooperative: collection checks it between simulator/inference steps,
+and a model load, inference call, or fitting operation already in progress may overrun it.
+There is no background process to kill at the deadline.
 Batch size defaults to four. This is genuine batched policy inference with one policy resident on the GPU;
 simulator steps are serialized on CPU and image writes use four workers. It is not four separate GPU models.
 Measure peak GPU memory and batch latency before increasing batch size, especially with optional transcoders.

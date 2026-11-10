@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import re
 import sys
@@ -371,41 +372,48 @@ def build_harness(args: argparse.Namespace, *, load_policy: bool = True) -> Harn
         print("skipping policy load (discovery pass)", flush=True)
         return harness
 
-    print(f"loading policy {args.policy_path}", flush=True)
-    policy_cfg = PreTrainedConfig.from_pretrained(
-        args.policy_path,
-        cache_dir=os.environ.get("HF_HUB_CACHE"),
-        local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1",
-    )
-    policy_cfg.pretrained_path = Path(args.policy_path)
-    policy_cfg.device = args.device
-    policy_cfg.dtype = args.policy_dtype
-    policy_cfg.compile_model = False
-    policy_cfg.gradient_checkpointing = False
-    policy_cfg.n_action_steps = 10
+    try:
+        print(f"loading policy {args.policy_path}", flush=True)
+        policy_cfg = PreTrainedConfig.from_pretrained(
+            args.policy_path,
+            cache_dir=os.environ.get("HF_HUB_CACHE"),
+            local_files_only=os.environ.get("HF_HUB_OFFLINE") == "1",
+        )
+        policy_cfg.pretrained_path = Path(args.policy_path)
+        policy_cfg.device = args.device
+        policy_cfg.dtype = args.policy_dtype
+        policy_cfg.compile_model = False
+        policy_cfg.gradient_checkpointing = False
+        policy_cfg.n_action_steps = 10
 
-    # LeRobot swallows a failed state-dict load and hands back random weights;
-    # record what load_state_dict reported and refuse to measure on anything
-    # but a complete load.
-    install_load_recorder()
-    policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg, rename_map={})
-    assert_weights_loaded(policy, source=str(args.policy_path))
-    policy.eval()
-    for parameter in policy.parameters():
-        parameter.requires_grad_(False)
+        # LeRobot swallows a failed state-dict load and hands back random weights;
+        # record what load_state_dict reported and refuse to measure on anything
+        # but a complete load.
+        install_load_recorder()
+        policy = make_policy(cfg=policy_cfg, env_cfg=env_cfg, rename_map={})
+        assert_weights_loaded(policy, source=str(args.policy_path))
+        policy.eval()
+        for parameter in policy.parameters():
+            parameter.requires_grad_(False)
 
-    preprocessor, _ = make_pre_post_processors(
-        policy_cfg=policy_cfg,
-        pretrained_path=args.policy_path,
-        preprocessor_overrides={
-            "device_processor": {"device": str(policy.config.device)},
-            "rename_observations_processor": {"rename_map": {}},
-        },
-    )
-    harness.policy = policy
-    harness.preprocessor = preprocessor
-    harness.env_preprocessor, _ = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy_cfg)
-    return harness
+        preprocessor, _ = make_pre_post_processors(
+            policy_cfg=policy_cfg,
+            pretrained_path=args.policy_path,
+            preprocessor_overrides={
+                "device_processor": {"device": str(policy.config.device)},
+                "rename_observations_processor": {"rename_map": {}},
+            },
+        )
+        harness.policy = policy
+        harness.preprocessor = preprocessor
+        harness.env_preprocessor, _ = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy_cfg)
+        return harness
+    except BaseException:
+        try:
+            vec_env.close()
+        except Exception:
+            logging.exception('LIBERO cleanup failed after policy loading failed')
+        raise
 
 
 _INSTANCE_RE = re.compile(r"^(?P<base>.+?)_(?P<index>\d+)(?P<suffix>_.*)?$")

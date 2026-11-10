@@ -254,3 +254,34 @@ def test_notebook_runtime_pin_and_preservation():
     assert "version('lerobot') == '0.4.4'" in install
     clone = next(s for s in code if s.startswith('# @title Clone'))
     assert 'pi05_monitor_runtime.py' in clone
+
+
+@pytest.mark.parametrize('mode', ['missing', 'empty', 'driver_error', 'fallback'])
+def test_notebook_gpu_check_handles_unavailable_tools(monkeypatch, mode):
+    import shutil
+    from types import SimpleNamespace
+    notebook = json.loads((Path(__file__).resolve().parents[1] /
+                          'notebooks/pi05_occlusion_monitor_pilot.ipynb').read_text())
+    source = next(''.join(c['source']) for c in notebook['cells']
+                  if ''.join(c['source']).startswith('# @title Mount Drive'))
+    function = next(n for n in ast.parse(source).body
+                    if isinstance(n, ast.FunctionDef) and n.name == 'validate_colab_runtime')
+    monkeypatch.setattr(shutil, 'which', lambda _: '/mock/nvidia-smi' if mode in ('empty', 'driver_error') else None)
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1 if mode == 'driver_error' else 0, stderr='',
+                               stdout='NVIDIA A100, 580, 81920\n' if mode == 'fallback' else '')
+    scope = dict(Path=lambda _: SimpleNamespace(is_file=lambda: mode == 'fallback'),
+                 os=SimpleNamespace(access=lambda *_: True, X_OK=1),
+                 subprocess=SimpleNamespace(run=run), REQUIRED_GPU='A100',
+                 MIN_GPU_MEMORY_GB=35, MIN_SYSTEM_RAM_GB=24, parse_gib_from_meminfo=lambda: 168)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), '<gpu check>', 'exec'), scope)
+    if mode == 'fallback':
+        scope['validate_colab_runtime']()
+        assert calls[0][0] == '/usr/bin/nvidia-smi'
+    else:
+        with pytest.raises(RuntimeError, match='Change runtime type'):
+            scope['validate_colab_runtime']()
+        if mode == 'missing':
+            assert not calls

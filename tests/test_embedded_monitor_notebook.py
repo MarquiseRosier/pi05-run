@@ -31,6 +31,16 @@ def test_inline_target_resolver_uses_active_domain(kernel):
     assert kernel.target_bowl_spec.__code__.co_filename.startswith('<notebook cell')
 
 
+def test_inline_segmentation_decoder_uses_wide_arithmetic(kernel):
+    import numpy as np
+    from types import SimpleNamespace as NS
+    scene = NS(ngeom=256, geoms=[NS(segid=-1)] * 256)
+    scene.geoms[0] = NS(segid=255, objtype=5, objid=23)
+    decoded = kernel.decode_segmentation_rgb(np.array([[[0, 1, 0]]], np.uint8), scene)
+    assert decoded.tolist() == [[[5, 23]]]
+    assert kernel.install_segmentation_reader.__code__.co_filename.startswith('<notebook cell')
+
+
 @pytest.fixture
 def kernel(monkeypatch):
     module = ModuleType('_test_monitor_notebook')

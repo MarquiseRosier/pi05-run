@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
@@ -103,6 +103,44 @@ def descend_geoms(model, root):
                 break
             node = int(model.body_parentid[node])
     return {i for i in range(model.ngeom) if int(model.geom_bodyid[i]) in bodies}
+
+
+def decode_segmentation_rgb(rgb, scene):
+    """Decode MuJoCo's 24-bit IDs without uint8 arithmetic (NumPy 2 rejects 256)."""
+    rgb = np.asarray(rgb)
+    if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.uint8:
+        raise ValueError(f"Expected segmentation RGB buffer HxWx3 uint8; got {rgb.shape} {rgb.dtype}")
+    # Keep the native readPixels buffer uint8; widen only for ID arithmetic.
+    wide = rgb.astype(np.uint32)
+    encoded = wide[:, :, 0] + (wide[:, :, 1] << 8) + (wide[:, :, 2] << 16)
+    lookup = np.full((scene.ngeom + 1, 2), -1, dtype=np.int32)
+    for index in range(scene.ngeom):
+        geom = scene.geoms[index]
+        if geom.segid != -1:
+            lookup[geom.segid + 1] = (geom.objtype, geom.objid)
+    encoded[encoded >= len(lookup)] = 0
+    return lookup[encoded]
+
+
+def install_segmentation_reader(sim):
+    """Fix this renderer's NumPy-2-incompatible robosuite 1.4 segmentation decode."""
+    context = sim._render_context_offscreen
+    original = context.read_pixels
+    if getattr(original, '_pi05_safe_segmentation', False):
+        return
+
+    def read_pixels(self, width, height, depth=False, segmentation=False):
+        # Rendering has already selected RGB or segmentation colors. Read the
+        # bytes using robosuite, but bypass its overflowing uint8 decode.
+        result = original(width, height, depth=depth, segmentation=False)
+        if not segmentation:
+            return result
+        rgb = result[0] if depth else result
+        decoded = decode_segmentation_rgb(rgb, self.scn)
+        return (decoded, result[1]) if depth else decoded
+
+    read_pixels._pi05_safe_segmentation = True
+    context.read_pixels = MethodType(read_pixels, context)
 
 
 def resolve_bowl_instances(env, spec):
@@ -226,6 +264,7 @@ class Slot:
         self.inner.init_state_id = job["init_state_id"]
         self.observation, _ = self.inner.reset(seed=job["seed"])
         self.env = self.inner._env.env
+        install_segmentation_reader(self.env.sim)
         self.prompt = _infer_prompt(harness, self.observation)
         if not self.prompt:
             raise ValueError("Missing task instruction")

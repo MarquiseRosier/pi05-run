@@ -134,6 +134,10 @@ Initial-state hashes must match before analysis. Episode splits, not individual 
 
 ## What is collected
 
+- The notebook installs a renderer-local compatibility fix for robosuite 1.4 segmentation
+  with NumPy 2. Native pixel buffers stay `uint8`; 24-bit ID decoding widens to `uint32`,
+  then returns the usual signed `HxWx2` object-type/object-ID array. An error saying
+  `Python integer 256 out of bounds for uint8` concerns this arithmetic, not camera width.
 - Target identity comes from the active simulator's `bddl_file_name`, the BDDL placement goal,
   and LIBERO's object registry. LeRobot 0.4.4 does not store `_task_bddl_file` on its wrapper.
   Each episode's `target.json` records the BDDL hash, goal, exact target/distractor instances,
@@ -147,7 +151,7 @@ Initial-state hashes must match before analysis. Episode splits, not individual 
   their overlap is recorded rather than described as a target-only intervention.
 - Collection rejects an initial state with no visible target pixels in either camera. Later
   disappearance remains recorded as unknown visibility. No failed start is silently skipped.
-  This dataset schema requires a fresh run folder (default `matched-probes-bowls-001`).
+  This dataset schema requires a fresh run folder (default `matched-probes-bowls-002`).
 - Clean; target-following rectangle in both cameras; rectangle fixed at initial target position;
   equally sized rectangle avoiding target pixels; external-camera-only screen.
 - Rectangles are **flat RGB overlays**, not replicas of the paper's 3D render objects. Segmentation

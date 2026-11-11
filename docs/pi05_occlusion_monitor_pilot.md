@@ -42,6 +42,13 @@ collection and fitting directly in that kernel's main thread. It does not launch
 Python worker processes for either phase. Output is live in the cell and copied to
 phase logs; old logs are archived separately on reruns. Exceptions keep their original
 tracebacks. The kernel's interrupt handlers remain intact.
+The four **Pilot Definitions** cells contain the actual configuration/occlusion helpers,
+collector, fitter, and budget runner as Python source. The launch cell calls these
+definitions; it does not import `occlusion_pilot.py` or the collection/fitting/runner
+scripts from `/content/groot-run`. Model, simulator, and transcoder support libraries
+still come from the cloned repository. Run all four definition cells before collection.
+For repository maintenance, `python scripts/embed_pi05_monitor_notebook.py` refreshes
+these cells from the CLI implementations; it is never run by the notebook.
 The Colab installer explicitly targets system Python with `--system --break-system-packages`.
 External setup commands stream stdout/stderr into the cell and include their last
 100 output lines in any failure, so dependency/build errors survive the notebook traceback.
@@ -72,6 +79,10 @@ manifest. Then rerun only collection/reporting in the already-prepared session. 
 the latest notebook separately to pick up changed cells: git pull cannot replace cells
 already loaded in a browser. The updated notebook resolves a blank checkpoint when
 matched comparison is enabled; older notebook cells do not have this discovery step.
+In particular, moving an existing run from batch 4 to batch 1 requires a fresh name.
+The manifest error now lists changed fields (for example `config.batch_size: 4 -> 1`)
+and leaves the prior manifest intact. The notebook defaults to `matched-probes-notebook-001`
+to separate the embedded workflow from earlier script-based attempts.
 
 When collection produces no complete paired groups for any required split, the runner
 skips fitting. On exceptions, it records the failure in `run_state.json` and the phase

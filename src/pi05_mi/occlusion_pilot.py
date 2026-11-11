@@ -95,12 +95,33 @@ def manifest(config: PilotConfig):
             "timing": "fresh extra policy forward at each monitor tick; discard its actions unless replanning; simulator is paused during computation"}
 
 
+def manifest_changes(previous, current, prefix=''):
+    """Name changed settings without dumping the full episode plan."""
+    changes = []
+    for key in sorted(previous.keys() | current.keys()):
+        name = f'{prefix}.{key}' if prefix else key
+        old, new = previous.get(key, '<absent>'), current.get(key, '<absent>')
+        if key in previous and key in current and old == new:
+            continue
+        if isinstance(old, dict) and isinstance(new, dict):
+            changes.extend(manifest_changes(old, new, name))
+        else:
+            changes.append(f'{name}: {repr(old)[:100]} -> {repr(new)[:100]}')
+    return changes
+
+
 def write_manifest(root: Path, payload):
     root.mkdir(parents=True, exist_ok=True)
     dest = root / "manifest.json"
     encoded = json.dumps(payload, indent=2, sort_keys=True)
-    if dest.exists() and json.loads(dest.read_text()) != json.loads(encoded):
-        raise ValueError("Run configuration changed. Use a new output directory.")
+    if dest.exists():
+        changes = manifest_changes(json.loads(dest.read_text()), json.loads(encoded))
+        if changes:
+            raise ValueError(
+                'Run configuration changed: ' + '; '.join(changes[:8]) + '. '
+                'Set a new RUN_NAME (or --output-dir) and rerun collection. '
+                f'The existing run at {root} has been preserved.'
+            )
     dest.write_text(encoded + "\n")
 
 

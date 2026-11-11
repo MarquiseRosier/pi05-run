@@ -172,7 +172,8 @@ class RuntimeTests(unittest.TestCase):
              patch.object(subprocess, 'run', side_effect=AssertionError('no child Python')):
             scope = dict(RUN_NAME='test-run', REQUIRE_MATCHED_COMPARISON=False, CHECKPOINT='',
                          DRIVE_OUTPUTS=Path(folder), LOCAL_REPO=Path(folder), BUDGET_MINUTES=15,
-                         EFFECTIVE_BATCH_SIZE=4, PRESET='a100')
+                         EFFECTIVE_BATCH_SIZE=4, PRESET='a100', run_monitor=runner,
+                         NOTEBOOK_PILOT_VERSION='test-version')
             with self.assertRaises(ValueError) as raised:
                 exec(source, scope)
             self.assertIs(raised.exception, error)

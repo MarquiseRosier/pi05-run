@@ -42,6 +42,9 @@ collection and fitting directly in that kernel's main thread. It does not launch
 Python worker processes for either phase. Output is live in the cell and copied to
 phase logs; old logs are archived separately on reruns. Exceptions keep their original
 tracebacks. The kernel's interrupt handlers remain intact.
+The Colab installer explicitly targets system Python with `--system --break-system-packages`.
+External setup commands stream stdout/stderr into the cell and include their last
+100 output lines in any failure, so dependency/build errors survive the notebook traceback.
 
 If setup replaces already-imported packages, restart the Colab session once and rerun
 from the top. The old `/content/lerobot-venv` is not used: Python 3.12 extension modules

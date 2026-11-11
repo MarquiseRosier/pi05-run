@@ -2,6 +2,7 @@
 import ast
 import importlib.metadata
 import json
+import io
 from pathlib import Path
 import sys
 import subprocess
@@ -9,12 +10,54 @@ import tempfile
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from contextlib import redirect_stdout
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import pi05_monitor_runtime as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def setup_source(self):
+        notebook = json.loads((Path(__file__).resolve().parents[1] /
+                              'notebooks/pi05_occlusion_monitor_pilot.ipynb').read_text())
+        return next(''.join(c['source']) for c in notebook['cells']
+                    if ''.join(c.get('source', [])).startswith('# @title Install Pinned'))
+
+    def test_setup_streams_installer_error_and_keeps_it_in_exception(self):
+        tree = ast.parse(self.setup_source())
+        helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'run')
+        scope = {'subprocess': subprocess}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), '<setup>', 'exec'), scope)
+        output = io.StringIO()
+        process = Mock()
+        process.__enter__ = Mock(return_value=process)
+        process.__exit__ = Mock(return_value=False)
+        def lines():
+            yield 'Resolving packages\n'
+            self.assertIn('Resolving packages', output.getvalue())
+            yield 'error: failed to build dependency wheel\n'
+        process.stdout = lines()
+        process.wait.return_value = 1
+        with patch.object(subprocess, 'Popen', return_value=process) as popen, redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError, 'failed to build dependency wheel'):
+                scope['run'](['uv', 'pip', 'install', 'example'], env={'SETUP': '1'})
+        self.assertEqual(popen.call_args.kwargs['stderr'], subprocess.STDOUT)
+        self.assertEqual(popen.call_args.kwargs['env'], {'SETUP': '1'})
+        self.assertIn('error: failed to build dependency wheel', output.getvalue())
+
+    def test_setup_system_install_explicitly_targets_the_active_kernel(self):
+        source = self.setup_source()
+        tree = ast.parse(source)
+        command = next(n for n in ast.walk(tree) if isinstance(n, ast.List)
+                       and any(isinstance(v, ast.Constant) and v.value == '--torch-backend' for v in n.elts))
+        arguments = eval(compile(ast.Expression(command), '<install args>', 'eval'), {
+            'UV': '/content/uv-bin/uv', 'PYTHON': Path('/usr/bin/python3'),
+            'transformers_override': Path('/content/pi05-transformers-overrides.txt')})
+        self.assertEqual(arguments[arguments.index('--python') + 1], '/usr/bin/python3')
+        self.assertIn('--system', arguments)
+        self.assertIn('--break-system-packages', arguments)
+        self.assertIn('--overrides', arguments)
+
     def siglip(self, result=True):
         module = ModuleType('transformers.models.siglip')
         module.check = SimpleNamespace(

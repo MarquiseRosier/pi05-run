@@ -426,14 +426,9 @@ def read_objects_of_interest(harness: Harness) -> list[str]:
     probe can choose its target from the task itself rather than making the
     caller look them up.
     """
-    bddl_path = getattr(harness.inner_env, "_task_bddl_file", None)
-    if not bddl_path or not Path(bddl_path).exists():
-        return []
-    text = Path(bddl_path).read_text(errors="replace")
-    match = re.search(r"\(:obj_of_interest(.*?)\)", text, re.S)
-    if not match:
-        return []
-    return [token for token in match.group(1).split() if token]
+    from pi05_mi.occlusion_pilot import task_bddl_path, bddl_sections
+    path = task_bddl_path(harness.inner_env)
+    return bddl_sections(path.read_text())[":obj_of_interest"]
 
 
 def auto_select_targets(harness: Harness, mj_model: Any) -> tuple[str | None, str | None, list[str]]:
@@ -516,10 +511,8 @@ def find_prompt_referring_to(harness: Harness, placebo_body: str) -> tuple[str, 
     different regions, so some sibling task's target sits where our placebo
     sits, and that task's language is the prompt we need.
     """
-    bddl_path = getattr(harness.inner_env, "_task_bddl_file", None)
-    if not bddl_path or not Path(bddl_path).exists():
-        return None
-    here = Path(bddl_path)
+    from pi05_mi.occlusion_pilot import task_bddl_path
+    here = task_bddl_path(harness.inner_env)
     text = here.read_text(errors="replace")
     placebo_region = _init_region_of(text, placebo_body)
     if not placebo_region:

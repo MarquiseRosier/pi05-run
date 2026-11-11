@@ -134,6 +134,20 @@ Initial-state hashes must match before analysis. Episode splits, not individual 
 
 ## What is collected
 
+- Target identity comes from the active simulator's `bddl_file_name`, the BDDL placement goal,
+  and LIBERO's object registry. LeRobot 0.4.4 does not store `_task_bddl_file` on its wrapper.
+  Each episode's `target.json` records the BDDL hash, goal, exact target/distractor instances,
+  body IDs and disjoint geometry IDs. Ambiguous or unmapped instances fail explicitly.
+- Every saved camera frame has an accompanying `*_bowl_masks.npz` with separate boolean
+  `<instance>__before` and `<instance>__after` masks, aligned to RGB before/after the overlay,
+  plus a transparent `*_target.png` cutout of the original target pixels. Per-instance pixel
+  counts and overlay overlap are recorded at every monitor observation. These are audit
+  annotations, never inputs to the fitted probes. Instance separation does not guarantee that
+  harm labels are statistically separable. Rectangular overlays can also hide distractor pixels;
+  their overlap is recorded rather than described as a target-only intervention.
+- Collection rejects an initial state with no visible target pixels in either camera. Later
+  disappearance remains recorded as unknown visibility. No failed start is silently skipped.
+  This dataset schema requires a fresh run folder (default `matched-probes-bowls-001`).
 - Clean; target-following rectangle in both cameras; rectangle fixed at initial target position;
   equally sized rectangle avoiding target pixels; external-camera-only screen.
 - Rectangles are **flat RGB overlays**, not replicas of the paper's 3D render objects. Segmentation

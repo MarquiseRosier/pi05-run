@@ -17,7 +17,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 from pi05_mi.occlusion_pilot import (PilotConfig, ImageOccluder, manifest, write_manifest,
-                                    stable_indices, low_resolution_rgb, RunJournal, atomic_json)
+                                    stable_indices, low_resolution_rgb, RunJournal, atomic_json,
+                                    target_bowl_spec)
 
 STOP_REQUESTED = False
 
@@ -104,9 +105,46 @@ def descend_geoms(model, root):
     return {i for i in range(model.ngeom) if int(model.geom_bodyid[i]) in bodies}
 
 
+def resolve_bowl_instances(env, spec):
+    """Map exact BDDL instance names through LIBERO's object registry to geom IDs."""
+    import mujoco
+    model = env.sim.model._model
+    instances, used = {}, set()
+    for name in [spec['target_instance'], *spec['distractor_instances']]:
+        obj = env.objects_dict.get(name)
+        body_name = getattr(obj, 'root_body', None)
+        body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name) if body_name else -1
+        if body < 0:
+            raise RuntimeError(f"BDDL bowl {name} has no registered simulator body: {body_name}")
+        geoms = descend_geoms(model, body)
+        if not geoms or used.intersection(geoms):
+            raise RuntimeError(f"Bowl instances must have nonempty, disjoint geometry: {name}")
+        used.update(geoms)
+        instances[name] = dict(body_name=body_name, body_id=int(body), geom_ids=sorted(geoms))
+    return instances
+
+
+def bowl_masks(segmentation, instances, target, rectangle, geom_type):
+    """Separate each visible instance before/after the image overlay."""
+    geom_pixels = segmentation[:, :, 0] == geom_type
+    covered = np.zeros(geom_pixels.shape, dtype=bool)
+    if rectangle is not None:
+        y0, y1, x0, x1 = rectangle
+        covered[y0:y1, x0:x1] = True
+    masks, counts = {}, {}
+    for name, instance in instances.items():
+        before = geom_pixels & np.isin(segmentation[:, :, 1], instance['geom_ids'])
+        after = before & ~covered
+        masks[name + '__before'] = before
+        masks[name + '__after'] = after
+        counts[name] = dict(pixels_before=int(before.sum()), pixels_after=int(after.sum()),
+                            overlay_overlap_pixels=int((before & covered).sum()), is_target=name == target)
+    return masks, counts
+
+
 class PhysicsRecorder:
     """Sample forces at every physics substep, not only at 20-Hz observations."""
-    def __init__(self, env, target_name, config):
+    def __init__(self, env, target_name, config, distractor_bodies):
         import mujoco
         self.mj, self.env, self.sim, self.config = mujoco, env, env.sim, config
         self.model = self.sim.model._model
@@ -132,10 +170,10 @@ class PhysicsRecorder:
             geoms = descend_geoms(self.model, body)
             if not (geoms & self.target_geoms):
                 self.movable |= geoms
-                name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body) or ""
-                if "bowl" in name.lower():
+                if body in distractor_bodies:
                     self.wrong_bowls.append(body)
-        if not self.robot or not self.movable or not self.wrong_bowls:
+        if (not self.robot or not self.movable or not self.wrong_bowls
+                or set(self.wrong_bowls) != set(distractor_bodies)):
             raise RuntimeError("Could not identify robot, movable objects, and distractor bowls")
         self.initial_z = {b: float(self.data.xpos[b, 2]) for b in self.wrong_bowls}
         self.peak = 0.0
@@ -166,16 +204,18 @@ class PhysicsRecorder:
         self.sim.step = self.original_step
 
 
-def write_images(path, images):
+def write_images(path, images, audits):
     from PIL import Image
     for name, frame in images.items():
         Image.fromarray(frame).save(path / f"{name}.jpg", quality=90)
+        masks, target_rgba = audits[name]
+        np.savez_compressed(path / f"{name}_bowl_masks.npz", **masks)
+        Image.fromarray(target_rgba).save(path / f"{name}_target.png")
 
 
 class Slot:
     def __init__(self, job, harness, config, root):
-        from probe_pi05_transcoder_counterfactual import read_objects_of_interest, _infer_prompt
-        from pi05_mi.scene_perturbation import find_objects, resolve_mj_model
+        from probe_pi05_transcoder_counterfactual import _infer_prompt
         self.job, self.harness, self.config = job, harness, config
         self.inner = harness.inner_env
         # Seed alone does not select LIBERO's precomputed initial state. Set its index explicitly.
@@ -189,18 +229,19 @@ class Slot:
         self.prompt = _infer_prompt(harness, self.observation)
         if not self.prompt:
             raise ValueError("Missing task instruction")
-        model = resolve_mj_model(self.env)
-        candidates = [n for n in read_objects_of_interest(harness) if "bowl" in n.lower()]
-        if len(candidates) != 1:
-            raise RuntimeError(f"Cannot unambiguously infer target bowl from BDDL: {candidates}")
-        import re
-        objects = find_objects(model, "^" + re.escape(candidates[0]) + r"(_|$)")
-        if len(objects) != 1:
-            raise RuntimeError("Target bowl must resolve to exactly one body")
-        self.physics = PhysicsRecorder(self.env, objects[0].body_name, config)
-        self.occluder = ImageOccluder(job["condition"])
+        self.target_spec = target_bowl_spec(self.inner)
+        self.target_instance = self.target_spec['target_instance']
+        self.instances = resolve_bowl_instances(self.env, self.target_spec)
+        self.target_spec['instances'] = self.instances
         self.path = root / "episodes" / job["episode_id"]
         self.path.mkdir(parents=True, exist_ok=True)
+        atomic_json(self.path / 'target.json', self.target_spec)
+        print(f"{job['episode_id']}: target={self.target_instance}; "
+              f"distractors={self.target_spec['distractor_instances']}; "
+              f"BDDL={self.target_spec['bddl_path']}", flush=True)
+        self.physics = PhysicsRecorder(self.env, self.instances[self.target_instance]['body_name'], config,
+            [self.instances[name]['body_id'] for name in self.target_spec['distractor_instances']])
+        self.occluder = ImageOccluder(job["condition"])
         self.rows, self.events, self.features = [], [], {}
         self.last_action = np.zeros(7, np.float32)
         self.last_eef = None
@@ -218,7 +259,7 @@ class Slot:
         raw = self.env._get_observations(force_update=True)
         obs = self.inner._format_raw_obs(raw)
         before = self.env.sim.get_state().flatten().copy()
-        images, visibility = {}, {}
+        images, visibility, audits = {}, {}, {}
         for camera, name in self.inner.camera_name_mapping.items():
             rgb = obs["pixels"][name]
             seg = self.env.sim.render(camera_name=camera.removesuffix("_image"),
@@ -227,6 +268,16 @@ class Slot:
             mask = ((seg[:, :, 0] == int(self.physics.mj.mjtObj.mjOBJ_GEOM)) &
                     np.isin(seg[:, :, 1], list(self.physics.target_geoms)))
             images[name], visibility[name] = self.occluder.apply(name, rgb, mask)
+            masks, counts = bowl_masks(seg, self.instances, self.target_instance,
+                                      visibility[name]['rectangle'], int(self.physics.mj.mjtObj.mjOBJ_GEOM))
+            visibility[name]['instances'] = counts
+            rgba = np.zeros((*mask.shape, 4), dtype=np.uint8)
+            rgba[mask, :3] = rgb[mask]
+            rgba[mask, 3] = 255
+            audits[name] = (masks, rgba)
+        if self.steps == 0 and not any(v['target_pixels_before'] for v in visibility.values()):
+            raise RuntimeError(f"Target bowl {self.target_instance} has no visible pixels in any initial "
+                               "camera; inspect target.json and the initial state before collecting")
         if not np.array_equal(before, self.env.sim.get_state().flatten()):
             raise RuntimeError("Rendering changed physics state")
         obs["pixels"] = images
@@ -234,7 +285,7 @@ class Slot:
         state = np.concatenate([np.asarray(raw[k]).reshape(-1) for k in
                                 ("robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos",
                                  "robot0_joint_vel")] + [self.last_action]).astype(np.float32)
-        return _add_batch_axis(obs), images, visibility, state
+        return _add_batch_axis(obs), images, visibility, state, audits
 
     def advance(self, action):
         _, _, terminated, truncated, info = self.inner.step(action)
@@ -260,6 +311,7 @@ class Slot:
     def save(self):
         first = next((e["step"] for e in self.events if e["harm"]), None)
         payload = {**self.job, "success": self.success, "steps": self.steps,
+                   "target": self.target_spec,
                    "first_harm_step": first, "prompt": self.prompt,
                    "initial_state_sha256": hashlib.sha256(self.initial_state.tobytes()).hexdigest(),
                    "control_freq": float(self.env.control_freq), "observations": self.rows,
@@ -371,7 +423,7 @@ def collect(args, config, jobs):
                             if not slot.queue:
                                 slot.queue = [a for a in actions[i, :config.action_steps].unbind(0)]
                             if monitor_tick:
-                                _, images, visibility, state = samples[i]
+                                _, images, visibility, state, audits = samples[i]
                                 slot.rows.append({"step": step, "visibility": visibility,
                                                   "inference_batch_size": len(inference),
                                                   "inference_batch_seconds": elapsed})
@@ -381,7 +433,7 @@ def collect(args, config, jobs):
                                 if step % args.image_stride == 0:
                                     path = slot.path / "images" / f"{step:04d}"
                                     path.mkdir(parents=True, exist_ok=True)
-                                    futures.append(writer.submit(write_images, path, images))
+                                    futures.append(writer.submit(write_images, path, images, audits))
                                 slot.save_partial()
                         (args.output_dir / "feature_schema.json").write_text(json.dumps(tap.schema, indent=2))
                         if matched:

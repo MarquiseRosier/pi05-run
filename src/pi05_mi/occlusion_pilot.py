@@ -9,12 +9,99 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 
 import numpy as np
 
 CONDITIONS = ("clean", "miss_box", "box", "static_box", "screen")
+
+
+def task_bddl_path(inner):
+    """Use the active LIBERO domain, not a nonexistent LeRobot private field."""
+    wrapper = getattr(inner, "_env", None)
+    domain = getattr(wrapper, "env", None)
+    for owner, attribute in ((domain, "bddl_file_name"), (wrapper, "bddl_file_name"),
+                             (inner, "_task_bddl_file")):
+        value = getattr(owner, attribute, None)
+        if value:
+            path = Path(value)
+            if not path.is_file():
+                raise FileNotFoundError(f"Active LIBERO task BDDL is missing: {path}")
+            return path
+    raise RuntimeError("Active LIBERO environment exposes no task BDDL path; "
+                       "expected inner._env.env.bddl_file_name")
+
+
+def bddl_sections(text):
+    """Read balanced BDDL forms, including nested goals; ignore line comments."""
+    stack, roots = [], []
+    for token in re.findall(r"\(|\)|[^\s()]+", re.sub(r";[^\n]*", "", text)):
+        if token == "(":
+            form = []
+            (stack[-1] if stack else roots).append(form)
+            stack.append(form)
+        elif token == ")":
+            if not stack:
+                raise ValueError("Unbalanced BDDL parentheses")
+            stack.pop()
+        elif stack:
+            stack[-1].append(token)
+        else:
+            raise ValueError("Unexpected BDDL token outside a form")
+    if stack or len(roots) != 1 or not roots[0] or roots[0][0] != "define":
+        raise ValueError("Expected one balanced BDDL define form")
+    sections = {}
+    for form in roots[0][1:]:
+        if isinstance(form, list) and form and str(form[0]).startswith(":"):
+            if form[0] in sections:
+                raise ValueError(f"Duplicate BDDL section: {form[0]}")
+            sections[form[0]] = form[1:]
+    return sections
+
+
+def target_bowl_spec(inner):
+    """Resolve the moved bowl from the goal, never from object enumeration order."""
+    path = task_bddl_path(inner)
+    contents = path.read_bytes()
+    sections = bddl_sections(contents.decode())
+    objects, pending = {}, []
+    tokens = iter(sections.get(":objects", []))
+    for token in tokens:
+        if token == "-":
+            kind = next(tokens, None)
+            if not pending or not isinstance(kind, str):
+                raise ValueError(f"Invalid typed objects in {path}")
+            objects.update(dict.fromkeys(pending, kind))
+            pending = []
+        else:
+            pending.append(token)
+    if pending:
+        raise ValueError(f"Untyped BDDL objects in {path}: {pending}")
+    goals = sections.get(":goal", [])
+    def placements(form):
+        if not isinstance(form, list) or not form:
+            raise ValueError(f"Invalid bowl placement goal in {path}: {form}")
+        if str(form[0]).lower() == "and":
+            return [item for child in form[1:] for item in placements(child)]
+        if len(form) == 3 and str(form[0]).lower() in ("on", "in"):
+            return [form[1]]
+        raise ValueError(f"Unsupported bowl placement goal in {path}: {form}")
+    subjects = {name for goal in goals for name in placements(goal)}
+    bowls = sorted(name for name, kind in objects.items() if "bowl" in kind.lower())
+    candidates = sorted(subjects.intersection(bowls))
+    interest = sections.get(":obj_of_interest", [])
+    if len(candidates) != 1 or candidates[0] not in interest:
+        raise RuntimeError(f"Cannot resolve one goal bowl in {path}: "
+                           f"goal_bowls={candidates}, obj_of_interest={interest}")
+    target = candidates[0]
+    distractors = [name for name in bowls if name != target]
+    if not distractors:
+        raise RuntimeError(f"No separately identified distractor bowl in {path}")
+    return dict(bddl_path=str(path), bddl_sha256=hashlib.sha256(contents).hexdigest(),
+                goal=goals, objects_of_interest=interest, target_instance=target,
+                distractor_instances=distractors, object_types=objects)
 
 
 def atomic_json(path, payload):
@@ -88,7 +175,8 @@ class PilotConfig:
 
 
 def manifest(config: PilotConfig):
-    return {"schema_version": 1, "config": asdict(config), "episodes": config.plan(),
+    return {"schema_version": 2, "config": asdict(config), "episodes": config.plan(),
+            "target_identification": "BDDL goal subject + object registry; disjoint target/distractor instance masks",
             "occluder": "render-only flat RGB rectangle, not a reconstructed 3D box",
             "harm_definition": "peak single robot/non-target movable-object contact force > threshold OR non-target bowl lift > threshold; drops NOT labeled",
             "feature_scope": "dense PaliGemma MLP outputs; optional action-expert transcoder activations (different from paper)",

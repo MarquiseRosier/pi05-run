@@ -21,6 +21,16 @@ def test_embedded_cells_match_maintained_implementations():
     assert [c for c in notebook_cells() if c.get('id') in ids] == embedded_cells()
 
 
+def test_inline_target_resolver_uses_active_domain(kernel):
+    from types import SimpleNamespace
+    paths = sorted((ROOT / 'tests/fixtures/libero_spatial').glob('*.bddl'))
+    assert len(paths) == 10
+    for path in paths:
+        inner = SimpleNamespace(_env=SimpleNamespace(env=SimpleNamespace(bddl_file_name=str(path))))
+        assert kernel.target_bowl_spec(inner)['target_instance'] == 'akita_black_bowl_1'
+    assert kernel.target_bowl_spec.__code__.co_filename.startswith('<notebook cell')
+
+
 @pytest.fixture
 def kernel(monkeypatch):
     module = ModuleType('_test_monitor_notebook')

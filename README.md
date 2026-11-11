@@ -30,6 +30,10 @@ then measures actual gripper movement on held-out tasks with matched interventio
 zero/random controls and ablations. The notebook contains the protocol and executable definitions;
 experiment work runs in the kernel. `STUDY_SIZE="smoke"` checks infrastructure; the full default
 has 71 starting states and approximately 574 single-chunk trials, with per-trial resume.
+Each trial now uses a fresh simulator, seeded before construction, while keeping policy weights
+loaded. Exact initial states and camera pixels are checked before inference; differences are saved
+in `reset_diagnostics.json`. Use the new default `RUN_NAME="matched-steering-reset-002"` for
+this reset protocol; older run folders remain intact.
 The default held-out case list is committed in [`configs/pi05_matched_steering_test_set.json`](configs/pi05_matched_steering_test_set.json).
 Outputs live under `outputs/matched-steering/<RUN_NAME>/`; `report.json` includes the paired
 sparse-minus-dense score and task-bootstrap interval. This is a new experiment, not a measured

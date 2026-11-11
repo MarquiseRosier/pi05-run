@@ -165,17 +165,22 @@ def test_complete_experiment_freezes_before_test_and_resumes(tmp_path,monkeypatc
         def __init__(self,*args):pass
         def set_case(self,case):
             if case['split']=='test': assert (root/'frozen_selection.json').exists()
-        def trial(self,case,recipient_sign,*,spec=None,capture=False):
+        def trial(self,case,recipient_sign,*,spec=None,capture=False,start_validator=None):
+            import hashlib
+            state=np.array([case['task_id'],case['init_state_id']],dtype=np.float64)
+            images={'image':np.zeros((4,4,3),np.uint8)}
+            if start_validator:start_validator(state,images)
             calls.append((case['case_id'],recipient_sign,spec is not None))
             endpoint=.3*recipient_sign
             if spec and spec['mode']!='zero': endpoint+=spec['sign']*(.1 if spec['family']=='dense' else .2)*spec['budget']/.1
-            result=dict(**case,initial_state_sha256=case['case_id'],initial_images_sha256=case['case_id'],
+            result=dict(**case,initial_state_sha256=hashlib.sha256(state.tobytes()).hexdigest(),
+                        initial_images_sha256=hashlib.sha256(images['image'].tobytes()).hexdigest(),
                         final_preference=endpoint,initial_preference=0.,eef_displacement_m=[endpoint,0,0],
                         executed_actions=[[endpoint]*7],trajectory_xyz=[[0,0,0],[endpoint,0,0]],
                         harm=False,steps=1,intervention_norms=[{'mean_relative_rms':spec['budget'] if spec else 0.}])
             arrays={'dense_0':np.array([recipient_sign,case['init_state_id']*.01,1.,2.]),
                     'sparse_0':2+recipient_sign*np.linspace(-.9,.9,20)+case['init_state_id']*.01}
-            return result,arrays,{'image':np.zeros((4,4,3),np.uint8)}
+            return result,arrays,images
         def close(self):pass
     monkeypatch.setattr(runner,'SteeringRuntime',FakeRuntime)
     monkeypatch.setattr(pi05_monitor_runtime,'validate_runtime',lambda **kwargs:{'status':'fixture'})

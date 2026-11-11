@@ -7,6 +7,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import os
+import random
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -66,6 +67,65 @@ def step_without_autoreset(inner, action):
     return raw, bool(done), bool(inner._env.check_success()), info
 
 
+def verify_trial_start(folder, state, images):
+    """Check the saved physical state and initial pixels BEFORE any policy inference."""
+    folder = Path(folder)
+    state = np.asarray(state)
+    state_hash = hashlib.sha256(state.tobytes()).hexdigest()
+    image_hash = hashlib.sha256(b''.join(np.asarray(images[k]).tobytes() for k in sorted(images))).hexdigest()
+    previous = [json.loads(p.read_text()) for p in folder.glob('*.json')
+                if p.name not in ('reset_diagnostics.json',)]
+    expected_states = {p['initial_state_sha256'] for p in previous}
+    expected_images = {p['initial_images_sha256'] for p in previous}
+    reference = folder / 'initial_state.npy'
+    reference_images = folder / 'initial_images.npz'
+    state_layout_changed = False
+    diagnostics = dict(actual_state_sha256=state_hash, expected_state_sha256=sorted(expected_states),
+                       actual_images_sha256=image_hash, expected_images_sha256=sorted(expected_images))
+    if reference.exists():
+        saved = np.load(reference, allow_pickle=False)
+        expected_states.add(hashlib.sha256(saved.tobytes()).hexdigest())
+        state_layout_changed = saved.shape != state.shape or saved.dtype != state.dtype
+        diagnostics.update(reference_shape=list(saved.shape), actual_shape=list(state.shape))
+        if saved.shape == state.shape:
+            difference = np.abs(saved - state)
+            diagnostics.update(max_absolute_difference=float(difference.max(initial=0)),
+                               different_entries=int(np.count_nonzero(saved != state)),
+                               time_difference=float(state[0] - saved[0]))
+    if reference_images.exists():
+        with np.load(reference_images, allow_pickle=False) as saved_images:
+            expected_images.add(hashlib.sha256(b''.join(saved_images[k].tobytes()
+                                for k in sorted(saved_images.files))).hexdigest())
+            diagnostics['image_differences'] = {}
+            for name in sorted(set(saved_images.files) | set(images)):
+                if (name not in saved_images or name not in images
+                        or saved_images[name].shape != np.asarray(images[name]).shape
+                        or saved_images[name].dtype != np.asarray(images[name]).dtype):
+                    diagnostics['image_differences'][name] = 'camera missing or shape changed'
+                else:
+                    diagnostics['image_differences'][name] = int(np.count_nonzero(saved_images[name] != images[name]))
+    diagnostics.update(expected_state_sha256=sorted(expected_states), expected_images_sha256=sorted(expected_images))
+    failed_state = state_layout_changed or bool(expected_states and expected_states != {state_hash})
+    failed_images = bool(expected_images and expected_images != {image_hash}) or any(
+        v != 0 for v in diagnostics.get('image_differences', {}).values())
+    if failed_state or failed_images:
+        np.save(folder / 'reset_drift_state.npy', state)
+        atomic_json(folder / 'reset_diagnostics.json', diagnostics)
+        raise RuntimeError(f"{'Reset drift' if failed_state else 'Initial images changed'} for {folder.name} "
+                           f"before inference. See {folder / 'reset_diagnostics.json'}; no unmatched trial was run.")
+    if not reference.exists():
+        tmp = folder / 'initial_state.tmp'
+        with tmp.open('wb') as stream:
+            np.save(stream, state, allow_pickle=False)
+        tmp.replace(reference)
+    if not reference_images.exists():
+        tmp = folder / 'initial_images.tmp'
+        with tmp.open('wb') as stream:
+            np.savez_compressed(stream, **images)
+        tmp.replace(reference_images)
+    return state_hash, image_hash
+
+
 class SteeringRuntime:
     def __init__(self, config, checkpoint, policy_path, device):
         import torch
@@ -92,34 +152,51 @@ class SteeringRuntime:
             _, self.post = make_pre_post_processors(policy_cfg=self.policy.config, pretrained_path=policy_path)
             _, self.env_post = make_env_pre_post_processors(
                 env_cfg=LiberoEnv(task='libero_spatial', task_ids=[self.args.task_id], fps=20), policy_cfg=self.policy.config)
+            # Keep the policy/processors, but never carry a simulator between trials.
+            self.base.vec_env.close()
+            self.harness = None
         except BaseException:
             self.base.vec_env.close()
             raise
 
     def set_case(self, case):
-        from probe_pi05_transcoder_counterfactual import build_harness
-        if self.args.task_id != case['task_id']:
-            self.harness.vec_env.close()
-            self.args.task_id = case['task_id']
-            self.harness = build_harness(self.args, load_policy=False)
-        inner = self.harness.inner_env
-        if inner._init_states is None or case['init_state_id'] >= len(inner._init_states):
-            raise ValueError('Requested initial state is unavailable; no modulo wrapping allowed')
-        self.prompts, self.target_spec, self.prompt_sources = contrast_prompts(inner)
+        self.current_case = dict(case)
 
-    def trial(self, case, recipient_sign, *, spec=None, capture=False):
+    def prepare_trial(self, case):
+        """Construct and seed the simulator anew; loaded policy weights are reused."""
+        from probe_pi05_transcoder_counterfactual import build_harness
+        if self.harness is not None:
+            self.harness.vec_env.close()
+            self.harness = None
+        # Seed construction too: build_harness creates and resets a LIBERO env
+        # before its first explicit reset(seed=...). Reuse could retain solver,
+        # controller, gripper, or observable state not in LIBERO's qpos/qvel file.
+        random.seed(case['seed'])
+        np.random.seed(case['seed'])
+        self.args.task_id = case['task_id']
+        self.harness = build_harness(self.args, load_policy=False)
+        inner = self.harness.inner_env
+        if inner._init_states is None or not 0 <= case['init_state_id'] < len(inner._init_states):
+            raise ValueError('Requested initial state is unavailable; no modulo wrapping allowed')
+        inner.init_state_id = case['init_state_id']
+        observation, _ = inner.reset(seed=case['seed'])
+        self.prompts, self.target_spec, self.prompt_sources = contrast_prompts(inner)
+        return observation
+
+    def trial(self, case, recipient_sign, *, spec=None, capture=False, start_validator=None):
         import mujoco
         import torch
         from probe_pi05_transcoder_counterfactual import _add_batch_axis, sample_shared_noise
         from run_pi05_occlusion_pilot import PhysicsRecorder
+        observation = self.prepare_trial(case)
         inner = self.harness.inner_env
-        inner.init_state_id = case['init_state_id']
-        observation, _ = inner.reset(seed=case['seed'])
         env = inner._env.env
         state = env.sim.get_state().flatten().copy()
         initial_hash = hashlib.sha256(state.tobytes()).hexdigest()
         image_hash = hashlib.sha256(b''.join(np.asarray(observation['pixels'][k]).tobytes()
                                     for k in sorted(observation['pixels']))).hexdigest()
+        if start_validator is not None:
+            start_validator(state, observation['pixels'])
         target = self.target_spec['target_instance']; other = self.target_spec['distractor_instances'][0]
         model = env.sim.model._model
         bodies = {name: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, env.objects_dict[name].root_body)
@@ -182,7 +259,9 @@ class SteeringRuntime:
 
     def close(self):
         self.hooks.close()
-        self.harness.vec_env.close()
+        if self.harness is not None:
+            self.harness.vec_env.close()
+            self.harness = None
 
 
 def saved_trial(runtime, root, case, recipient_sign, trial_id, *, spec=None, capture=False):
@@ -198,11 +277,14 @@ def saved_trial(runtime, root, case, recipient_sign, trial_id, *, spec=None, cap
             arrays = {}
         return result, arrays
     atomic_json(root / 'state.json', dict(status='running', split=case['split'], case_id=case['case_id'], trial=trial_id))
-    result, arrays, images = runtime.trial(case, recipient_sign, spec=spec, capture=capture)
-    hashes = {json.loads(p.read_text())['initial_state_sha256'] for p in folder.glob('*.json')}
+    result, arrays, images = runtime.trial(case, recipient_sign, spec=spec, capture=capture,
+        start_validator=lambda state, images: verify_trial_start(folder, state, images))
+    hashes = {json.loads(p.read_text())['initial_state_sha256'] for p in folder.glob('*.json')
+              if p.name != 'reset_diagnostics.json'}
     if hashes and hashes != {result['initial_state_sha256']}:
         raise RuntimeError(f"Reset drift for {case['case_id']}: refusing an unmatched comparison")
-    image_hashes = {json.loads(p.read_text())['initial_images_sha256'] for p in folder.glob('*.json')}
+    image_hashes = {json.loads(p.read_text())['initial_images_sha256'] for p in folder.glob('*.json')
+                    if p.name != 'reset_diagnostics.json'}
     if image_hashes and image_hashes != {result['initial_images_sha256']}:
         raise RuntimeError(f"Initial images changed for {case['case_id']}; contrasts must use identical pixels")
     if capture:
@@ -235,6 +317,7 @@ def run_steering_experiment(config, checkpoint, output_dir, *, device='cuda',
     print('Hashing the trained checkpoint to lock run provenance...', flush=True)
     checkpoint_hash = file_digest(checkpoint)
     manifest = dict(config=asdict(config), cases=config.cases(), checkpoint_sha256=checkpoint_hash,
+                    reset_protocol='fresh_seeded_simulator_per_trial_v2',
                     policy_path=policy_path, source_digest=source_digest,
                     protocol_hash=protocol_hash(config, checkpoint_hash, source_digest),
                     representation='pretrained timestep-conditioned transcoder, not an SAE',

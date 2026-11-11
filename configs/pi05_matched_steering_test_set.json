@@ -1,0 +1,115 @@
+{
+  "protocol": "matched-steering-v1",
+  "suite": "libero_spatial",
+  "scope": "Default full-study held-out cases, fixed before handle discovery; every condition uses the same cases.",
+  "contrast": "goal bowl versus distractor bowl, using benchmark descriptions of their initial regions",
+  "primary_budget": 0.1,
+  "action_steps": 50,
+  "test_cases": [
+    {
+      "case_id": "task7_init0",
+      "task_id": 7,
+      "init_state_id": 0,
+      "split": "test",
+      "seed": 20268174
+    },
+    {
+      "case_id": "task7_init1",
+      "task_id": 7,
+      "init_state_id": 1,
+      "split": "test",
+      "seed": 20268175
+    },
+    {
+      "case_id": "task7_init2",
+      "task_id": 7,
+      "init_state_id": 2,
+      "split": "test",
+      "seed": 20268176
+    },
+    {
+      "case_id": "task7_init3",
+      "task_id": 7,
+      "init_state_id": 3,
+      "split": "test",
+      "seed": 20268177
+    },
+    {
+      "case_id": "task7_init4",
+      "task_id": 7,
+      "init_state_id": 4,
+      "split": "test",
+      "seed": 20268178
+    },
+    {
+      "case_id": "task8_init0",
+      "task_id": 8,
+      "init_state_id": 0,
+      "split": "test",
+      "seed": 20269183
+    },
+    {
+      "case_id": "task8_init1",
+      "task_id": 8,
+      "init_state_id": 1,
+      "split": "test",
+      "seed": 20269184
+    },
+    {
+      "case_id": "task8_init2",
+      "task_id": 8,
+      "init_state_id": 2,
+      "split": "test",
+      "seed": 20269185
+    },
+    {
+      "case_id": "task8_init3",
+      "task_id": 8,
+      "init_state_id": 3,
+      "split": "test",
+      "seed": 20269186
+    },
+    {
+      "case_id": "task8_init4",
+      "task_id": 8,
+      "init_state_id": 4,
+      "split": "test",
+      "seed": 20269187
+    },
+    {
+      "case_id": "task9_init0",
+      "task_id": 9,
+      "init_state_id": 0,
+      "split": "test",
+      "seed": 20270192
+    },
+    {
+      "case_id": "task9_init1",
+      "task_id": 9,
+      "init_state_id": 1,
+      "split": "test",
+      "seed": 20270193
+    },
+    {
+      "case_id": "task9_init2",
+      "task_id": 9,
+      "init_state_id": 2,
+      "split": "test",
+      "seed": 20270194
+    },
+    {
+      "case_id": "task9_init3",
+      "task_id": 9,
+      "init_state_id": 3,
+      "split": "test",
+      "seed": 20270195
+    },
+    {
+      "case_id": "task9_init4",
+      "task_id": 9,
+      "init_state_id": 4,
+      "split": "test",
+      "seed": 20270196
+    }
+  ]
+}

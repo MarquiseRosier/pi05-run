@@ -7,6 +7,7 @@ Most collaborators should start here:
 - Notebook: `notebooks/pi05_libero_colab_l4.ipynb`
 - Transcoder notebook: `notebooks/pi05_libero_transcoder_colab.ipynb`
 - Jayden transcoder notebook: `notebooks/pi05_libero_transcoder_colab_jayden.ipynb`
+- Matched steering notebook: [`notebooks/pi05_matched_steering.ipynb`](notebooks/pi05_matched_steering.ipynb)
 - Guide: `docs/colab_l4_guide.md`
 - Open in Colab:
 
@@ -21,6 +22,18 @@ https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/ma
 ```
 
 The notebook runs Pi0.5/LIBERO eval natively on a Colab L4 or A100 runtime because Colab does not reliably support NVIDIA Docker. It uses a restricted Google Drive folder for shared model caches, LIBERO assets, outputs, activation traces, videos, and prompt probes.
+
+On `feature/marquise-matched-steering`, the [matched steering experiment](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-matched-steering/notebooks/pi05_matched_steering.ipynb)
+compares a dense linear-probe direction with selected sparse **transcoder** features using opposite
+bowl instructions on identical starting images. It freezes a shared layer on validation data,
+then measures actual gripper movement on held-out tasks with matched intervention budgets,
+zero/random controls and ablations. The notebook contains the protocol and executable definitions;
+experiment work runs in the kernel. `STUDY_SIZE="smoke"` checks infrastructure; the full default
+has 71 starting states and approximately 574 single-chunk trials, with per-trial resume.
+The default held-out case list is committed in [`configs/pi05_matched_steering_test_set.json`](configs/pi05_matched_steering_test_set.json).
+Outputs live under `outputs/matched-steering/<RUN_NAME>/`; `report.json` includes the paired
+sparse-minus-dense score and task-bootstrap interval. This is a new experiment, not a measured
+claim that either representation is more steerable, and the existing checkpoint is not an SAE.
 
 The intended workflow is:
 

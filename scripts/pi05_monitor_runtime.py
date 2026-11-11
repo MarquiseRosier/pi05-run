@@ -16,6 +16,7 @@ LEROBOT_VERSION = '0.4.4'
 # dependency with the fork required by the wheel's own PI05 implementation.
 REQUIREMENT = f'lerobot[libero]=={LEROBOT_VERSION}'
 TRANSFORMERS_OVERRIDES = Path(__file__).with_name('pi05_transformers_overrides.txt')
+CMAKE_REQUIREMENT = 'cmake==3.31.6'
 
 
 def repair_command():
@@ -103,8 +104,13 @@ def main():
         if subprocess.run(command, env=env, check=False).returncode == 0:
             return
     if args.repair or args.ensure:
+        # egl-probe uses CMake 2.8-era policy settings, rejected by CMake 4.
+        # Install build tools first, and expose them to this legacy build only.
+        subprocess.run([args.uv, 'pip', 'install', '--python', args.python,
+                        CMAKE_REQUIREMENT, 'setuptools>=71,<81', 'wheel'], check=True)
         command = [args.uv, 'pip', 'install', '--python', args.python, '--torch-backend', 'cu128',
                    '--overrides', str(TRANSFORMERS_OVERRIDES),
+                   '--no-build-isolation-package', 'egl-probe', CMAKE_REQUIREMENT,
                    '--reinstall-package', 'transformers',
                    REQUIREMENT, 'hf-transfer', 'opencv-python', 'numpy', 'langfuse',
                    'scikit-learn', 'joblib', 'pillow']

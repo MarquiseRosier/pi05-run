@@ -57,6 +57,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn('--system', arguments)
         self.assertIn('--break-system-packages', arguments)
         self.assertIn('--overrides', arguments)
+        self.assertIn(runtime.CMAKE_REQUIREMENT, arguments)
+        self.assertEqual(arguments[arguments.index('--no-build-isolation-package') + 1], 'egl-probe')
+        build = source.index('"cmake==3.31.6", "setuptools>=71,<81", "wheel"')
+        egl = source.index('"egl-probe==1.0.2"')
+        policy = source.index('"lerobot[libero]==0.4.4"')
+        self.assertLess(build, egl)
+        self.assertLess(egl, policy)
 
     def siglip(self, result=True):
         module = ModuleType('transformers.models.siglip')
@@ -92,7 +99,11 @@ class RuntimeTests(unittest.TestCase):
                 '--python', '/test/python', '--require-cuda']
         with patch.object(sys, 'argv', args), patch.object(runtime.subprocess, 'run') as run:
             runtime.main()
-        install, check = run.call_args_list
+        build_tools, install, check = run.call_args_list
+        self.assertIn(runtime.CMAKE_REQUIREMENT, build_tools.args[0])
+        self.assertIn('wheel', build_tools.args[0])
+        self.assertIn(runtime.CMAKE_REQUIREMENT, install.args[0])
+        self.assertEqual(install.args[0][install.args[0].index('--no-build-isolation-package') + 1], 'egl-probe')
         self.assertIn('lerobot[libero]==0.4.4', install.args[0])
         self.assertNotIn('--no-deps', install.args[0])
         self.assertEqual(install.args[0][install.args[0].index('--overrides') + 1],
@@ -118,12 +129,13 @@ class RuntimeTests(unittest.TestCase):
 
     def test_ensure_repairs_then_rechecks_in_fresh_process(self):
         results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0),
-                   SimpleNamespace(returncode=0)]
+                   SimpleNamespace(returncode=0), SimpleNamespace(returncode=0)]
         args = ['runtime', '--ensure', '--python', '/test/python', '--uv', '/test/uv', '--require-cuda']
         with patch.object(sys, 'argv', args), \
              patch.object(runtime.subprocess, 'run', side_effect=results) as run:
             runtime.main()
-        probe, install, recheck = run.call_args_list
+        probe, build_tools, install, recheck = run.call_args_list
+        self.assertIn(runtime.CMAKE_REQUIREMENT, build_tools.args[0])
         self.assertEqual(probe.args[0], recheck.args[0])
         self.assertIn('--require-cuda', recheck.args[0])
         self.assertIn('lerobot[libero]==0.4.4', install.args[0])
@@ -131,9 +143,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(recheck.kwargs['check'])
 
     def test_failed_repair_or_recheck_stops_ensure(self):
-        for failure_index in (1, 2):
+        for failure_index in (1, 2, 3):
             results = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0),
-                       SimpleNamespace(returncode=0)]
+                       SimpleNamespace(returncode=0), SimpleNamespace(returncode=0)]
             results[failure_index] = subprocess.CalledProcessError(1, ['failed-command'])
             with self.subTest(failure_index=failure_index), \
                  patch.object(sys, 'argv', ['runtime', '--ensure']), \

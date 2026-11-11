@@ -45,6 +45,10 @@ tracebacks. The kernel's interrupt handlers remain intact.
 The Colab installer explicitly targets system Python with `--system --break-system-packages`.
 External setup commands stream stdout/stderr into the cell and include their last
 100 output lines in any failure, so dependency/build errors survive the notebook traceback.
+Setup installs `cmake==3.31.6`, setuptools and wheel before building `egl-probe==1.0.2`.
+This transitive LIBERO dependency uses CMake 2.8 policy settings that CMake 4 rejects.
+Only `egl-probe` disables build isolation to use the preinstalled build tools; the
+main install keeps CMake pinned so a later resolution cannot upgrade it back to 4.x.
 
 If setup replaces already-imported packages, restart the Colab session once and rerun
 from the top. The old `/content/lerobot-venv` is not used: Python 3.12 extension modules

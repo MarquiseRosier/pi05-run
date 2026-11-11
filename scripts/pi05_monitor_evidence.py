@@ -77,6 +77,7 @@ def inventory_run(root):
 def audit_saved_captures(root, episodes):
     """Inspect existing evidence; do not infer a passed GPU smoke from imports."""
     root = Path(root); problems = []; hashes = {}; groups = {}; images = 0; masks_checked = 0
+    uninspected_camera_rows = 0
     manifest_path = root / 'manifest.json'
     run_manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     new_capture = bool(run_manifest.get('reset_protocol'))
@@ -120,6 +121,13 @@ def audit_saved_captures(root, episodes):
                 break
         if ep.get('control_freq') != 20:
             problems.append(f"Unverified 20 Hz: {ep['episode_id']}")
+        audit_steps = {0}
+        if ep['observations']:
+            audit_steps.add(ep['observations'][-1]['step'])
+        if ep['first_harm_step'] is not None:
+            before_harm = [r['step'] for r in ep['observations'] if r['step'] < ep['first_harm_step']]
+            if before_harm:
+                audit_steps.add(max(before_harm))
         for observation in ep['observations']:
             step = observation['step']
             if new_capture:
@@ -128,6 +136,12 @@ def audit_saved_captures(root, episodes):
                 if None in layer_calls or len(set(layer_calls)) != 1 or not layer_calls[0]:
                     problems.append(f"Unmatched layer-8 calls: {ep['episode_id']} step {step}")
             for camera, visibility in observation['visibility'].items():
+                if new_capture and step not in audit_steps:
+                    # Full pixel archives stay on Drive. Bound remote small-file
+                    # reads during the two-hour report; do not silently claim a
+                    # full frame audit. All feature rows/actions remain checked.
+                    uninspected_camera_rows += 1
+                    continue
                 masks = folder / 'images' / f'{step:04d}' / f'{camera}_bowl_masks.npz'
                 if not masks.exists():
                     if new_capture and step % run_manifest.get('image_stride',32) == 0:
@@ -154,6 +168,8 @@ def audit_saved_captures(root, episodes):
     return dict(status='passed_saved_artifact_checks' if episodes and not problems else 'not_passed',
                 completed_episodes_checked=len(episodes), paired_groups_checked=len(groups),
                 camera_frames_checked=images, mask_archives_checked=masks_checked,
+                camera_rows_not_inspected=uninspected_camera_rows,
+                image_audit_selection='Initial, last and last-pre-harm monitor frames per episode for new captures; every saved frame for legacy runs',
                 problems=problems, source_sha256=hashes,
                 scope='Saved states, finite matched arrays, raw endpoints, actions, instance masks/counts; not a new GPU rollout')
 
@@ -248,12 +264,20 @@ def export_evidence(root, destination=None):
     c = inventory['eligible_by_split']
     weight_path = root / 'model_load_evidence.json'
     weight_evidence = json.loads(weight_path.read_text()) if weight_path.exists() else {}
+    schema_path = root / 'matched_feature_schema.json'
+    feature_schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
     contrast = (report or {}).get('matched_comparisons', {}).get('expert_transcoder_l08_minus_expert_output_l08', {}).get('all_test', {})
     primary = contrast.get('harm_preceded_fraction', {})
     false = contrast.get('false_stop_fraction', {})
     gates = dict(saved_artifact_audit=audit['status']=='passed_saved_artifact_checks',
                  model_weights_verified=bool(weight_evidence.get('weights',{}).get('provided'))
-                     and not weight_evidence.get('weights',{}).get('missing') and weight_evidence.get('frozen',False),
+                     and not weight_evidence.get('weights',{}).get('missing')
+                     and not weight_evidence.get('weights',{}).get('error') and weight_evidence.get('frozen',False),
+                 prespecified_head_settings=bool(report) and report.get('future_steps') == 40
+                     and report.get('fit_C') == .1 and report.get('false_stop_target') == .1
+                     and report.get('target') == 'future_harm',
+                 matched_256d_projection=all(feature_schema.get(f,{}).get('saved_width') == 256
+                                            for f in PRIMARY_ARMS[1:-1]),
                  good_calibration_20=c['calibration']['good'] >= 20,
                  harmful_test_20=c['test']['harmful'] >= 20,
                  good_test_20=c['test']['good'] >= 20,

@@ -208,7 +208,7 @@ def test_fitter_runs_end_to_end_and_resumes_without_refitting(tmp_path):
         np.savez_compressed(folder / 'features.npz', state=array,
                             expert_input_l00=array * 2, expert_output_l00=array * 3,
                             expert_transcoder_l00=array * 4)
-        ep = {**job, 'success': not harm, 'steps': 56, 'first_harm_step': 24 if harm else None,
+        ep = {**job, 'success': not harm, 'steps': 56, 'control_freq': 20, 'first_harm_step': 24 if harm else None,
               'initial_state_sha256': job['group_id'], 'observations': [{'step': t} for t in range(0, 48, 8)]}
         (folder / 'episode.json').write_text(json.dumps(ep))
     args = SimpleNamespace(run_dir=tmp_path, target='future_harm', future_steps=32,

@@ -49,6 +49,56 @@ The intended workflow is:
 6. Inspect rollout videos, chunk matrices, action/layer activation reports, and prompt probe outputs inline.
 7. Let the notebook persist logs, videos, activation traces, reports, and cache archives back to Drive.
 
+## Preliminary monitoring study: one collection, four notebooks
+
+Use these latest notebooks on `feature/marquise-monitor-abstract-pilot` for the two-hour
+monitoring handoff. They reuse the repaired occlusion pipeline and contain literal experiment
+definitions that run in the notebook kernel, with live output and native exceptions.
+
+| Notebook | Run order and purpose |
+| --- | --- |
+| [A — Collection and primary comparison](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-monitor-abstract-pilot/notebooks/pi05_abstract_a_collection.ipynb) | Start here. One A100/high-RAM L4; collects once, fits the primary comparison, exports all available summaries. |
+| [B — Matched dense/transcoder probes](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-monitor-abstract-pilot/notebooks/pi05_abstract_b_matched_probes.ipynb) | CPU; reopen A's saved features and fit/resume the prespecified comparison within its original deadline. |
+| [C — Appearance controls](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-monitor-abstract-pilot/notebooks/pi05_abstract_c_appearance_controls.ipynb) | CPU; inspect frozen within-condition and unseen-screen results, exclusions and denominators. |
+| [D — Delay and threshold sensitivity](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-monitor-abstract-pilot/notebooks/pi05_abstract_d_delay_sensitivity.ipynb) | CPU; inspect seconds-based delay curves, fixed-monitor 5/10/20 N endpoint sensitivity and collection-path timing. |
+
+Only A needs GPU simulation. A also runs the analyses used by B–D; opening those separately is
+optional. Set the same `RUN_PATH` in B–D. The default new run is
+`outputs/occlusion-monitor/abstract-layer8-reset-v2-001` under the shared Drive root. Do not reuse
+an older pilot's run name. After first-time installation, use **Runtime → Restart session** once;
+rerunning a cell does not replace loaded native packages, and deleting the runtime discards the
+installation. The saved clock survives a session restart.
+
+The minimal core targets tasks 0/1/2 with four starts per split per task: **156 episodes, 36
+starting groups, 12 test groups**. It records only the prespecified action-expert layer 8 by
+default: state, matched expert input/output, and frozen transcoder code. All use the same rollouts
+and 256-dimensional fixed projections. The 39-episode `feasibility` alternative cannot meet the
+reporting safeguards. Neither cohort guarantees enough harmful outcomes. Complete valid groups
+from a partial run are explicitly a time-budget-selected exploratory sample.
+
+The protocol includes 50-action chunks, exact seeded paired resets, terminal physics measurements
+before any auto-reset, BDDL instance resolution, NumPy-2 segmentation decoding, invalid-control
+group exclusion, lossless camera captures every eight steps, bounded image writes and full weight
+load checks. Time limits include setup: minute 20 setup gate, minute 90 collection stop, minute 110
+analysis cutoff, minute 120 report deadline. Native calls are cooperative, so actual overruns are
+recorded. Do not run concurrent collectors on the same GPU.
+
+`evidence/<signature>/evidence_packet.zip` contains counts, source hashes, uncertainty, acceptance
+gates, all-arm CSV, timing, plots and an abstract candidate. The notebook downloads this small
+packet privately; raw rollouts and fitted models remain in Drive. A strong comparative summary
+requires at least 20 good calibration episodes, 20 harmful and 20 good test episodes, and 10
+independent test groups; otherwise report descriptive/inconclusive results. These are safeguards,
+not a power calculation. The image-encoder baseline is unvalidated and omitted; RGB-grid features
+do not support a CV superiority claim. Offline warnings never establish collision prevention.
+
+Regenerate current notebook definitions after source edits:
+
+```bash
+python scripts/embed_pi05_monitor_notebook.py
+python scripts/embed_pi05_steering_notebook.py
+python scripts/embed_pi05_abstract_notebooks.py
+```
+
 Hugging Face tokens must not be committed. The normal path is token-free after caches are populated. If a cache refresh is needed, use each user's private Colab Secret named `HF_TOKEN`, or the intentionally restricted shared Drive token file described in `docs/colab_l4_guide.md`.
 
 ## Primary Workflow: Colab

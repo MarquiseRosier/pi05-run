@@ -184,6 +184,25 @@ def manifest(config: PilotConfig):
             "timing": "fresh extra policy forward at each monitor tick; discard its actions unless replanning; simulator is paused during computation"}
 
 
+def round_robin_groups(jobs):
+    """Rotate task AND split, never changing paired membership or manifest IDs."""
+    groups = {}
+    for job in jobs:
+        groups.setdefault(job['group_id'], []).append(job)
+    tasks = sorted({j['task_id'] for j in jobs})
+    pairs = [(tasks[(i + j) % len(tasks)], split)
+             for i in range(len(tasks)) for j, split in enumerate(('train', 'calibration', 'test'))]
+    queues = {(task, split): [g for g in groups.values()
+              if g[0]['task_id'] == task and g[0]['split'] == split]
+              for task, split in pairs}
+    ordered = []
+    while any(queues.values()):
+        for queue in queues.values():
+            if queue:
+                ordered.extend(queue.pop(0))
+    return ordered
+
+
 def manifest_changes(previous, current, prefix=''):
     """Name changed settings without dumping the full episode plan."""
     changes = []

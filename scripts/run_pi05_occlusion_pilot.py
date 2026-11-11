@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import random
 import signal
 from pathlib import Path
 import subprocess
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 from pi05_mi.occlusion_pilot import (PilotConfig, ImageOccluder, manifest, write_manifest,
                                     stable_indices, low_resolution_rgb, RunJournal, atomic_json,
-                                    target_bowl_spec)
+                                    target_bowl_spec, round_robin_groups)
 
 STOP_REQUESTED = False
 
@@ -39,6 +40,9 @@ def arguments(argv=None):
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--action-steps", type=int, default=50)
     p.add_argument("--monitor-stride", type=int, default=8)
+    p.add_argument('--layers', default='0,8,17', help='Fixed expert layers; preliminary primary uses 8')
+    p.add_argument('--setup-deadline-unix', type=float, default=0)
+    p.add_argument('--smoke-gate', action='store_true', help='Stop after first group if clean rollout fails')
     p.add_argument("--policy-path", default="lerobot/pi05_libero_finetuned")
     p.add_argument("--checkpoint", type=Path, help="Optional ACTION EXPERT transcoder checkpoint")
     p.add_argument("--comparison-width", type=int, default=256,
@@ -215,6 +219,7 @@ class PhysicsRecorder:
             raise RuntimeError("Could not identify robot, movable objects, and distractor bowls")
         self.initial_z = {b: float(self.data.xpos[b, 2]) for b in self.wrong_bowls}
         self.peak = 0.0
+        self.peak_contact = None
         self.original_step = self.sim.step
 
         def step(*args, **kwargs):
@@ -226,16 +231,23 @@ class PhysicsRecorder:
                         (b in self.robot and a in self.movable)):
                     wrench = np.zeros(6)
                     mujoco.mj_contactForce(self.model, self.data, i, wrench)
-                    self.peak = max(self.peak, float(np.linalg.norm(wrench[:3])))
+                    norm = float(np.linalg.norm(wrench[:3]))
+                    if norm > self.peak:
+                        self.peak = norm
+                        self.peak_contact = dict(geom_ids=[a,b], body_names=[
+                            mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                            int(self.model.geom_bodyid[g])) for g in (a,b)])
             return result
         self.sim.step = step
 
     def finish_control_step(self, step):
         lift = max(float(self.data.xpos[b, 2]) - self.initial_z[b] for b in self.wrong_bowls)
         row = {"step": step, "peak_contact_n": self.peak, "max_wrong_bowl_lift_m": lift,
+               "peak_contact_objects": self.peak_contact,
                "target_z": float(self.data.xpos[self.target, 2]),
                "harm": bool(self.peak > self.config.force_threshold or lift > self.config.lift_threshold)}
         self.peak = 0.0
+        self.peak_contact = None
         return row
 
     def close(self):
@@ -246,9 +258,41 @@ def write_images(path, images, audits):
     from PIL import Image
     for name, frame in images.items():
         Image.fromarray(frame).save(path / f"{name}.jpg", quality=90)
+        # Lossless predictor input; JPEG is only for convenient viewing.
+        Image.fromarray(frame).save(path / f"{name}.png")
         masks, target_rgba = audits[name]
         np.savez_compressed(path / f"{name}_bowl_masks.npz", **masks)
         Image.fromarray(target_rgba).save(path / f"{name}_target.png")
+
+
+def verify_monitor_start(root, job, state, images):
+    """Save/compare exact physical state and unoccluded pixels before any action."""
+    paired = Path(root) / 'paired_starts' / job['group_id']
+    paired.mkdir(parents=True, exist_ok=True)
+    state_file, image_file = paired/'initial_state.npy', paired/'initial_images.npz'
+    problem = {}
+    if state_file.exists():
+        previous = np.load(state_file, allow_pickle=False)
+        if previous.shape != state.shape or not np.array_equal(previous, state):
+            problem['state_max_abs_difference'] = float(np.max(np.abs(previous-state))) if previous.shape == state.shape else None
+    if image_file.exists():
+        with np.load(image_file, allow_pickle=False) as previous:
+            changed = sorted(set(previous.files) ^ set(images))
+            changed += [k for k in sorted(set(previous.files) & set(images)) if not np.array_equal(previous[k], images[k])]
+        if changed:
+            problem['changed_cameras'] = changed
+    if problem:
+        folder = Path(root)/'episodes'/job['episode_id']; folder.mkdir(parents=True, exist_ok=True)
+        np.save(folder/'reset_drift_state.npy', state)
+        atomic_json(folder/'reset_diagnostics.json', dict(problem, reference=str(paired)))
+        raise RuntimeError(f"Reset drift for {job['group_id']} before inference; inspect reset_diagnostics.json")
+    for path, save in [(state_file, lambda f: np.save(f, state)),
+                       (image_file, lambda f: np.savez_compressed(f, **images))]:
+        if not path.exists():
+            with path.with_suffix('.tmp').open('wb') as handle:
+                save(handle)
+            path.with_suffix('.tmp').replace(path)
+    return hashlib.sha256(b''.join(np.asarray(images[k]).tobytes() for k in sorted(images))).hexdigest()
 
 
 class Slot:
@@ -287,6 +331,9 @@ class Slot:
         self.last_eef = None
         self.queue, self.done, self.success, self.steps = [], False, False, 0
         self.initial_state = self.env.sim.get_state().flatten().copy()
+        if float(self.env.control_freq) != 20.0:
+            raise RuntimeError('This protocol requires verified 20 Hz control')
+        self.initial_images_sha256 = verify_monitor_start(root, job, self.initial_state, self.observation['pixels'])
         np.save(self.path / "initial_state.npy", self.initial_state)
         # An incomplete attempt is restarted, never appended to as if it were a new independent episode.
         self.event_log = (self.path / 'events.partial.jsonl').open('w', buffering=1)
@@ -334,7 +381,10 @@ class Slot:
         return _add_batch_axis(obs), images, visibility, state, audits
 
     def advance(self, action):
-        _, _, terminated, truncated, info = self.inner.step(action)
+        # LeRobot inner.step auto-resets on success, corrupting the last force/lift
+        # measurement. Step LIBERO directly, measure physics, then stop on success.
+        _, _, terminated, _ = self.inner._env.step(action)
+        success = bool(self.inner._env.check_success())
         self.steps += 1
         self.last_action = action
         event = self.physics.finish_control_step(self.steps)
@@ -342,8 +392,8 @@ class Slot:
         self.events.append(event)
         self.event_log.write(json.dumps(event) + '\n')
         self.event_log.flush()
-        self.success = self.success or bool(info.get("is_success", False))
-        self.done = bool(terminated or truncated or self.steps >= self.config.horizon)
+        self.success = self.success or success
+        self.done = bool(terminated or success or self.steps >= self.config.horizon)
 
     def save_partial(self):
         tmp = self.path / 'partial_features.tmp'
@@ -363,6 +413,7 @@ class Slot:
                    "target": self.target_spec,
                    "first_harm_step": first, "prompt": self.prompt,
                    "initial_state_sha256": hashlib.sha256(self.initial_state.tobytes()).hexdigest(),
+                   "initial_images_sha256": self.initial_images_sha256,
                    "control_freq": float(self.env.control_freq), "observations": self.rows,
                    "physics": self.events, "complete": True}
         np.savez_compressed(self.path / "features.npz", **{
@@ -402,6 +453,13 @@ def collect(args, config, jobs):
     base = build_harness(namespace)
     base.vec_env.close()  # Subsequent slots own their simulators; release this bootstrap env now.
     policy, preprocessor = base.policy, base.preprocessor
+    from pi05_mi.pi05_weights import assert_weights_loaded
+    from huggingface_hub import snapshot_download
+    atomic_json(args.output_dir / 'model_load_evidence.json', {
+        'source': args.policy_path, 'weights': assert_weights_loaded(policy, source=args.policy_path),
+        'policy_snapshot': str(Path(args.policy_path).resolve() if Path(args.policy_path).exists()
+                               else snapshot_download(args.policy_path, local_files_only=True)),
+        'frozen': not any(p.requires_grad for p in policy.parameters()), 'dtype': args.policy_dtype})
     policy.config.n_action_steps = config.action_steps
     tap = FeatureTap(policy, config)
     context = None
@@ -410,6 +468,12 @@ def collect(args, config, jobs):
         # Probe mode leaves all original MLPs intact. Only selected dictionaries
         # need GPU residency; the full training checkpoint is read on CPU.
         tc = load_transcoders(args.checkpoint, torch.device(args.device), layers=config.layers)
+        from dataclasses import asdict
+        atomic_json(args.output_dir / 'checkpoint_metadata.json', {
+            'architecture': 'TimeConditionedTranscoder', 'mode': 'probe',
+            'selected_configs': {name: asdict(module.config) for name, module in tc.items()},
+            'training_metadata': 'Consult checkpoint training run; not reconstructed from filename',
+            'dictionary_test_exposure': 'Unknown; held out only from probe fitting/calibration'})
         from pi05_mi.monitor_features import MatchedExpertTap
         targets = list_pi05_action_expert_mlp_targets(policy)
         missing = [t.name for t in targets if t.layer_index in config.layers and t.name not in tc]
@@ -427,15 +491,29 @@ def collect(args, config, jobs):
                                 "rename_observations_processor": {"rename_map": {}}})
     env_cfg = LiberoEnv(task="libero_spatial", task_ids=[namespace.task_id], fps=20)
     _, env_post = make_env_pre_post_processors(env_cfg=env_cfg, policy_cfg=policy.config)
+    if args.setup_deadline_unix and time.time() >= args.setup_deadline_unix:
+        raise TimeoutError('Model setup exceeded the minute-20 gate; export existing evidence instead of collecting')
+    atomic_json(args.output_dir / 'hardware.json', {
+        'gpu': torch.cuda.get_device_name() if args.device.startswith('cuda') else 'cpu',
+        'batch_size': config.batch_size, 'synchronized_timing': args.device.startswith('cuda'),
+        'concurrent_gpu_load': 'not_measured', 'control_frequency_hz': 20,
+        'sampling_cadence_steps': config.monitor_stride})
     futures = []
+    smoke_path = args.output_dir / 'smoke_gate.json'
+    smoke_clean_checked = smoke_path.exists() and json.loads(smoke_path.read_text()).get('status') == 'passed_clean'
     with ThreadPoolExecutor(max_workers=4) as writer:
         for offset in range(0, len(jobs), config.batch_size):
             if STOP_REQUESTED or time.monotonic() >= args.deadline:
                 break
             slots, harnesses = [], []
+            batch_started = time.perf_counter()
             try:
                 for job in jobs[offset:offset + config.batch_size]:
+                    if STOP_REQUESTED or time.monotonic() >= args.deadline:
+                        break
                     namespace.task_id = job["task_id"]
+                    random.seed(job['seed'])
+                    np.random.seed(job['seed'])
                     harness = build_harness(namespace, load_policy=False)
                     harnesses.append(harness)
                     slots.append(Slot(job, harness, config, args.output_dir))
@@ -449,6 +527,9 @@ def collect(args, config, jobs):
                     monitor_tick = step % config.monitor_stride == 0
                     inference = [s for s in active if monitor_tick or not s.queue]
                     if inference:
+                        if args.device.startswith('cuda'):
+                            torch.cuda.synchronize()
+                        preparation_start = time.perf_counter()
                         samples = [s.observe() for s in inference]
                         obs = base.preprocess_observation(combine([x[0] for x in samples]))
                         obs["task"] = [s.prompt for s in inference]
@@ -459,6 +540,9 @@ def collect(args, config, jobs):
                         tap.reset()
                         if matched:
                             matched.reset()
+                        if args.device.startswith('cuda'):
+                            torch.cuda.synchronize()
+                        preparation_seconds = time.perf_counter() - preparation_start
                         started = time.perf_counter()
                         with torch.inference_mode():
                             actions = policy.predict_action_chunk(batch, noise=noise, num_steps=config.inference_steps)
@@ -466,6 +550,8 @@ def collect(args, config, jobs):
                         if matched:
                             arrays.update(matched.arrays())
                         elapsed = time.perf_counter() - started
+                        if any(not np.isfinite(v).all() for v in arrays.values()):
+                            raise RuntimeError('Nonfinite matched feature capture')
                         if context:
                             context.clear_records()
                         for i, slot in enumerate(inference):
@@ -475,6 +561,9 @@ def collect(args, config, jobs):
                                 _, images, visibility, state, audits = samples[i]
                                 slot.rows.append({"step": step, "visibility": visibility,
                                                   "inference_batch_size": len(inference),
+                                                  "preparation_batch_seconds": preparation_seconds,
+                                                  "feature_available_batch_seconds": preparation_seconds + elapsed,
+                                                  "matched_call_counts": {k: v['calls_per_forward'] for k,v in matched.schema.items()} if matched else {},
                                                   "inference_batch_seconds": elapsed})
                                 for key, value in {"state": state, "vision": low_resolution_rgb(images),
                                                    **{k: v[i] for k, v in arrays.items()}}.items():
@@ -483,6 +572,8 @@ def collect(args, config, jobs):
                                     path = slot.path / "images" / f"{step:04d}"
                                     path.mkdir(parents=True, exist_ok=True)
                                     futures.append(writer.submit(write_images, path, images, audits))
+                                    if len(futures) >= 8:
+                                        futures.pop(0).result()  # Bound queue; surface write failures.
                                 slot.save_partial()
                         (args.output_dir / "feature_schema.json").write_text(json.dumps(tap.schema, indent=2))
                         if matched:
@@ -504,12 +595,28 @@ def collect(args, config, jobs):
                             slot.save()
                             print(json.dumps({"episode": slot.job["episode_id"], "success": slot.success,
                                               "harm": any(e["harm"] for e in slot.events), "steps": slot.steps}), flush=True)
+                            if args.smoke_gate and not smoke_clean_checked and slot.job['condition'] == 'clean':
+                                atomic_json(smoke_path, {
+                                    'status': 'passed_clean' if slot.success else 'failed_clean_rollout',
+                                    'episode_id': slot.job['episode_id'],
+                                    'reason': 'First clean infrastructure check only; no later seed selection'})
+                                if not slot.success:
+                                    raise RuntimeError('Clean smoke rollout failed; inspect saved images/actions, do not select a different seed')
+                                smoke_clean_checked = True
                     journal.update('collection', active_episodes=[s.job['episode_id'] for s in slots if not s.done],
                                    last_control_steps={s.job['episode_id']: s.steps for s in slots},
                                    completed_episodes=len(list((args.output_dir / 'episodes').glob('*/episode.json'))))
                 for future in futures:
                     future.result()
                 futures.clear()
+                if offset == 0:
+                    atomic_json(args.output_dir / 'throughput_smoke.json', {
+                        'completed_in_first_batch': sum(s.done for s in slots),
+                        'full_horizon_episodes': sum(s.steps == config.horizon for s in slots),
+                        'control_steps': sum(s.steps for s in slots),
+                        'batch_size': config.batch_size,
+                        'elapsed_seconds': time.perf_counter() - batch_started,
+                        'note': 'First collection batch; no cohort enlargement or outcome-based seed replacement'})
             finally:
                 for slot in slots:
                     slot.physics.close()
@@ -535,8 +642,15 @@ def main(argv=None):
                          calibration_starts=cal if args.calibration_starts is None else args.calibration_starts,
                          test_starts=test if args.test_starts is None else args.test_starts, batch_size=args.batch_size,
                          action_steps=args.action_steps, monitor_stride=args.monitor_stride)
+    from dataclasses import replace
+    config = replace(config, layers=tuple(map(int, args.layers.split(','))))
+    if not config.layers or len(set(config.layers)) != len(config.layers) or any(i not in range(18) for i in config.layers):
+        raise ValueError('layers must be unique action-expert indices in 0..17')
     payload = manifest(config)
     payload.update(policy_path=args.policy_path, policy_dtype=args.policy_dtype,
+                   reset_protocol='fresh_seeded_simulator_paired_state_v2_no_terminal_autoreset',
+                   scheduling='round_robin_task_and_split_groups_v1',
+                   saved_images='lossless PNG policy input plus JPEG preview',
                    checkpoint=str(args.checkpoint.resolve()) if args.checkpoint else None,
                    image_stride=args.image_stride,
                    matched_comparison=dict(version=1, width=args.comparison_width,
@@ -551,18 +665,7 @@ def main(argv=None):
     write_manifest(args.output_dir, payload)
     jobs = [j for j in payload["episodes"]
             if not (args.output_dir / "episodes" / j["episode_id"] / "episode.json").exists()]
-    # Small early batches cover train/calibration/test before extending any one split.
-    # Whole related-condition groups remain together; no split changes on resume.
-    groups = {}
-    for j in jobs:
-        groups.setdefault(j['group_id'], []).append(j)
-    queues = {s: [g for g in groups.values() if g[0]['split'] == s]
-              for s in ('train', 'calibration', 'test')}
-    jobs = []
-    while any(queues.values()):
-        for s in queues:
-            if queues[s]:
-                jobs.extend(queues[s].pop(0))
+    jobs = round_robin_groups(jobs)
     print(json.dumps({"total_episodes": len(payload["episodes"]), "pending": len(jobs),
                       "unique_starts": len({j["group_id"] for j in payload["episodes"]}),
                       "gpu_inference_batch": config.batch_size,

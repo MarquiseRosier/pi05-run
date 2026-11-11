@@ -67,6 +67,8 @@ class MatchedExpertTap:
                       for family in ('expert_input', 'expert_output', 'expert_transcoder')}
             if len(counts) != 1:
                 raise RuntimeError(f'Unmatched MLP and transcoder call counts at layer {layer}')
+            for family in ('expert_input', 'expert_output', 'expert_transcoder'):
+                self.schema[f'{family}_l{layer:02d}']['calls_per_forward'] = next(iter(counts))
         return {key: torch.stack(value).mean(0).cpu().numpy() for key, value in self.values.items()}
 
     def close(self):

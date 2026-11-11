@@ -282,6 +282,7 @@ class Slot:
             [self.instances[name]['body_id'] for name in self.target_spec['distractor_instances']])
         self.occluder = ImageOccluder(job["condition"])
         self.rows, self.events, self.features = [], [], {}
+        self.occlusion_failures = []
         self.last_action = np.zeros(7, np.float32)
         self.last_eef = None
         self.queue, self.done, self.success, self.steps = [], False, False, 0
@@ -307,6 +308,12 @@ class Slot:
             mask = ((seg[:, :, 0] == int(self.physics.mj.mjtObj.mjOBJ_GEOM)) &
                     np.isin(seg[:, :, 1], list(self.physics.target_geoms)))
             images[name], visibility[name] = self.occluder.apply(name, rgb, mask)
+            if visibility[name]['placement_status'] == 'no_same_size_miss':
+                if not self.occlusion_failures:
+                    print(f"{self.job['episode_id']}: no same-size miss box fits at step {self.steps}, "
+                          f"camera {name}; continuing with this paired group excluded from fitting", flush=True)
+                self.occlusion_failures.append(dict(step=self.steps, camera=name,
+                                                    reason='no_same_size_miss'))
             masks, counts = bowl_masks(seg, self.instances, self.target_instance,
                                       visibility[name]['rectangle'], int(self.physics.mj.mjtObj.mjOBJ_GEOM))
             visibility[name]['instances'] = counts
@@ -345,11 +352,14 @@ class Slot:
         tmp.replace(self.path / 'partial_features.npz')
         atomic_json(self.path / 'progress.json', {**self.job, 'phase': 'rollout', 'step': self.steps,
                     'complete': False, 'resume_strategy': 'retry this episode from recorded init state',
+                    'occlusion_failures': self.occlusion_failures,
                     'observations': self.rows})
 
     def save(self):
         first = next((e["step"] for e in self.events if e["harm"]), None)
         payload = {**self.job, "success": self.success, "steps": self.steps,
+                   "matched_control_valid": not self.occlusion_failures,
+                   "occlusion_failures": self.occlusion_failures,
                    "target": self.target_spec,
                    "first_harm_step": first, "prompt": self.prompt,
                    "initial_state_sha256": hashlib.sha256(self.initial_state.tobytes()).hexdigest(),

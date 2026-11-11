@@ -151,9 +151,15 @@ Initial-state hashes must match before analysis. Episode splits, not individual 
   their overlap is recorded rather than described as a target-only intervention.
 - Collection rejects an initial state with no visible target pixels in either camera. Later
   disappearance remains recorded as unknown visibility. No failed start is silently skipped.
-  This dataset schema requires a fresh run folder (default `matched-probes-bowls-002`).
+  This dataset schema requires a fresh run folder (default `matched-probes-bowls-003`).
 - Clean; target-following rectangle in both cameras; rectangle fixed at initial target position;
   equally sized rectangle avoiding target pixels; external-camera-only screen.
+- Miss-box placement checks every pixel-aligned location if the nine initial candidates fail.
+  If no same-size rectangle can avoid the target, that camera frame remains unchanged and gets
+  `placement_status="no_same_size_miss"`. Collection continues, records the failure (including
+  replanning frames between monitor ticks), and excludes the entire paired starting-state group
+  from fitting. `control_exclusions.json` and the budget summary report exclusions. Boxes are
+  never silently shrunk or allowed to cover the target; results are conditional on feasible controls.
 - Rectangles are **flat RGB overlays**, not replicas of the paper's 3D render objects. Segmentation
   measures target pixels before/after the overlay. No target pixels means unknown visibility, not success.
 - Peak force at every physics substep for individual robot contacts with movable non-target objects.

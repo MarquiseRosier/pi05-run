@@ -10,7 +10,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
-from pi05_mi.occlusion_pilot import assert_split_isolation, labels_at_steps, RunJournal, atomic_json
+from pi05_mi.occlusion_pilot import (assert_split_isolation, labels_at_steps, RunJournal, atomic_json,
+                                    episode_control_valid)
 
 
 def load_episodes(root, allow_partial=False):
@@ -32,6 +33,12 @@ def load_episodes(root, allow_partial=False):
         if any(len(v) != len(ep["sample_steps"]) or not np.isfinite(v).all() for v in ep["features"].values()):
             raise ValueError(f"Missing or nonfinite features in {ep['episode_id']}")
         result.append(ep)
+    excluded = sorted({ep['group_id'] for ep in result if not episode_control_valid(ep)})
+    atomic_json(root / 'control_exclusions.json', {'group_ids': excluded,
+                'reason': 'At least one camera frame had no feasible same-size miss control'})
+    if excluded:
+        print(f'Excluding {len(excluded)} paired groups with infeasible miss controls: {excluded}', flush=True)
+        result = [ep for ep in result if ep['group_id'] not in excluded]
     if allow_partial:
         # Preserve complete paired-condition groups; faster-finishing conditions must not dominate.
         planned = {}
@@ -145,6 +152,7 @@ def evaluate(args):
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
     episodes = load_episodes(args.run_dir, args.allow_partial)
+    exclusions = json.loads((args.run_dir / 'control_exclusions.json').read_text())
     by_split = {s: [e for e in episodes if e["split"] == s] for s in ("train", "calibration", "test")}
     if any(not eps for eps in by_split.values()):
         raise ValueError("Need completed episodes in all three splits")
@@ -155,6 +163,9 @@ def evaluate(args):
     warnings = ["Exploratory pilot; no formal equivalence or general safety claim.",
                 "Offline threshold crossings do not demonstrate collision prevention.",
                 "Bootstrap intervals resample starting-state groups, not tasks; they condition on the trained model."]
+    if exclusions['group_ids']:
+        warnings.append(f"Excluded {len(exclusions['group_ids'])} paired groups with infeasible miss controls; "
+                        "results are conditional on control feasibility.")
     if counts['train']['harms'] < 50 or counts['train']['episodes'] - counts['train']['harms'] < 50:
         warnings.append("Fewer than 50 harmful or 50 harm-free training episodes; collect more before robust conclusions.")
     if counts['calibration']['good'] < 30:
@@ -171,7 +182,8 @@ def evaluate(args):
             with (folder / name).open('rb') as handle:
                 for block in iter(lambda: handle.read(8 * 1024 * 1024), b''):
                     data_digest.update(block)
-    signature = hashlib.sha256(json.dumps({"analysis_version": 2, "data_sha256": data_digest.hexdigest(),
+    signature = hashlib.sha256(json.dumps({"analysis_version": 3, "data_sha256": data_digest.hexdigest(),
+        "control_exclusions": exclusions,
         "families": families, "episodes": sorted(ep['episode_id'] for ep in episodes),
         "target": args.target, "future_steps": args.future_steps, "C": args.C,
         "false_stop_rate": args.false_stop_rate}, sort_keys=True).encode()).hexdigest()[:12]
@@ -184,6 +196,7 @@ def evaluate(args):
         journal.update('report', 'complete', report_path=str(out / 'report.md'))
         return
     report = {"target": args.target, "future_steps": args.future_steps, "counts": counts,
+              "control_exclusions": exclusions,
               "warnings": warnings, "models": {}, "threshold_calibration": "episode maximum on good calibration episodes only",
               "false_stop_target": args.false_stop_rate, "fit_C": args.C,
               "matched_comparisons": {}, "data_sha256": data_digest.hexdigest(),

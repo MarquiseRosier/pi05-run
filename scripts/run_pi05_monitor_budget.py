@@ -14,7 +14,7 @@ import traceback
 from contextlib import redirect_stdout, redirect_stderr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from pi05_mi.occlusion_pilot import RunJournal, atomic_json
+from pi05_mi.occlusion_pilot import RunJournal, atomic_json, episode_control_valid
 
 
 def analysis_readiness(root):
@@ -29,10 +29,16 @@ def analysis_readiness(root):
     complete = [group for group in groups.values() if all(
         (root / 'episodes' / job['episode_id'] / 'episode.json').exists()
         and (root / 'episodes' / job['episode_id'] / 'features.npz').exists() for job in group)]
+    excluded = [group[0]['group_id'] for group in complete if any(not episode_control_valid(
+        json.loads((root / 'episodes' / job['episode_id'] / 'episode.json').read_text())) for job in group)]
+    atomic_json(root / 'control_exclusions.json', {'group_ids': sorted(excluded),
+                'reason': 'At least one camera frame had no feasible same-size miss control'})
+    complete = [group for group in complete if group[0]['group_id'] not in excluded]
     splits = {group[0]['split'] for group in complete}
     missing = sorted({'train', 'calibration', 'test'} - splits)
     if missing:
-        return False, 'No complete paired groups for: ' + ', '.join(missing) + '. See collection.log.'
+        return False, ('No complete paired groups for: ' + ', '.join(missing)
+                       + f'. Excluded {len(excluded)} groups with infeasible miss controls. See collection.log.')
     return True, None
 
 
@@ -124,14 +130,16 @@ def main(argv=None):
     episodes = []
     for file in sorted((root / 'episodes').glob('*/episode.json')):
         ep = json.loads(file.read_text())
-        episodes.append({k: ep[k] for k in ('episode_id', 'group_id', 'split', 'condition', 'success', 'first_harm_step', 'steps')})
+        episodes.append({**{k: ep[k] for k in ('episode_id', 'group_id', 'split', 'condition', 'success', 'first_harm_step', 'steps')},
+                         'matched_control_valid': bool(episode_control_valid(ep))})
+    excluded = sorted({e['group_id'] for e in episodes if not e['matched_control_valid']})
     counts = {s: {'episodes': sum(e['split'] == s for e in episodes),
                   'harmful': sum(e['split'] == s and e['first_harm_step'] is not None for e in episodes),
                   'successful': sum(e['split'] == s and e['success'] for e in episodes)}
               for s in ('train', 'calibration', 'test')}
     summary = {'elapsed_seconds': time.monotonic() - started, 'collection': collection, 'analysis': analysis,
                'completed_episodes': len(episodes), 'unique_starts': len({e['group_id'] for e in episodes}),
-               'counts': counts, 'episodes': episodes,
+               'counts': counts, 'episodes': episodes, 'control_excluded_groups': excluded,
                'claim_scope': 'Exploratory feasibility only. Completion under a wall-clock budget is not random sampling. No harm prevention has been tested.'}
     atomic_json(root / 'budget_summary.json', summary)
     lines = ['# Budgeted occlusion pilot', '', summary['claim_scope'], '',
@@ -139,6 +147,9 @@ def main(argv=None):
              '| Split | Completed episodes | Harmful | Successful |', '|---|---:|---:|---:|']
     for split, c in counts.items():
         lines.append(f"| {split} | {c['episodes']} | {c['harmful']} | {c['successful']} |")
+    if excluded:
+        lines.extend(['', f'{len(excluded)} paired groups excluded from fitting because a same-size miss control '
+                      'could not fit. Counts above include those rollouts; fitted results are conditional on control feasibility.'])
     pointer = root / 'latest_future_harm.json'
     if analysis['status'] == 'complete' and pointer.exists():
         report = Path(json.loads(pointer.read_text())['report'])

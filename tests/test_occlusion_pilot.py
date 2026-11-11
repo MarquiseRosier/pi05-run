@@ -10,7 +10,7 @@ import pytest
 sys.path[:0] = [str(Path(__file__).resolve().parents[1] / 'src'),
                 str(Path(__file__).resolve().parents[1] / 'scripts')]
 from pi05_mi.occlusion_pilot import (PilotConfig, ImageOccluder, assert_split_isolation,
-                                    labels_at_steps, stable_indices)
+                                    labels_at_steps, stable_indices, missed_rect, episode_control_valid)
 from fit_pi05_occlusion_monitor import threshold_from_good_episodes, operating_metrics
 
 
@@ -72,6 +72,71 @@ def test_boxes_and_screen_only_change_intended_pixels():
     assert np.array_equal(wrist, image)
     assert not np.array_equal(missed, image)
     assert np.array_equal(image, np.full_like(image, 20))  # Original frame untouched.
+
+
+def test_miss_box_finds_gap_outside_nine_legacy_anchors():
+    mask = np.zeros((20, 20), bool)
+    mask[np.ix_([1, 9, 18], [1, 9, 18])] = True
+    original = (8, 11, 8, 11)
+    assert all(mask[y:y+3, x:x+3].any() for y in (0, 8, 17) for x in (0, 8, 17))
+    a, b, c, d = missed_rect(mask, original)
+    assert (b-a, d-c) == (3, 3)
+    assert not mask[a:b, c:d].any()
+    assert missed_rect(mask, original) == (a, b, c, d)
+
+
+def test_miss_search_matches_brute_force_feasibility():
+    rng = np.random.default_rng(29)
+    for _ in range(200):
+        h, w = map(int, rng.integers(1, 15, 2))
+        rh, rw = int(rng.integers(1, h+1)), int(rng.integers(1, w+1))
+        y, x = int(rng.integers(0, h-rh+1)), int(rng.integers(0, w-rw+1))
+        mask = rng.random((h, w)) < .2
+        feasible = any(not mask[a:a+rh, c:c+rw].any()
+                       for a in range(h-rh+1) for c in range(w-rw+1))
+        rect = missed_rect(mask, (y, y+rh, x, x+rw))
+        assert (rect is not None) == feasible
+        if rect is not None:
+            a, b, c, d = rect
+            assert 0 <= a < b <= h and 0 <= c < d <= w
+            assert (b-a, d-c) == (rh, rw)
+            assert not mask[a:b, c:d].any()
+
+
+def test_impossible_miss_leaves_frame_unchanged_and_marks_control_invalid():
+    frame = np.full((32, 32, 3), 80, np.uint8)
+    mask = np.ones((32, 32), bool)
+    missed, info = ImageOccluder('miss_box').apply('image', frame, mask)
+    np.testing.assert_array_equal(missed, frame)
+    assert info['placement_status'] == 'no_same_size_miss'
+    assert info['rectangle'] is None and info['overlay_pixels'] == 0
+    assert info['target_pixels_after'] == int(mask.sum())
+    assert not episode_control_valid({'observations': [{'visibility': {'image': info}}]})
+    # An infeasible replanning frame between monitor ticks must also exclude its group.
+    assert not episode_control_valid({'occlusion_failures': [{'step': 50, 'camera': 'image2'}]})
+    assert not episode_control_valid({'matched_control_valid': False})
+
+
+def test_infeasible_control_excludes_entire_group_from_fit_and_readiness(tmp_path):
+    from pi05_mi.occlusion_pilot import manifest, write_manifest
+    from fit_pi05_occlusion_monitor import load_episodes
+    from run_pi05_monitor_budget import analysis_readiness
+    config = PilotConfig(tasks=(0,), train_starts=1, calibration_starts=1, test_starts=1)
+    write_manifest(tmp_path, manifest(config))
+    for job in config.plan():
+        folder = tmp_path / 'episodes' / job['episode_id']; folder.mkdir(parents=True)
+        ep = {**job, 'observations': [{'step': 0}], 'initial_state_sha256': job['group_id']}
+        if job['split'] == 'calibration' and job['condition'] == 'miss_box':
+            ep['occlusion_failures'] = [{'step': 50, 'camera': 'image2'}]
+        (folder / 'episode.json').write_text(json.dumps(ep))
+        np.savez(folder / 'features.npz', state=np.zeros((1, 3)))
+    for allow_partial in (False, True):
+        loaded = load_episodes(tmp_path, allow_partial=allow_partial)
+        assert {ep['split'] for ep in loaded} == {'train', 'test'}
+        assert len(loaded) == 9  # All four calibration conditions excluded together.
+    assert json.loads((tmp_path / 'control_exclusions.json').read_text())['group_ids'] == ['task0_init1']
+    ready, reason = analysis_readiness(tmp_path)
+    assert not ready and 'calibration' in reason and 'Excluded 1' in reason
 
 
 def test_static_box_stays_put_while_moving_box_tracks():

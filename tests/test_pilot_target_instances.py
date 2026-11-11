@@ -127,6 +127,14 @@ def test_observation_masks_follow_rgb_orientation_and_initial_visibility(monkeyp
         slot.observe()
     slot.steps = 1
     assert slot.observe()[2]['image']['fraction_remaining'] is None
+    # A failed control at a replanning step must persist even between monitor ticks.
+    seg[:] = [int(mujoco.mjtObj.mjOBJ_GEOM), instances['bowl_2']['geom_ids'][0]]
+    slot.occluder, slot.steps = ImageOccluder('miss_box'), 50
+    slot.job, slot.occlusion_failures = {'episode_id': 'test_miss_box'}, []
+    _, images, visibility, _, _ = slot.observe()
+    np.testing.assert_array_equal(images['image'], rgb)
+    assert visibility['image']['placement_status'] == 'no_same_size_miss'
+    assert slot.occlusion_failures == [{'step': 50, 'camera': 'image', 'reason': 'no_same_size_miss'}]
 
 
 def test_physics_labels_use_registered_distractor_even_without_bowl_in_body_name():

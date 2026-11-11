@@ -177,6 +177,7 @@ class PilotConfig:
 def manifest(config: PilotConfig):
     return {"schema_version": 2, "config": asdict(config), "episodes": config.plan(),
             "target_identification": "BDDL goal subject + object registry; disjoint target/distractor instance masks",
+            "miss_box_policy": "exhaustive same-size zero-target-overlap search; infeasible camera frames remain unchanged and exclude their paired group from fitting",
             "occluder": "render-only flat RGB rectangle, not a reconstructed 3D box",
             "harm_definition": "peak single robot/non-target movable-object contact force > threshold OR non-target bowl lift > threshold; drops NOT labeled",
             "feature_scope": "dense PaliGemma MLP outputs; optional action-expert transcoder activations (different from paper)",
@@ -223,17 +224,39 @@ def bounds(mask, pad=6):
 
 
 def missed_rect(mask, rectangle):
-    """Same-size rectangle with ZERO overlap with visible target pixels, or fail explicitly."""
+    """Find a same-size, zero-overlap rectangle, or None if none fits anywhere."""
+    mask = np.asarray(mask, dtype=bool)
     y0, y1, x0, x1 = rectangle
     h, w = mask.shape
     rh, rw = y1 - y0, x1 - x0
+    if not (0 < rh <= h and 0 < rw <= w):
+        raise ValueError(f"Invalid miss-box dimensions {(rh, rw)} for image {(h, w)}")
     candidates = [(y, y + rh, x, x + rw)
                   for y in (0, (h-rh)//2, h-rh) for x in (0, (w-rw)//2, w-rw)]
     for rect in sorted(candidates, key=lambda r: (r[0]-y0)**2 + (r[2]-x0)**2):
         a, b, c, d = rect
         if not mask[a:b, c:d].any():
             return rect
-    raise ValueError("No same-size miss box fits without hiding target; inspect this frame")
+    # Summed-area table evaluates every integer-aligned placement in O(H*W),
+    # including narrow gaps missed by the nine legacy anchor positions.
+    integral = np.pad(mask.astype(np.int64), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    overlap = (integral[rh:, rw:] - integral[:-rh, rw:]
+               - integral[rh:, :-rw] + integral[:-rh, :-rw])
+    ys, xs = np.nonzero(overlap == 0)
+    if not len(ys):
+        return None
+    nearest = int(np.argmin((ys - y0) ** 2 + (xs - x0) ** 2))
+    y, x = int(ys[nearest]), int(xs[nearest])
+    return y, y + rh, x, x + rw
+
+
+def episode_control_valid(episode):
+    """Reject impossible miss controls, including failures between monitor ticks."""
+    return (episode.get('matched_control_valid', True)
+            and not episode.get('occlusion_failures')
+            and not any(v.get('placement_status') == 'no_same_size_miss'
+                        for row in episode.get('observations', [])
+                        for v in row.get('visibility', {}).values()))
 
 
 class ImageOccluder:
@@ -258,17 +281,23 @@ class ImageOccluder:
         applied = self.condition != "clean" and not (self.condition == "screen" and camera != "image")
         covered = np.zeros(mask.shape, dtype=bool)
         result = rgb.copy()
+        placement_status = 'not_requested' if not applied else 'no_target_rectangle'
         if applied and rectangle is not None:
+            placement_status = 'placed'
             if self.condition == "miss_box":
                 rectangle = missed_rect(mask, rectangle)
-            y0, y1, x0, x1 = rectangle
-            result[y0:y1, x0:x1] = self.color
-            covered[y0:y1, x0:x1] = True
+                if rectangle is None:
+                    placement_status = 'no_same_size_miss'
+            if rectangle is not None:
+                y0, y1, x0, x1 = rectangle
+                result[y0:y1, x0:x1] = self.color
+                covered[y0:y1, x0:x1] = True
         visible = int(mask.sum())
         remaining = int((mask & ~covered).sum())
         return result, {"target_pixels_before": visible, "target_pixels_after": remaining,
                         "fraction_remaining": remaining / visible if visible else None,
                         "rectangle": list(rectangle) if applied and rectangle else None,
+                        "placement_status": placement_status,
                         "overlay_pixels": int(covered.sum())}
 
 

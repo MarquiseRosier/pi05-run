@@ -41,6 +41,15 @@ def test_inline_segmentation_decoder_uses_wide_arithmetic(kernel):
     assert kernel.install_segmentation_reader.__code__.co_filename.startswith('<notebook cell')
 
 
+def test_inline_infeasible_miss_does_not_abort_or_claim_matched_control(kernel):
+    import numpy as np
+    frame = np.zeros((32, 32, 3), np.uint8)
+    output, info = kernel.ImageOccluder('miss_box').apply('image', frame, np.ones((32, 32), bool))
+    np.testing.assert_array_equal(output, frame)
+    assert info['placement_status'] == 'no_same_size_miss'
+    assert not kernel.episode_control_valid({'observations': [{'visibility': {'image': info}}]})
+
+
 @pytest.fixture
 def kernel(monkeypatch):
     module = ModuleType('_test_monitor_notebook')

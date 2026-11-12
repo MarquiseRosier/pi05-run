@@ -8,6 +8,17 @@ Most collaborators should start here:
 - Transcoder notebook: `notebooks/pi05_libero_transcoder_colab.ipynb`
 - Jayden transcoder notebook: `notebooks/pi05_libero_transcoder_colab_jayden.ipynb`
 - Matched steering notebook: [`notebooks/pi05_matched_steering.ipynb`](notebooks/pi05_matched_steering.ipynb)
+- Transcoder training audit: [`notebooks/pi05_transcoder_training_audit.ipynb`](notebooks/pi05_transcoder_training_audit.ipynb)
+
+The [training-audit Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-transcoder-training-audit/notebooks/pi05_transcoder_training_audit.ipynb)
+inspects the existing checkpoint's optimizer evidence, then compares reconstruction on native
+denoising trajectories, fresh noise at scheduled times, and fresh noise at sampled training times.
+`PHASE="metadata"` needs no GPU. `PHASE="all"` uses a high-RAM L4/A100 for 12 initial scenes
+(tasks 0/7/8/9, starts 0/1/2), with same-noise action comparisons for layers 0/8/17 and all layers.
+All diagnostic definitions execute in the notebook kernel. Per-case evidence resumes from Drive
+under `outputs/transcoder-audit/<RUN_NAME>`; a small evidence ZIP can be exported in the last cell.
+The results measure fidelity and sampled occupancy, not semantic attribution or collision prevention.
+Regenerate it with `python scripts/embed_pi05_transcoder_audit_notebook.py`.
 - Guide: `docs/colab_l4_guide.md`
 - Open in Colab:
 

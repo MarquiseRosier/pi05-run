@@ -9,6 +9,20 @@ Most collaborators should start here:
 - Jayden transcoder notebook: `notebooks/pi05_libero_transcoder_colab_jayden.ipynb`
 - Matched steering notebook: [`notebooks/pi05_matched_steering.ipynb`](notebooks/pi05_matched_steering.ipynb)
 - Transcoder training audit: [`notebooks/pi05_transcoder_training_audit.ipynb`](notebooks/pi05_transcoder_training_audit.ipynb)
+- Retraining-method controls: [`notebooks/pi05_transcoder_methodology_controls.ipynb`](notebooks/pi05_transcoder_methodology_controls.ipynb)
+
+The [methodology-controls Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/transcoder-methodology-controls/notebooks/pi05_transcoder_methodology_controls.ipynb)
+tests whether changing training would improve layer-8 fidelity: sampled-time noise, grid-time
+noise, inference trajectories, and a documented DifFRACT-informed recipe adaptation. Four arms
+and three seeds give 12 short fits with equal update/record budgets, disjoint task splits,
+frozen teacher weight hashes, per-time reconstruction, and zero/mean-output sensitivity controls.
+The existing checkpoint is a reference, not an equal-budget training arm. This is a small VLA
+adaptation pilot, not a reproduction of the full paper or a feature-attribution test.
+Run all cells in a high-RAM L4/A100 session. Definitions and experiments execute in the notebook
+thread; `PHASE` supports collection, training, evaluation, or all. Resume the same run after
+the session budget expires; partial results withhold the primary comparison. Evidence and fit
+checkpoints live under `outputs/transcoder-methodology/<RUN_NAME>` on Drive. Export the small
+evidence ZIP in the final cell. Regenerate with `python scripts/embed_pi05_methodology_notebook.py`.
 
 The [training-audit Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/marquise-transcoder-training-audit/notebooks/pi05_transcoder_training_audit.ipynb)
 inspects the existing checkpoint's optimizer evidence, then compares reconstruction on native

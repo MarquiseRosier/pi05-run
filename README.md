@@ -10,6 +10,22 @@ Most collaborators should start here:
 - Matched steering notebook: [`notebooks/pi05_matched_steering.ipynb`](notebooks/pi05_matched_steering.ipynb)
 - Transcoder training audit: [`notebooks/pi05_transcoder_training_audit.ipynb`](notebooks/pi05_transcoder_training_audit.ipynb)
 - Retraining-method controls: [`notebooks/pi05_transcoder_methodology_controls.ipynb`](notebooks/pi05_transcoder_methodology_controls.ipynb)
+- Live trajectory training: [`notebooks/pi05_transcoder_trajectory_training.ipynb`](notebooks/pi05_transcoder_trajectory_training.ipynb)
+
+The [trajectory-training Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/transcoder-trajectory-training/notebooks/pi05_transcoder_trajectory_training.ipynb)
+trains fresh paper-informed dictionaries on native denoising trajectories from full LIBERO
+dataset observations. The default captures all 18 action-expert layers in each teacher pass,
+then optimizes one dictionary at a time. Set `LAYER_IDS="8"` for a single-layer run.
+A live nine-panel dashboard shows reconstruction, active features, objective components,
+per-layer/per-timestep validation, action fidelity, update progress, throughput and learning rate.
+Metrics, a labelled PNG and resumable model/Adam shards persist on Drive. Session budgets pause
+at safe boundaries; the complete default run may span multiple sessions. The latest two committed
+snapshots are retained, and validation-selected weights are exported as `trained_transcoders.pt`.
+Use the embedded `load_trajectory_bundle` helper for its new time-network architecture.
+Episode-held-out test evaluation follows training; fidelity metrics do not establish attribution.
+Regenerate with `python scripts/embed_pi05_trajectory_training_notebook.py`.
+Read the [plain-English training guide](docs/transcoder_training_plain_english.md) and
+[adversarial implementation review](docs/transcoder_training_audit.md) before interpreting results.
 
 The [methodology-controls Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/transcoder-methodology-controls/notebooks/pi05_transcoder_methodology_controls.ipynb)
 tests whether changing training would improve layer-8 fidelity: sampled-time noise, grid-time

@@ -15,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT/'src'),str(ROOT/'scripts')]
 import pi05_mi.trajectory_training as core
 import run_pi05_trajectory_training as runner
-from embed_pi05_trajectory_training_notebook import definitions,notebook
+from embed_pi05_trajectory_training_notebook import definitions,notebook,LAUNCH
 
 
 def config(**kwargs):
@@ -137,6 +137,20 @@ def test_notebook_is_current_literal_python_and_has_chart_setup():
             if cell['id'] not in ('trajectory-install','trajectory-extra-install'):
                 assert 'subprocess' not in source and 'runpy' not in source
     assert 'matplotlib' in ''.join(next(c['source'] for c in saved['cells'] if c['id']=='trajectory-extra-install'))
+
+
+def test_launch_checks_cache_and_dataset_before_hashing_or_training(tmp_path):
+    # Execute the actual launch cell with setup omitted, as after a runtime restart.
+    namespace=dict(TRAJECTORY_TRAINING_VERSION='test',POLICY_REPO='test/policy',Path=Path)
+    with pytest.raises(RuntimeError,match='Prepare Model Cache And LIBERO Assets'):
+        exec(LAUNCH,namespace)
+    namespace['snapshots']={}
+    with pytest.raises(RuntimeError,match='Prepare Model Cache And LIBERO Assets'):
+        exec(LAUNCH,namespace)
+    namespace['snapshots']={repo:str(tmp_path) for repo in
+        ('test/policy','google/paligemma-3b-pt-224','lerobot/libero-assets')}
+    with pytest.raises(RuntimeError,match='Open The Full Observation Dataset'):
+        exec(LAUNCH,namespace)
 
 
 class Policy(torch.nn.Module):

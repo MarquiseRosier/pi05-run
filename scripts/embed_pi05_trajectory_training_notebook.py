@@ -147,6 +147,16 @@ from importlib.metadata import version
 from IPython.display import display,Markdown
 import gc
 if 'TRAJECTORY_TRAINING_VERSION' not in globals(): raise RuntimeError('Run all seven Definitions cells first')
+if not isinstance(globals().get('snapshots'),dict) or any(
+    not globals()['snapshots'].get(repo) or not Path(globals()['snapshots'][repo]).is_dir()
+    for repo in (POLICY_REPO,'google/paligemma-3b-pt-224','lerobot/libero-assets')
+):
+    raise RuntimeError('Model cache setup is missing or incomplete in this session. '
+        'Run "Prepare Model Cache And LIBERO Assets", then rerun this Train / Resume cell. '
+        'After a runtime restart, rerun setup cells even when the files remain cached. '
+        'No training has started and existing checkpoints are unchanged.')
+if 'dataset' not in globals():
+    raise RuntimeError('Run "Open The Full Observation Dataset" before this Train / Resume cell.')
 config=TrajectoryTrainConfig(layers=tuple(int(x.strip()) for x in LAYER_IDS.split(',') if x.strip()),
     cycles=CYCLES,frames_per_cycle=FRAMES_PER_CYCLE,batch_size=TRAIN_BATCH_SIZE,
     lambda_l1=LAMBDA_L1,validate_every=VALIDATE_EVERY_CYCLES)
@@ -199,6 +209,8 @@ def notebook():
                                 'Select a high-RAM L4/A100 GPU runtime for training.')
     # Installer came from the proven pinned Colab runtime; the experiment itself never starts a worker.
     cache=CACHE.replace("if PHASE == 'all':",'if True:')
+    cache=cache.replace('Prepare Model Cache And LIBERO Assets (Skipped For Metadata Only)',
+                        'Prepare Model Cache And LIBERO Assets — Run After Every Runtime Restart')
     cache=cache.replace('Select a GPU runtime for PHASE=all','Select a GPU runtime for training')
     cells=[markdown(INTRO,'trajectory-intro'),code(CONTROLS,'trajectory-controls'),code(MOUNT,'trajectory-mount'),
         code(installer,'trajectory-install'),code(EXTRA,'trajectory-extra-install'),code(cache,'trajectory-cache'),

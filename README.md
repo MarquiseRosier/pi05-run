@@ -26,6 +26,10 @@ Episode-held-out test evaluation follows training; fidelity metrics do not estab
 Regenerate with `python scripts/embed_pi05_trajectory_training_notebook.py`.
 Read the [plain-English training guide](docs/transcoder_training_plain_english.md) and
 [adversarial implementation review](docs/transcoder_training_audit.md) before interpreting results.
+The dataset cell recovers metadata-only caches when compatible local data exists, uses HTTP
+with one concurrent file download, and retries explicit Hub 429 responses with bounded backoff.
+Partial downloads are retained. If rate limiting persists, wait and rerun only that cell;
+an optional Colab `HF_TOKEN` secret is used without printing it.
 
 The [methodology-controls Colab](https://colab.research.google.com/github/MarquiseRosier/pi05-run/blob/feature/transcoder-methodology-controls/notebooks/pi05_transcoder_methodology_controls.ipynb)
 tests whether changing training would improve layer-8 fidelity: sampled-time noise, grid-time

@@ -106,9 +106,10 @@ matplotlib.use('Agg')
 print('Chart backend:',matplotlib.get_backend(),'; video decoder: PyAV')
 '''
 
-DATASET='''# @title Open The Full Observation Dataset (No DataLoader Worker Processes)
+DATASET='# @title Open The Full Observation Dataset (Resumable, Rate-Limit-Aware Download)\n'+(ROOT/'scripts/pi05_training_data.py').read_text()+'''
 import os,shutil
 from huggingface_hub import constants as hf_constants
+from lerobot.datasets import lerobot_dataset as dataset_module
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import HF_LEROBOT_HOME
 if DATASET_ROOT.strip():
@@ -117,26 +118,21 @@ else:
     dataset_root=Path('/content/lerobot-data')/DATASET_REPO
     candidates=[Path(HF_LEROBOT_HOME)/DATASET_REPO,Path('/content/hf_home/lerobot')/DATASET_REPO,
                 DRIVE_ROOT/'hf_home/lerobot'/DATASET_REPO,DRIVE_ROOT/'libero_cache'/DATASET_REPO]
-    if not (dataset_root/'meta/info.json').exists():
-        cached=next((p for p in candidates if (p/'meta/info.json').is_file()),None)
-        if cached is not None and cached.resolve()!=dataset_root.resolve():
-            print('Staging cached dataset on local disk:',cached,flush=True)
-            dataset_root.mkdir(parents=True,exist_ok=True)
-            for name in ('meta','data','videos','images'):
-                if (cached/name).is_dir(): shutil.copytree(cached/name,dataset_root/name,dirs_exist_ok=True)
+    stage_training_dataset(dataset_root,candidates)
 print('Dataset:',DATASET_REPO,'root:',dataset_root,flush=True)
-old_offline=hf_constants.HF_HUB_OFFLINE
-old_env={k:os.environ.get(k) for k in ('HF_HUB_OFFLINE','HF_DATASETS_OFFLINE')}
-try:
-    if ALLOW_DATASET_DOWNLOAD:
-        hf_constants.HF_HUB_OFFLINE=False
-        for key in old_env: os.environ.pop(key,None)
+print('Local Parquet files:',sum(1 for _ in (dataset_root/'data').rglob('*.parquet')))
+dataset_token=os.environ.get('HF_TOKEN')
+if ALLOW_DATASET_DOWNLOAD and not dataset_token:
+    try:
+        from google.colab import userdata
+        dataset_token=userdata.get('HF_TOKEN')
+    except Exception: pass
+print('Downloads:',ALLOW_DATASET_DOWNLOAD,'; transport: HTTP; concurrent files: 1; '
+      'HF token supplied:',bool(dataset_token),flush=True)
+with training_dataset_downloads(dataset_module,hf_constants,allow_download=ALLOW_DATASET_DOWNLOAD,token=dataset_token):
     dataset=LeRobotDataset(DATASET_REPO,root=dataset_root,video_backend='pyav',delta_timestamps=None)
-finally:
-    hf_constants.HF_HUB_OFFLINE=old_offline
-    for key,value in old_env.items():
-        if value is None: os.environ.pop(key,None)
-        else: os.environ[key]=value
+if len(dataset)!=dataset.meta.total_frames or not dataset._check_cached_episodes_sufficient():
+    raise RuntimeError('Dataset remains incomplete after loading. Rerun this cell to resume the download.')
 print('Dataset frames:',len(dataset),'; episodes:',dataset.meta.total_episodes)
 print('Camera keys:',dataset.meta.camera_keys)
 print('No simulator rollout, occlusion masks, or bowl inference is used for training.')

@@ -55,29 +55,35 @@ def copy_verified(source, target, expected):
         tmp.unlink(missing_ok=True)
 
 
-def select_run(local_parent, drive_parent, identity, requested='latest'):
+def select_run(local_parent, drive_parent, identity, requested='latest', *, compatible_identities=()):
     """Choose the newest compatible run, or create one; explicit mismatches fail."""
     parents = [Path(p) for p in (local_parent, drive_parent) if p is not None]
+    accepted = [identity, *compatible_identities]
     if requested == 'latest':
         matches = set()
         for parent in parents:
             for manifest in parent.glob('*/resume_manifest.json'):
                 data = read_json(manifest)
-                if data and data.get('identity') == identity:
+                if data and data.get('identity') in accepted:
                     matches.add(manifest.parent.name)
         requested = max(matches) if matches else 'new'
     if requested == 'new':
         requested = time.strftime('%Y%m%d-%H%M%S', time.gmtime()) + '-' + uuid.uuid4().hex[:6]
     if not re.fullmatch(r'[A-Za-z0-9_-]+', requested):
         raise ValueError('Run ID must contain only letters, digits, underscores and hyphens')
+    saved_identity = None
     for parent in parents:
         path = parent/requested
         if path.exists():
             old = read_json(path/'resume_manifest.json')
-            if old is None or old.get('identity') != identity:
+            if old is None or old.get('identity') not in accepted:
                 raise ValueError(f'Cannot safely resume {requested}: settings/source/checkpoints differ, '
                                  'or this run predates completion receipts. Use latest or new.')
-    manifest = dict(version=1, run_id=requested, identity=identity)
+            if saved_identity is not None and old['identity'] != saved_identity:
+                raise ValueError('Local and Drive run identities disagree')
+            saved_identity = old['identity']
+    manifest = dict(version=1, run_id=requested, identity=saved_identity or identity,
+                    execution_identity=identity)
     for parent in parents:
         atomic_json(parent/requested/'resume_manifest.json', manifest)
     return requested
@@ -92,6 +98,7 @@ class ResumeCache:
         if not manifest:
             raise ValueError('Missing resume manifest; run the resume setup cell first')
         self.context = digest(manifest['identity'])
+        self.execution_identity = manifest.get('execution_identity', manifest['identity'])
         self._checked = {}
 
     def key(self, kind, output):
@@ -165,7 +172,8 @@ class ResumeCache:
             records[str(path.relative_to(self.root))] = dict(size=path.stat().st_size, sha256=file_hash(path))
         if not records:
             raise ValueError(f'No output artifacts for {key}')
-        receipt = dict(version=1, key=key, context=self.context, signature=signature, files=records, dependencies=list(dependencies))
+        receipt = dict(version=1, key=key, context=self.context, signature=signature, files=records,
+                       dependencies=list(dependencies), execution_identity=self.execution_identity)
         atomic_json(self.receipt_path(key), receipt)
         print('Saving completed data:', key, flush=True)
         self.publish(receipt)
